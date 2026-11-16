@@ -730,6 +730,7 @@ fn temperatures_change_after_the_first_layer() {
     assert!(beds(&same).is_empty());
     let klipper = PrintSettings {
         klipper: true,
+        acceleration_form: AccelerationForm::Klipper,
         ..same.clone()
     };
     assert_eq!(beds(&klipper), ["M140 S60 ; set bed temperature"]);
@@ -1349,6 +1350,153 @@ fn fan_runs_faster_on_layers_that_take_less_time() {
 }
 
 #[test]
+fn marlin_2_is_told_printing_and_travel_accelerations_apart() {
+    let limits = |settings: &PrintSettings| -> Vec<String> {
+        let text = printed(2, settings);
+        text.lines()
+            .filter(|line| {
+                ["SET_VELOCITY", "M204", "M201", "M202"]
+                    .iter()
+                    .any(|start| line.starts_with(start))
+            })
+            .map(str::to_owned)
+            .collect()
+    };
+    let marlin2 = PrintSettings {
+        acceleration_form: AccelerationForm::PrintTravel,
+        default_acceleration: 10000.0,
+        outer_wall_acceleration: 5000.0,
+        initial_layer_acceleration: 500.0,
+        travel_acceleration: 12000.0,
+        ..basic()
+    };
+    // GCodeWriter.cpp `set_acceleration_internal`: `M204 P` for printing,
+    // `M204 T` for travel, each said again only when it changes, so the
+    // travel after the outer wall needs no line of its own.
+    assert_eq!(
+        limits(&marlin2),
+        [
+            "M204 T500",
+            "M204 P500",
+            "M204 T12000",
+            "M204 P5000",
+            "M204 P10000",
+        ]
+    );
+    // Held to the machine's limits: printing to the extruding one, travel
+    // to the travel one.
+    let held = PrintSettings {
+        max_print_acceleration: 8000.0,
+        max_travel_acceleration: 9000.0,
+        ..marlin2.clone()
+    };
+    assert_eq!(
+        limits(&held)[2..],
+        ["M204 T9000", "M204 P5000", "M204 P8000"]
+    );
+    // Repetier says them with M201 and M202; Marlin before 2 with one
+    // `M204 S`, printing and travel alike.
+    let repetier = PrintSettings {
+        acceleration_form: AccelerationForm::Repetier,
+        ..marlin2.clone()
+    };
+    assert_eq!(
+        limits(&repetier)[..3],
+        ["M202 X500 Y500", "M201 X500 Y500", "M202 X12000 Y12000"]
+    );
+    let marlin = PrintSettings {
+        acceleration_form: AccelerationForm::Single,
+        ..marlin2.clone()
+    };
+    assert_eq!(
+        limits(&marlin)[..3],
+        ["M204 S500", "M204 S12000", "M204 S5000"]
+    );
+}
+
+#[test]
+fn acceleration_forms_and_limits_follow_the_flavor() {
+    use edge_config::Settings;
+    for (flavor, form) in [
+        (Some("klipper"), AccelerationForm::Klipper),
+        (Some("marlin2"), AccelerationForm::PrintTravel),
+        (Some("reprapfirmware"), AccelerationForm::PrintTravel),
+        (Some("repetier"), AccelerationForm::Repetier),
+        (Some("marlin"), AccelerationForm::Single),
+        (Some("reprap"), AccelerationForm::Single),
+        (None, AccelerationForm::Single),
+    ] {
+        assert_eq!(AccelerationForm::of(flavor), form, "{flavor:?}");
+    }
+    let limits = |flavor: &str| {
+        let json = format!(
+            r#"{{"gcode_flavor": "{flavor}", "machine_max_acceleration_extruding": ["20000"],
+                "machine_max_acceleration_travel": ["9000.5"], "machine_max_acceleration_x": ["15000"],
+                "machine_max_acceleration_y": ["16000"]}}"#
+        );
+        let settings = Settings::from_json(&json).unwrap();
+        let s = PrintSettings::from_settings(&settings).unwrap();
+        (s.max_print_acceleration, s.max_travel_acceleration)
+    };
+    assert_eq!(limits("marlin2"), (20000.0, 9001.0));
+    assert_eq!(limits("reprapfirmware"), (20000.0, 9001.0));
+    // Klipper's one limit covers every move: the least of the three.
+    assert_eq!(limits("klipper"), (15000.0, 15000.0));
+    assert_eq!(limits("marlin"), (20000.0, 0.0));
+    assert_eq!(limits("repetier"), (0.0, 0.0));
+}
+
+#[test]
+fn the_exhaust_fan_runs_as_the_filaments_ask() {
+    use edge_config::Settings;
+    let read = |json: &str, index: usize| {
+        PrintSettings::for_filament(&Settings::from_json(json).unwrap(), index)
+            .unwrap()
+            .exhaust_fan
+    };
+    // Off unless asked; asked, at the reference's 60 % and 80 %.
+    assert_eq!(read("{}", 0), [None, None]);
+    assert_eq!(
+        read(r#"{"activate_air_filtration": ["1"]}"#, 0),
+        [Some(60), Some(80)]
+    );
+    // Each filament its own; either half switched off on its own.
+    let two = r#"{"activate_air_filtration": ["0", "1"],
+        "activate_air_filtration_during_print": ["1", "1"],
+        "activate_air_filtration_on_completion": ["1", "0"],
+        "during_print_exhaust_fan_speed": ["90", "70"],
+        "complete_print_exhaust_fan_speed": ["100", "50"]}"#;
+    assert_eq!(read(two, 0), [None, None]);
+    assert_eq!(read(two, 1), [Some(70), None]);
+    // The highest any filament asks; 70 % is 178.5, cut to 178.
+    assert_eq!(
+        settings::exhaust_fan_command([[Some(70), None], [Some(40), Some(30)]], 0).as_deref(),
+        Some("M106 P3 S178\n")
+    );
+    assert_eq!(
+        settings::exhaust_fan_command([[Some(70), None], [Some(40), Some(30)]], 1).as_deref(),
+        Some("M106 P3 S76\n")
+    );
+    assert_eq!(settings::exhaust_fan_command([[None, None]], 0), None);
+    // In the file: after the start G-code, before the moves are set up,
+    // and after the end G-code (GCode.cpp `_do_export`).
+    let settings = PrintSettings {
+        machine_start_gcode: Some("; start".into()),
+        machine_end_gcode: Some("; end".into()),
+        exhaust_fan: [Some(70), Some(70)],
+        ..basic()
+    };
+    let text = printed(1, &settings);
+    assert_eq!(text.matches("M106 P3 S178\n").count(), 2, "{text}");
+    assert!(text.contains("; start\nM106 P3 S178\nG90\nG21\n"), "{text}");
+    assert!(
+        text.contains("; end\nM106 P3 S178\nM73 P100 R0\n"),
+        "{text}"
+    );
+    assert!(!printed(1, &basic()).contains("M106 P3"));
+}
+
+#[test]
 fn acceleration_follows_the_feature_and_the_first_layer() {
     let limits = |settings: &PrintSettings| -> Vec<String> {
         let text = printed(2, settings);
@@ -1359,6 +1507,7 @@ fn acceleration_follows_the_feature_and_the_first_layer() {
     };
     let klipper = PrintSettings {
         klipper: true,
+        acceleration_form: AccelerationForm::Klipper,
         accel_to_decel_factor: Some(0.5),
         default_acceleration: 10000.0,
         outer_wall_acceleration: 5000.0,
@@ -1395,6 +1544,7 @@ fn acceleration_follows_the_feature_and_the_first_layer() {
     );
     let marlin = PrintSettings {
         klipper: false,
+        acceleration_form: AccelerationForm::Single,
         accel_to_decel_factor: None,
         ..klipper.clone()
     };
@@ -1407,6 +1557,7 @@ fn acceleration_follows_the_feature_and_the_first_layer() {
 fn pressure_advance_is_set_once_before_the_first_layer() {
     let klipper = PrintSettings {
         klipper: true,
+        acceleration_form: AccelerationForm::Klipper,
         pressure_advance: Some(0.02),
         ..basic()
     };
@@ -2587,6 +2738,7 @@ fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
         ram_advance: Some(0.02),
         pressure_advance: None,
         klipper: true,
+        acceleration_form: AccelerationForm::Klipper,
         filament_start_gcode: Some("SET_PRESSURE_ADVANCE ADVANCE=0.03".into()),
         ..tool
     });
@@ -2601,6 +2753,7 @@ fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
         ram_advance: Some(0.02),
         pressure_advance: None,
         klipper: true,
+        acceleration_form: AccelerationForm::Klipper,
         ..tool
     });
     let mut out = Vec::new();
@@ -4067,8 +4220,8 @@ fn each_copy_is_labelled_round_its_own_islands() {
         print(&layers, &settings).0
     };
     let plain = print(&layers, &basic()).0;
-    // Nothing labelled: nothing written of it.
-    assert_eq!(labelled(None, true), plain);
+    // Nothing labelled and no comments: nothing written of it.
+    assert_eq!(labelled(None, false), plain);
     let klipper = labelled(Some(Labelling::Klipper), false);
     assert!(klipper.contains(
         "EXCLUDE_OBJECT_DEFINE NAME=a_b_id_0_copy_0 CENTER=5,5 POLYGON=[[0,0],[10,0],[10,10],[0,10],[0,0]]\n"
@@ -4123,6 +4276,53 @@ fn each_copy_is_labelled_round_its_own_islands() {
     let marlin = labelled(Some(Labelling::Marlin), false);
     assert!(marlin.contains("M486 S0\nM486 Aa_b_id_0_copy_0\nM486 S-1\n"));
     assert_eq!(marlin.matches("M486 S-1\n").count(), 4);
+}
+
+#[test]
+fn copies_are_named_in_comments_without_being_labelled_for_cancelling() {
+    // `gcode_label_objects` on and `exclude_object` off, as on most
+    // printers but Bambu Lab's: the reference names each copy where it
+    // starts and stops all the same (GCode.cpp `process_layer`), copy by
+    // copy, and writes nothing to cancel one by.
+    let loops = [wall(30.0, 0.0, 10.0, 0), wall(0.0, 0.0, 10.0, 0)];
+    let fill = [
+        line((2.0, 5.0), (8.0, 5.0), Role::SolidInfill),
+        line((32.0, 5.0), (38.0, 5.0), Role::SolidInfill),
+    ];
+    let layers = one_layer(&loops, &[0..1, 1..2], &fill);
+    let mut settings = basic();
+    settings.labels = None;
+    settings.label_comments = true;
+    settings.plate.labels = vec![copy_at("a b", 0, 7, 0.0), copy_at("c", 1, 3, 30.0)];
+    let text = print(&layers, &settings).0;
+    let marks: Vec<&str> = (text.lines())
+        .filter(|line| line.contains("printing object"))
+        .collect();
+    assert_eq!(
+        marks,
+        [
+            "; printing object a b id:0 copy 0",
+            "; stop printing object a b id:0 copy 0",
+            "; printing object c id:1 copy 0",
+            "; stop printing object c id:1 copy 0",
+        ]
+    );
+    for none in ["EXCLUDE_OBJECT", "M486", "M624", "M625", "unique label id"] {
+        assert!(!text.contains(none), "{none}");
+    }
+    // Each copy's lines between its own two comments.
+    let start = text.find("; printing object c").unwrap();
+    let end = text.find("; stop printing object c").unwrap();
+    let xs: Vec<f64> = moves(&text[start..end])
+        .filter_map(|line| word(line, 'X'))
+        .collect();
+    assert!(
+        !xs.is_empty() && xs.iter().all(|x| (29.0..=41.0).contains(x)),
+        "{xs:?}"
+    );
+    // With the setting off, no comments.
+    settings.label_comments = false;
+    assert!(!print(&layers, &settings).0.contains("printing object"));
 }
 
 #[test]
@@ -4206,5 +4406,6 @@ fn copies_printed_object_by_object_are_each_finished_before_the_next() {
     // again.
     settings.bed_temperature = Some(60.0);
     settings.klipper = true;
+    settings.acceleration_form = AccelerationForm::Klipper;
     assert_eq!(beds(&settings), ["M140 S60 ; set bed temperature"]);
 }

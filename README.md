@@ -819,7 +819,13 @@ Working:
   (`SlicingParameters::create_from_config`). The adaptive profile from the
   slopes of the object's faces, its smoothing and a stroke of the layer
   height tool are ported for the desktop app. The objects that set nothing
-  of their heights are sliced together at the plate's, as before; each set
+  of their heights are sliced together at the plate's, as before, the
+  tallest one's layers stopping where the reference's do: a layer only
+  while its middle is below the top, so none whose middle falls on the
+  top exactly (`generate_object_layers`, its count taken from its own
+  sum of heights, `edge_slice::layer_planes_for`; 2026-11-16, before which
+  such a layer was made: a 12 mm part at 0.08 mm had 149 layers, the
+  reference 148). Each set
   of objects whose layers agree is sliced by itself, everything up to the
   order of tools, the prime tower, skirt and brim; their layers are then
   laid together by their tops, tops within `EPSILON` as one, at their
@@ -1807,8 +1813,11 @@ first, belonging to none), support, walls and fill are printed between its
 start and stop, copy after copy; the skirt and the prime tower belong to
 none. The start is written with the copy's first travel, after the
 retraction; the stop with the next travel, at the layer change, or before
-a tool change. The `; printing object` comments (`gcode_label_objects`)
-go with the labels. Not as the reference, on purpose: where a tool is
+a tool change. The `; printing object` and `; stop printing object`
+comments (`gcode_label_objects`) are written whenever that setting is on,
+labels or not, as the reference writes them (GCode.cpp `process_layer`);
+with them on and labels off the copies are printed copy after copy all the
+same (2026-11-16). Not as the reference, on purpose: where a tool is
 changed in place (the U1) the reference writes the stop after the change
 G-code, so a printer skipping that copy skips the retraction, wipe and lift
 before the change too; here the stop comes before the change. And the
@@ -1816,9 +1825,8 @@ copies a tool prints on a layer with a prime tower are chained from the
 tower, as the reference means to, where it starts from the bed's corner
 (it makes its point from `wipe_tower_x` in millimetres taken as
 nanometres), so the copies come in another order there. With labels off
-(`exclude_object` off, not a Bambu Lab printer) nothing changes, and the
-`; printing object` comments are not written, where the reference writes
-them whenever `gcode_label_objects` is on.
+(`exclude_object` off, not a Bambu Lab printer) and `gcode_label_objects`
+off, nothing changes.
 
 **A prime tower without sparse layers** (`wipe_tower_no_sparse_layers`,
 2026-11-12). Both towers leave out the layers with no tool change and
@@ -1990,7 +1998,22 @@ tower writes it (`; CP TOOLCHANGE START`, the material, `M220 S100`,
 `; WIPE_TOWER_START` / `_END`, the filament's end G-code before the
 filament is pulled back). Every Marlin or RepRapFirmware printer is told
 its limits before the start G-code (`M201`, `M203`, `M204`, `M205`,
-`emit_machine_limits_to_gcode`), and every file has the reference's
+`emit_machine_limits_to_gcode`). Accelerations are said in the firmware's
+own words (GCodeWriter.cpp `set_acceleration_internal`; 2026-11-16):
+Klipper's `SET_VELOCITY_LIMIT ACCEL=`; on Marlin 2 and RepRapFirmware
+`M204 P` for printing and `M204 T` for travel, on Repetier `M201 X Y` and
+`M202 X Y`, each kept track of apart; elsewhere one `M204 S`. Printing is
+held to `machine_max_acceleration_extruding` on Marlin, Marlin 2,
+RepRapFirmware and Klipper (on Klipper also to the x and y limits), travel
+to `machine_max_acceleration_travel` on Marlin 2 and RepRapFirmware and to
+the printing limit on Klipper. The exhaust fan (`M106 P3`) is run as the
+print's filaments ask (`activate_air_filtration`, with
+`activate_air_filtration_during_print` / `_on_completion`): at the highest
+`during_print_exhaust_fan_speed` they ask after the start G-code, at the
+highest `complete_print_exhaust_fan_speed` after the end G-code, as the
+reference does (GCode.cpp `_do_export`; 2026-11-16); like the reference it
+does not ask the printer's `support_air_filtration` there, which the
+printer's own templates read. And every file has the reference's
 `;_SET_FAN_SPEED_CHANGING_LAYER` marker after each layer change. Positions
 are taken back by `extruder_offset` (0x2 on the P1 and X1). The
 timelapse G-code (`time_lapse_gcode`, dropped before) goes where the

@@ -271,6 +271,14 @@ pub struct PrintSettings {
     /// Klipper also takes a deceleration limit, as a share of the acceleration.
     pub accel_to_decel_factor: Option<f64>,
     pub klipper: bool,
+    /// How the printer is told an acceleration, by its firmware
+    /// (GCodeWriter.cpp `set_acceleration_internal`).
+    pub acceleration_form: AccelerationForm,
+    /// What a printing and a travel acceleration are held to, 0 for no
+    /// limit (GCodeWriter.cpp `apply_print_config`, `m_max_acceleration`
+    /// and `m_max_travel_acceleration`; see [`acceleration_limits`]).
+    pub max_print_acceleration: f64,
+    pub max_travel_acceleration: f64,
     /// RepRapFirmware's or Sprinter's G-code (`gcode_flavor` `reprapfirmware`
     /// or `reprap`), which sets pressure advance with `M572`.
     pub reprap: bool,
@@ -338,8 +346,9 @@ pub struct PrintSettings {
     /// always, elsewhere where `exclude_object` is on, in the commands of
     /// the printer's firmware. None where nothing is labelled.
     pub labels: Option<Labelling>,
-    /// Whether each copy is also named in comments where it starts and
-    /// stops (`gcode_label_objects`); only where copies are labelled.
+    /// Whether each copy is named in comments where it starts and stops
+    /// (`gcode_label_objects`), whether or not it is labelled for
+    /// cancelling (GCode.cpp `process_layer`).
     pub label_comments: bool,
     /// Where each tool's nozzle sits off the first's, in mm
     /// (`extruder_offset`): every position written is taken back by it
@@ -393,6 +402,15 @@ pub struct PrintSettings {
     /// Spiral vase mode (`spiral_mode`): how its spiral is laid; none
     /// with it off.
     pub spiral: Option<crate::spiral_vase::Spiral>,
+
+    /// What this filament asks of the printer's exhaust fan
+    /// (`activate_air_filtration`), in percent: during the print
+    /// (`during_print_exhaust_fan_speed`, where
+    /// `activate_air_filtration_during_print`) and once it is done
+    /// (`complete_print_exhaust_fan_speed`, where
+    /// `activate_air_filtration_on_completion`); none where it asks
+    /// nothing ([`exhaust_fan`]).
+    pub exhaust_fan: [Option<i64>; 2],
 
     /// Settings present in the input that export does not honour yet, each
     /// with what is done instead.
@@ -507,6 +525,9 @@ impl Default for PrintSettings {
             travel_acceleration: 0.0,
             accel_to_decel_factor: None,
             klipper: false,
+            acceleration_form: AccelerationForm::Single,
+            max_print_acceleration: 0.0,
+            max_travel_acceleration: 0.0,
             reprap: false,
             // The reference's: on, at 0.
             ram_advance: Some(0.0),
@@ -548,6 +569,7 @@ impl Default for PrintSettings {
             own_heights: false,
             calibration: None,
             spiral: None,
+            exhaust_fan: [None, None],
             unsupported: Vec::new(),
         }
     }
@@ -1067,6 +1089,9 @@ impl PrintSettings {
                 _ => None,
             },
             klipper: settings.text("gcode_flavor") == Some("klipper"),
+            acceleration_form: AccelerationForm::of(settings.text("gcode_flavor")),
+            max_print_acceleration: acceleration_limits(settings)?.0,
+            max_travel_acceleration: acceleration_limits(settings)?.1,
             reprap: matches!(
                 settings.text("gcode_flavor"),
                 Some("reprapfirmware" | "reprap")
@@ -1237,6 +1262,7 @@ impl PrintSettings {
             produced_at: None,
             own_heights: false,
             calibration: None,
+            exhaust_fan: exhaust_fan(settings, index)?,
             unsupported,
         })
     }
@@ -1369,6 +1395,187 @@ fn machine_envelope(settings: &Settings) -> Result<Option<String>, ConfigError> 
     }
     out += &input_shaping_override(settings, flavor)?;
     Ok(Some(out))
+}
+
+/// What filament `index` asks of the exhaust fan, during the print and
+/// once it is done, in percent (GCode.cpp `_do_export`, l.4621-4634 and
+/// 4949-4959 at the pin): nothing unless `activate_air_filtration`, then
+/// each of `during_print_exhaust_fan_speed` and
+/// `complete_print_exhaust_fan_speed` where its own switch
+/// (`activate_air_filtration_during_print`, `_on_completion`) is on. Each
+/// a per-filament list, read at the filament's place or else at the first
+/// (`ConfigOptionVector::get_at`); the reference's defaults where absent:
+/// off, on, on, 60 and 80. The printer's `support_air_filtration` is not
+/// asked, as the reference does not ask it there.
+fn exhaust_fan(settings: &Settings, index: usize) -> Result<[Option<i64>; 2], ConfigError> {
+    let at = |key: &str| {
+        settings
+            .texts(key)
+            .and_then(|values| values.get(index).or(values.first()))
+            .map(|text| text.trim().to_owned())
+    };
+    let flag = |key: &'static str, default: bool| -> Result<bool, ConfigError> {
+        match at(key).as_deref() {
+            None => Ok(default),
+            Some("1" | "true") => Ok(true),
+            Some("0" | "false") => Ok(false),
+            Some(other) => Err(ConfigError::BadValue {
+                key: key.into(),
+                found: other.to_owned(),
+                expected: "1 or 0",
+            }),
+        }
+    };
+    let speed = |key: &'static str, default: i64| -> Result<i64, ConfigError> {
+        match at(key) {
+            None => Ok(default),
+            Some(text) => text.parse().map_err(|_| ConfigError::BadValue {
+                key: key.into(),
+                found: text,
+                expected: "a whole number",
+            }),
+        }
+    };
+    if !flag("activate_air_filtration", false)? {
+        return Ok([None, None]);
+    }
+    Ok([
+        flag("activate_air_filtration_during_print", true)?
+            .then(|| speed("during_print_exhaust_fan_speed", 60))
+            .transpose()?,
+        flag("activate_air_filtration_on_completion", true)?
+            .then(|| speed("complete_print_exhaust_fan_speed", 80))
+            .transpose()?,
+    ])
+}
+
+/// GCodeWriter.cpp `set_exhaust_fan`: the exhaust fan (fan 3) at the
+/// highest speed, in percent, the print's filaments ask for at `when` (0
+/// during the print, 1 once done); nothing where none asks.
+pub(crate) fn exhaust_fan_command(
+    filaments: impl IntoIterator<Item = [Option<i64>; 2]>,
+    when: usize,
+) -> Option<String> {
+    let speed = filaments
+        .into_iter()
+        .filter_map(|asked| asked[when])
+        .max()?;
+    // `(int)(speed / 100.0 * 255)`: towards zero.
+    Some(format!(
+        "M106 P3 S{}\n",
+        (speed as f64 / 100.0 * 255.0) as i64
+    ))
+}
+
+/// How the firmware is told an acceleration (GCodeWriter.cpp
+/// `set_acceleration_internal`), by `gcode_flavor`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccelerationForm {
+    /// Klipper: `SET_VELOCITY_LIMIT ACCEL=`, with the deceleration share
+    /// where one is set; printing and travel alike.
+    Klipper,
+    /// Marlin 2 and RepRapFirmware: `M204 P` for printing and `M204 T`
+    /// for travel, each kept track of apart.
+    PrintTravel,
+    /// Repetier: `M201 X Y` for printing and `M202 X Y` for travel, each
+    /// kept track of apart.
+    Repetier,
+    /// Every other firmware (Marlin before 2 among them): `M204 S`,
+    /// printing and travel alike.
+    Single,
+}
+
+impl AccelerationForm {
+    pub fn of(flavor: Option<&str>) -> Self {
+        match flavor {
+            Some("klipper") => Self::Klipper,
+            Some("marlin2" | "reprapfirmware") => Self::PrintTravel,
+            Some("repetier") => Self::Repetier,
+            _ => Self::Single,
+        }
+    }
+
+    /// Whether a travel acceleration is said and kept track of apart from
+    /// the printing one (GCodeWriter.cpp
+    /// `supports_separate_travel_acceleration`).
+    pub fn separate_travel(self) -> bool {
+        matches!(self, Self::PrintTravel | Self::Repetier)
+    }
+
+    /// The line that sets `acceleration` (mm/s², whole) for printing or,
+    /// where the firmware has one apart, for travel. Klipper's
+    /// deceleration share is `accel_to_decel`, as
+    /// `PrintSettings::accel_to_decel_factor`.
+    pub fn command(self, travel: bool, acceleration: f64, accel_to_decel: Option<f64>) -> String {
+        let travel = travel && self.separate_travel();
+        match (self, accel_to_decel) {
+            // The limit is said both ways (GCodeWriter.cpp
+            // `append_klipper_accel_to_decel`): Klipper before 0.13 and
+            // vendor forks read ACCEL_TO_DECEL, current Klipper only
+            // MINIMUM_CRUISE_RATIO, which is one less the same share.
+            (Self::Klipper, Some(factor)) if factor > 0.0 => {
+                let factor = factor.min(1.0);
+                let ratio = format!("{:.6}", 1.0 - factor);
+                let ratio = ratio.trim_end_matches('0').trim_end_matches('.');
+                format!(
+                    "SET_VELOCITY_LIMIT ACCEL={acceleration:.0} ACCEL_TO_DECEL={:.0} MINIMUM_CRUISE_RATIO={ratio}\n",
+                    acceleration * factor
+                )
+            }
+            (Self::Klipper, _) => format!("SET_VELOCITY_LIMIT ACCEL={acceleration:.0}\n"),
+            (Self::PrintTravel, _) => {
+                format!("M204 {}{acceleration:.0}\n", if travel { 'T' } else { 'P' })
+            }
+            (Self::Repetier, _) => format!(
+                "{} X{acceleration:.0} Y{acceleration:.0}\n",
+                if travel { "M202" } else { "M201" }
+            ),
+            (Self::Single, _) => format!("M204 S{acceleration:.0}\n"),
+        }
+    }
+}
+
+/// What a printing and a travel acceleration are held to, 0 for no limit
+/// (GCodeWriter.cpp `apply_print_config`, `set_acceleration_internal`,
+/// `set_accel_and_jerk`). On Marlin, Marlin 2, RepRapFirmware and Klipper
+/// printing is held to `machine_max_acceleration_extruding`, on Klipper
+/// also to `machine_max_acceleration_x` and `_y`, since its one limit
+/// covers every move. Travel is held to `machine_max_acceleration_travel`
+/// where the firmware has a travel acceleration of its own (Marlin 2,
+/// RepRapFirmware), on Klipper to the printing limit (its travel goes
+/// through `set_accel_and_jerk`), elsewhere to nothing. Without a printer
+/// (no `gcode_flavor`) nothing is held, as the file then tells no limits.
+pub(crate) fn acceleration_limits(settings: &Settings) -> Result<(f64, f64), ConfigError> {
+    let Some(flavor) = settings.text("gcode_flavor") else {
+        return Ok((0.0, 0.0));
+    };
+    if !matches!(flavor, "marlin" | "marlin2" | "klipper" | "reprapfirmware") {
+        return Ok((0.0, 0.0));
+    }
+    let first = |key: &str| -> Result<f64, ConfigError> {
+        Ok(settings
+            .floats(key)?
+            .and_then(|values| values.first().copied().flatten())
+            .unwrap_or(0.0)
+            .max(0.0))
+    };
+    // `std::lrint`, in the default rounding: halves to even.
+    let mut print = first("machine_max_acceleration_extruding")?.round_ties_even();
+    if flavor == "klipper" {
+        for axis in ["machine_max_acceleration_x", "machine_max_acceleration_y"] {
+            let limit = first(axis)?.round_ties_even();
+            if limit > 0.0 {
+                print = if print > 0.0 { print.min(limit) } else { limit };
+            }
+        }
+    }
+    let travel = match flavor {
+        // `std::round`: halves away from zero, as Rust's `round`.
+        "marlin2" | "reprapfirmware" => first("machine_max_acceleration_travel")?.round(),
+        "klipper" => print,
+        _ => 0.0,
+    };
+    Ok((print, travel))
 }
 
 /// The commands a file labels each copy with so the printer can cancel
@@ -1663,6 +1870,21 @@ fn variables(
     if let Some(nozzles) = settings.texts("nozzle_diameter") {
         variables.set("num_extruders", Value::Int(nozzles.len() as i64));
     }
+    // Each filament's exhaust fan speed during the print as the fan takes
+    // it, 0 to 255, cut towards zero (GCode.cpp, where the start
+    // G-code's variables are set); the reference's 60 % where unset.
+    let exhaust = settings
+        .floats("during_print_exhaust_fan_speed")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| vec![Some(60.0)]);
+    variables.set_list(
+        "during_print_exhaust_fan_speed_num",
+        exhaust
+            .iter()
+            .map(|speed| Value::Int((speed.unwrap_or(0.0) / 100.0 * 255.0) as i64))
+            .collect(),
+    );
     if let Some(lengths) = settings.texts("retraction_length") {
         variables.set_list("retract_length", lengths.iter().map(Value::text).collect());
     }

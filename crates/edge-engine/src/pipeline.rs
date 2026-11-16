@@ -633,11 +633,19 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             group_top
         };
         let mut planes = match own_layers {
-            None => edge_slice::layer_planes(
+            // The printer's least layer height plays its part in where the
+            // reference stops (`edge_slice::layer_planes_for`).
+            None => edge_slice::layer_planes_for(
                 min[2].into(),
                 top.into(),
                 first_layer_height,
                 layer_height,
+                crate::layer_heights::limits(
+                    &settings,
+                    layer_height,
+                    &bodies.iter().map(|body| body.filament).collect::<Vec<_>>(),
+                )?
+                .0,
             ),
             // An object of its own heights is cut through the middle of
             // each of its layers (PrintObject.cpp `slice_z`).
