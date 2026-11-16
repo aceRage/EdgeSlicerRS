@@ -24,6 +24,7 @@ edge-support.workspace = true
 edge-text.workspace = true
 edge-tower.workspace = true
 rayon.workspace = true
+rustc-hash.workspace = true
 
 [dev-dependencies]
 edge-extrusion.workspace = true

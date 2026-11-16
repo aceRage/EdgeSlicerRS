@@ -325,6 +325,26 @@ impl Solid {
     pub fn mesh(&self) -> Result<Mesh, BooleanError> {
         finish(self)
     }
+
+    /// The solid, no longer marked as crossing itself when it does not
+    /// (in the library's exact test): one cut down to where the operand
+    /// it came from does not cross itself, so that the booleans after it
+    /// need not be checked against their complements.
+    pub fn rechecked(mut self) -> Solid {
+        if self.self_intersecting && !self.manifold.has_self_intersections() {
+            self.self_intersecting = false;
+        }
+        self
+    }
+
+    /// The box round the solid, low and high corners; none when empty.
+    pub fn bounds(&self) -> Option<([f64; 3], [f64; 3])> {
+        if self.manifold.is_empty() {
+            return None;
+        }
+        let b = self.manifold.bounding_box();
+        Some(([b.min.x, b.min.y, b.min.z], [b.max.x, b.max.y, b.max.z]))
+    }
 }
 
 /// How far the volumes may be from adding up, relative to the operands'.

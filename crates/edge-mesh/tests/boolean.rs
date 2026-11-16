@@ -827,3 +827,26 @@ fn random_pairs() {
         failures.join("\n")
     );
 }
+
+/// A solid cut down to where the mesh it came from does not cross
+/// itself is no longer marked as crossing itself; its box is the cut's.
+#[test]
+fn rechecked_after_a_cut_and_its_box() {
+    // A cube with a corner pushed through its bottom: one shell that
+    // crosses itself; and a clean cube far from it, in the same mesh.
+    let mut crossing = cube([0.0; 3], [1.0; 3]);
+    for v in &mut crossing.vertices {
+        if *v == [1.0, 1.0, 1.0] {
+            *v = [0.3, 0.3, -0.6];
+        }
+    }
+    crossing.append(&cube([10.0; 3], [11.0; 3]), &edge_mesh::Transform::IDENTITY);
+    let solid = Solid::new(&crossing).unwrap();
+    let away = Solid::new(&cube([9.5; 3], [11.5; 3])).unwrap();
+    assert!(solid.is_self_intersecting());
+    let cut = solid.boolean(&away, Op::Intersection).unwrap();
+    assert!(cut.is_self_intersecting());
+    let cut = cut.rechecked();
+    assert!(!cut.is_self_intersecting());
+    assert_eq!(cut.bounds(), Some(([10.0; 3], [11.0; 3])));
+}

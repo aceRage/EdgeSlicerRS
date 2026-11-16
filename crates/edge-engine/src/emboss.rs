@@ -30,11 +30,13 @@
 //!   changes (`UpdateJob`), from the place the file's text was saved at
 //!   (`fix_3mf_tr`) when it was read from a project.
 //!
+//! Text that follows the surface ("Use surface", CutSurface.cpp) is made
+//! in `emboss_surface.rs`.
+//!
 //! Not here yet, each refused in words rather than made otherwise: text
-//! that follows the surface ("Use surface", CutSurface.cpp) or is placed
-//! letter by letter ("Per glyph"), curved text (EmbossBend.cpp), and inline
-//! shapes. A text read with one of them keeps its mesh and description as
-//! the file had them, until those options are taken off.
+//! placed letter by letter ("Per glyph"), curved text (EmbossBend.cpp), and
+//! inline shapes. A text read with one of them keeps its mesh and
+//! description as the file had them, until those options are taken off.
 
 use std::sync::Arc;
 
@@ -45,6 +47,10 @@ use edge_text::Font;
 
 use super::{Bed, Model, PartKind, Shape, fresh, refused};
 use crate::Failure;
+
+#[path = "emboss_surface.rs"]
+mod surface;
+pub use surface::{NO_SURFACE, Surface, emboss_on_surface, moved_in_frame};
 
 /// How far a text's solid reaches past its surface, in mm (EmbossJob.cpp
 /// `SAFE_SURFACE_OFFSET`), so that it meets the object.
@@ -112,9 +118,7 @@ pub fn font_prop(config: &TextConfiguration) -> edge_text::FontProp {
 /// What of a description cannot be made here yet, in words; none when
 /// all of it can.
 pub fn not_yet(config: &TextConfiguration, shape: &EmbossShape) -> Option<&'static str> {
-    if shape.use_surface {
-        Some("Text that follows the surface (\"Use surface\") cannot be made here yet.")
-    } else if config.per_glyph {
+    if config.per_glyph {
         Some("Text placed letter by letter (\"Per glyph\") cannot be made here yet.")
     } else if shape.bend.is_some() {
         Some("Curved text cannot be made here yet.")
@@ -331,6 +335,20 @@ pub fn calc_up(transformation: &Transform, up_limit: f64) -> Option<f64> {
     (result.abs() > 1e-4).then_some(result)
 }
 
+/// The frame of a text on a face at `point` facing `normal` (in the
+/// scene), turned and moved by the style, taken into the object by
+/// `back` (`start_create_volume_on_surface_job`).
+fn frame_on(
+    back: &Transform,
+    point: Vec3,
+    normal: Vec3,
+    angle: Option<f64>,
+    distance: Option<f64>,
+) -> Transform {
+    let surface = onto_surface(point, normal, UP_LIMIT);
+    apply_angle_distance(&surface, angle, distance).then(back)
+}
+
 /// The middle of the box round a mesh.
 fn centre(mesh: &Mesh) -> Vec3 {
     mesh.bounds().map_or([0.0; 3], |(low, high)| {
@@ -374,11 +392,7 @@ impl Model {
             .inverse()
             .ok_or_else(|| refused("the object is squashed flat"))?;
         let transform = match hit {
-            Some((point, normal)) => {
-                let surface = onto_surface(point, normal, UP_LIMIT);
-                let surface = apply_angle_distance(&surface, angle, distance);
-                surface.then(&back)
-            }
+            Some((point, normal)) => frame_on(&back, point, normal, angle, distance),
             None => {
                 // `create_volume` without a matrix: under the copy, lying on
                 // the bed, in the copy's unturned frame.
@@ -424,6 +438,28 @@ impl Model {
         ids.push(id);
         self.reshape(bed, at, list, ids);
         Ok(id)
+    }
+
+    /// Where a text added to copy `copy` of `object` at `hit` (a point and
+    /// the face's normal there, in the scene) stands in the object, with
+    /// the style's angle and distance: the frame [`Model::add_text`] gives
+    /// it, worked out ahead so the text can be cut from the surface there.
+    pub fn text_frame_on(
+        &mut self,
+        bed: Option<&Bed>,
+        copy: u64,
+        hit: (Vec3, Vec3),
+        angle: Option<f64>,
+        distance: Option<f64>,
+    ) -> Result<Transform, Failure> {
+        self.settle(bed);
+        let (scene, _) = self
+            .in_scene(bed, copy)
+            .ok_or_else(|| refused(format!("there is no copy {copy}")))?;
+        let back = scene
+            .inverse()
+            .ok_or_else(|| refused("the object is squashed flat"))?;
+        Ok(frame_on(&back, hit.0, hit.1, angle, distance))
     }
 
     /// Makes a new object of a text, lying on plate `plate` (a position in
