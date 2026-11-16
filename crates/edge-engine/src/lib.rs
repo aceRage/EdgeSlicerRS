@@ -51,7 +51,7 @@ pub use clock::timestamp;
 pub use edge_3mf::{
     CustomGcode, CustomItem, CustomKind, CustomMode, CutRecipe, InsidePreset, InsideUnread,
     LayerRange, Layout, MeshStat, PaintKind, PartKind, Pictures, RecipeDrawn, RecipeGroove,
-    RecipeKind, RecipeSheet, gcode_md5,
+    RecipeKind, RecipeSheet, TextConfiguration, TextVolume, gcode_md5,
 };
 pub use edge_mesh::Transform;
 /// Stops a mesh boolean under way (a curved cut's preview).
@@ -68,6 +68,7 @@ pub use job::{BedType, Chosen, Job, Overrides, Sourced, prepare, prepare_noted};
 pub use layering::{ObjectLayers, ProfileEdit};
 pub use load::{InstanceLabel, Loaded, Opened, OwnObject, OwnVolume, PlateInfo, open};
 pub use model::SettingChange;
+pub use model::emboss;
 pub use model::{
     ArrangeOptions, ArrangeScope, Arranged, Bed, BooleanFailure, CONNECTOR_HOLE_OVERLAP,
     CUT_THICKNESS_MAX, Changed, Connector, ConnectorKind, ConnectorShape, ConnectorStyle, CutDone,

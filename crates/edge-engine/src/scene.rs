@@ -270,6 +270,7 @@ mod tests {
             seam: None,
             transform: Transform::IDENTITY,
             decoration: false,
+            text: None,
         }
     }
 

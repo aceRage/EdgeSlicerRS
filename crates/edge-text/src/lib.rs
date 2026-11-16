@@ -33,6 +33,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use edge_geom::{Coord, ExPolygon, Point2, Polygon};
 
@@ -55,14 +56,24 @@ pub enum TextError {
     Read(String, std::io::Error),
     #[error("{0} is not a font this can read")]
     NotAFont(String),
+    #[error("{0} is larger than any font this reads")]
+    TooLarge(String),
     #[error(transparent)]
     Clip(#[from] edge_clip::ClipError),
 }
 
+/// The largest font file read ([`Font::open`]): a font is untrusted
+/// input, and the largest CJK fonts are some 30 MB.
+pub const MAX_FONT_BYTES: u64 = 64 << 20;
+
 /// A font file, read whole, and the measures the embosser takes from it
-/// (`FontFile::Info`): the first font of a collection.
+/// (`FontFile::Info`): one font of it, the first of a collection unless
+/// another is asked for ([`Font::from_shared`]).
+#[derive(Clone)]
 pub struct Font {
-    data: Vec<u8>,
+    data: Arc<Vec<u8>>,
+    /// Which font of a collection (`FontProp::collection_number`).
+    index: u32,
     name: String,
     /// The `hhea` table's ascent, descent and line gap, as stb_truetype's
     /// `stbtt_GetFontVMetrics` reads them, in font units.
@@ -74,15 +85,19 @@ pub struct Font {
 
 impl Font {
     pub fn open(path: &Path) -> Result<Font, TextError> {
-        let data =
-            std::fs::read(path).map_err(|e| TextError::Read(path.display().to_string(), e))?;
-        Self::from_bytes(data, &path.display().to_string())
+        Self::from_bytes(read_font_file(path)?, &path.display().to_string())
     }
 
     /// A font from its bytes; `name` is what errors call it.
     pub fn from_bytes(data: Vec<u8>, name: &str) -> Result<Font, TextError> {
-        let face =
-            ttf_parser::Face::parse(&data, 0).map_err(|_| TextError::NotAFont(name.to_owned()))?;
+        Self::from_shared(Arc::new(data), 0, name)
+    }
+
+    /// Font `index` of a file's bytes (a collection holds several, any
+    /// other file one), shared with the file's other fonts.
+    pub fn from_shared(data: Arc<Vec<u8>>, index: u32, name: &str) -> Result<Font, TextError> {
+        let face = ttf_parser::Face::parse(&data, index)
+            .map_err(|_| TextError::NotAFont(name.to_owned()))?;
         let hhea = face.tables().hhea;
         let (ascent, descent, line_gap) = (
             i32::from(hhea.ascender),
@@ -92,6 +107,7 @@ impl Font {
         let units_per_em = i32::from(face.units_per_em());
         Ok(Font {
             data,
+            index,
             name: name.to_owned(),
             ascent,
             descent,
@@ -101,7 +117,29 @@ impl Font {
     }
 
     fn face(&self) -> Result<ttf_parser::Face<'_>, TextError> {
-        ttf_parser::Face::parse(&self.data, 0).map_err(|_| TextError::NotAFont(self.name.clone()))
+        ttf_parser::Face::parse(&self.data, self.index)
+            .map_err(|_| TextError::NotAFont(self.name.clone()))
+    }
+
+    /// The bytes of the file the font is of, shared.
+    pub fn data(&self) -> &Arc<Vec<u8>> {
+        &self.data
+    }
+
+    /// Which font of its file it is.
+    pub fn index(&self) -> u32 {
+        self.index
+    }
+
+    /// How many fonts its file holds (Emboss.cpp `create_font_file`'s
+    /// `stbtt_GetNumberOfFonts`).
+    pub fn count(&self) -> u32 {
+        fonts_in(&self.data)
+    }
+
+    /// What the font calls itself ([`FaceInfo`]).
+    pub fn info(&self) -> Result<FaceInfo, TextError> {
+        Ok(FaceInfo::of(&self.face()?))
     }
 
     /// Whether the font has a glyph for `ch`.
@@ -122,14 +160,25 @@ impl Font {
     }
 }
 
-/// How text is laid out (TextConfiguration.hpp `FontProp`, the parts the
-/// engine sets).
+/// How text is laid out (TextConfiguration.hpp `FontProp`, the parts that
+/// shape the letters).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FontProp {
     /// The em of the text, in mm (`size_in_mm`).
     pub size_in_mm: f32,
     pub horizontal: HorizontalAlign,
     pub vertical: VerticalAlign,
+    /// Room added after every letter, in font units (`char_gap`).
+    pub char_gap: Option<i32>,
+    /// Room added between lines, in font units (`line_gap`).
+    pub line_gap: Option<i32>,
+    /// How far every letter's outline is grown (`boldness`): the
+    /// reference grows it by this over the size, in font units, so the
+    /// value is not a length of its own (TextConfiguration.hpp calls it
+    /// mm, its slider "points"); it is taken as the reference takes it.
+    pub boldness: Option<f32>,
+    /// How far right each point moves for each unit up (`skew`).
+    pub skew: Option<f32>,
 }
 
 impl FontProp {
@@ -139,6 +188,10 @@ impl FontProp {
             size_in_mm,
             horizontal: HorizontalAlign::Center,
             vertical: VerticalAlign::Center,
+            char_gap: None,
+            line_gap: None,
+            boldness: None,
+            skew: None,
         }
     }
 }
@@ -304,7 +357,7 @@ impl<'a> Typesetter<'a> {
     fn make(&self, ch: char) -> Result<Option<Glyph>, TextError> {
         let flatness = flatness(self.font, &self.prop);
         if let Some(mut glyph) = raw_glyph(self.font, ch, flatness)? {
-            glyph.advance = to_shape_units(glyph.advance as f64);
+            self.apply_font_prop(&mut glyph)?;
             return Ok(Some(glyph));
         }
         // Emboss.cpp `get_fallback_glyph`.
@@ -336,14 +389,48 @@ impl<'a> Typesetter<'a> {
             }
             glyph.advance = (glyph.advance as f64 * em_scale).round() as Coord;
         }
-        glyph.advance = to_shape_units(glyph.advance as f64);
+        self.apply_font_prop(&mut glyph)?;
         Ok(Some(glyph))
+    }
+
+    /// What the style does to every glyph (Emboss.cpp `apply_font_prop`):
+    /// the gap added to its advance (in font units), the advance put in
+    /// shape units, the outline grown by the boldness and skewed.
+    fn apply_font_prop(&self, glyph: &mut Glyph) -> Result<(), TextError> {
+        let prop = &self.prop;
+        if let Some(gap) = prop.char_gap {
+            glyph.advance += Coord::from(gap);
+        }
+        glyph.advance = to_shape_units(glyph.advance as f64);
+        if glyph.shape.is_empty() {
+            return Ok(());
+        }
+        if let Some(boldness) = prop.boldness {
+            // A float in the reference, handed to Clipper as a double;
+            // here a whole shape unit (a millionth of the em).
+            let delta = (f64::from(boldness) / SHAPE_SCALE / f64::from(prop.size_in_mm)) as f32;
+            let grown =
+                edge_clip::offset(&glyph.shape, delta.round() as Coord, edge_clip::Join::MITER)?;
+            glyph.shape = edge_clip::union_ex(&grown)?;
+        }
+        if let Some(skew) = prop.skew {
+            let ratio = f64::from(skew);
+            for region in &mut glyph.shape {
+                for ring in std::iter::once(&mut region.contour).chain(&mut region.holes) {
+                    for p in &mut ring.points {
+                        p.x += (p.y as f64 * ratio).round() as Coord;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The line height in shape units (`get_line_height`).
     fn line_height(&self) -> Coord {
         let f = self.font;
-        to_shape_units(f64::from(f.ascent - f.descent + f.line_gap))
+        let gap = self.prop.line_gap.unwrap_or(0);
+        to_shape_units(f64::from(f.ascent - f.descent + f.line_gap + gap))
     }
 
     /// `text` as shapes in shape units (Emboss.cpp `text2shapes`): its
@@ -351,19 +438,13 @@ impl<'a> Typesetter<'a> {
     /// and shrunk back, and healed.
     pub fn shapes(&mut self, text: &str) -> Result<Vec<ExPolygon>, TextError> {
         let letters = self.letters(text)?;
-        let delta = to_shape_units(1.0);
-        let mut grown = Vec::new();
-        for shape in letters.iter().filter(|shape| !shape.is_empty()) {
-            grown.extend(edge_clip::offset(shape, delta, edge_clip::Join::MITER)?);
-        }
-        let united = edge_clip::union_ex(&grown)?;
-        let mut shapes = edge_clip::offset(&united, -delta, edge_clip::Join::MITER)?;
-        heal(&mut shapes, 10)?;
-        Ok(shapes)
+        Ok(union_with_delta(&letters, to_shape_units(1.0), 10)?.0)
     }
 
-    /// Each character's shapes, laid out and aligned (`text2vshapes`).
-    fn letters(&mut self, text: &str) -> Result<Vec<Vec<ExPolygon>>, TextError> {
+    /// Each character's shapes, laid out and aligned (`text2vshapes`): one
+    /// entry for every character, a new line or a character no font has
+    /// an empty one.
+    pub fn letters(&mut self, text: &str) -> Result<Vec<Vec<ExPolygon>>, TextError> {
         let chars: Vec<char> = text.chars().collect();
         let mut cursor = Point2::default();
         let mut result = Vec::with_capacity(chars.len());
@@ -463,6 +544,125 @@ impl<'a> Typesetter<'a> {
             }
         }
     }
+}
+
+/// Letters united into one shape (Emboss.cpp `union_with_delta`): each
+/// grown by `delta` (shape units), united, shrunk back and healed with at
+/// most `max_heal` rounds. Says too whether the healing came out clean
+/// (`HealedExPolygons::is_healed`).
+pub fn union_with_delta(
+    letters: &[Vec<ExPolygon>],
+    delta: Coord,
+    max_heal: u32,
+) -> Result<(Vec<ExPolygon>, bool), TextError> {
+    let mut grown = Vec::new();
+    for shape in letters.iter().filter(|shape| !shape.is_empty()) {
+        grown.extend(edge_clip::offset(shape, delta, edge_clip::Join::MITER)?);
+    }
+    let united = edge_clip::union_ex(&grown)?;
+    let mut shapes = edge_clip::offset(&united, -delta, edge_clip::Join::MITER)?;
+    let healed = heal(&mut shapes, max_heal)?;
+    Ok((shapes, healed))
+}
+
+/// How many fonts a file's bytes hold: a collection's count, one for any
+/// other font, none for what is not a font.
+pub fn fonts_in(data: &[u8]) -> u32 {
+    match ttf_parser::fonts_in_collection(data) {
+        Some(count) => count,
+        None => u32::from(ttf_parser::Face::parse(data, 0).is_ok()),
+    }
+}
+
+/// Reads a font file whole, refusing one larger than [`MAX_FONT_BYTES`].
+pub fn read_font_file(path: &Path) -> Result<Vec<u8>, TextError> {
+    use std::io::Read;
+    let named = || path.display().to_string();
+    let file = std::fs::File::open(path).map_err(|e| TextError::Read(named(), e))?;
+    let mut data = Vec::new();
+    file.take(MAX_FONT_BYTES + 1)
+        .read_to_end(&mut data)
+        .map_err(|e| TextError::Read(named(), e))?;
+    if data.len() as u64 > MAX_FONT_BYTES {
+        return Err(TextError::TooLarge(named()));
+    }
+    Ok(data)
+}
+
+/// What a font calls itself, from its `name` and `OS/2` tables: what the
+/// list of fonts shows and what a project names the font by.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FaceInfo {
+    /// The family ("Helvetica"): the typographic family (name 16) when
+    /// the font has one, else name 1. What wx calls the face name.
+    pub family: String,
+    /// The style within the family ("Bold Oblique"): name 17, else 2.
+    pub style: String,
+    /// The full name ("Helvetica Bold Oblique", name 4).
+    pub full: String,
+    /// The PostScript name ("Helvetica-BoldOblique", name 6): what macOS
+    /// finds a font by.
+    pub postscript: String,
+    /// `OS/2` usWeightClass, 400 regular, 700 bold.
+    pub weight: u16,
+    pub italic: bool,
+    /// Whether its outlines are cubic (CFF), not TrueType's quadratic.
+    pub cff: bool,
+}
+
+impl FaceInfo {
+    fn of(face: &ttf_parser::Face<'_>) -> FaceInfo {
+        let name = |ids: &[u16]| -> String {
+            ids.iter()
+                .find_map(|id| english_name(face, *id))
+                .unwrap_or_default()
+        };
+        let family = name(&[
+            ttf_parser::name_id::TYPOGRAPHIC_FAMILY,
+            ttf_parser::name_id::FAMILY,
+        ]);
+        let style = name(&[
+            ttf_parser::name_id::TYPOGRAPHIC_SUBFAMILY,
+            ttf_parser::name_id::SUBFAMILY,
+        ]);
+        FaceInfo {
+            full: name(&[ttf_parser::name_id::FULL_NAME]),
+            postscript: name(&[ttf_parser::name_id::POST_SCRIPT_NAME]),
+            family,
+            style,
+            weight: face.weight().to_number(),
+            italic: face.is_italic() || face.is_oblique(),
+            cff: face.tables().cff.is_some(),
+        }
+    }
+}
+
+/// A name of the font in English, from a Unicode record (Windows'
+/// US English first) or a Macintosh Roman one read as ASCII.
+fn english_name(face: &ttf_parser::Face<'_>, id: u16) -> Option<String> {
+    let names = face.names();
+    let records: Vec<_> = names
+        .into_iter()
+        .filter(|name| name.name_id == id)
+        .collect();
+    let unicode = |english: bool| {
+        records.iter().find_map(|name| {
+            let wanted = !english
+                || name.language_id == 0x0409
+                || name.platform_id == ttf_parser::PlatformId::Unicode;
+            if wanted { name.to_string() } else { None }
+        })
+    };
+    let found = unicode(true).or_else(|| unicode(false)).or_else(|| {
+        records.iter().find_map(|name| {
+            (name.platform_id == ttf_parser::PlatformId::Macintosh
+                && name.encoding_id == 0
+                && name.name.is_ascii())
+            .then(|| String::from_utf8_lossy(name.name).into_owned())
+        })
+    })?;
+    let trimmed = found.trim_matches(char::from(0)).trim().to_owned();
+    (!trimmed.is_empty()).then_some(trimmed)
 }
 
 /// The box round the outlines of `shapes`: least and greatest corners.

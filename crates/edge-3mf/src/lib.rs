@@ -18,6 +18,7 @@ mod package;
 mod paint;
 mod recipe;
 mod sliced;
+mod text;
 mod write;
 mod xml;
 
@@ -51,6 +52,10 @@ pub use recipe::{
 pub use sliced::{
     ObjectBox, Pictures, PlateBoxes, SliceFilament, SliceInfo, SliceNozzle, SlicedFile,
     SlicedPlate, gcode_md5,
+};
+pub use text::{
+    DescriptorType, EmbossBend, EmbossShape, HorizontalAlign, TextConfiguration, TextVolume,
+    VerticalAlign, g6,
 };
 pub use write::{
     Layout, REFERENCE_VERSION, SECRETS, Save, Written, identify_numbers, losses, own_settings_text,
@@ -136,6 +141,9 @@ pub struct Part {
     /// Whether the part is embossed text or an embossed picture, which
     /// decorates a surface rather than being a piece of the object.
     pub decoration: bool,
+    /// What text the part is and how it was made, when it is text
+    /// (`ModelVolume::text_configuration` with its `emboss_shape`).
+    pub text: Option<Arc<TextVolume>>,
     /// What the file holds of it beyond this (its settings, what its
     /// triangles carry, what it was read as), kept to be written back:
     /// see [`Part::settings`].
@@ -1045,6 +1053,7 @@ fn parts(
             own_filament: part.own_filament,
             transform: part.transform,
             mesh: part.mesh.clone(),
+            text: part.text.clone(),
         };
         let own = part.kept.get_or_insert_with(Default::default);
         Arc::make_mut(own).read = Some(read);
@@ -1075,6 +1084,7 @@ fn read_parts(
                 seam: seam.clone(),
                 transform: Transform::IDENTITY,
                 decoration: false,
+                text: None,
                 kept: Some(Arc::new(PartKept {
                     extras: extras.clone(),
                     ..PartKept::default()
@@ -1102,7 +1112,9 @@ fn read_parts(
                 chosen(part_settings.and_then(|s| s.extruder)).map(|extruder| extruder as usize);
             let mut part_kept = kept.get(&component.object).cloned().unwrap_or_default();
             part_kept.extras = extras;
+            let text = TextVolume::from_entries(&part_kept.entries).map(Arc::new);
             parts.push(Part {
+                text,
                 kept: Some(Arc::new(part_kept)),
                 name: part_settings.and_then(|s| s.name.clone()).or(name),
                 kind: part_settings.map_or(PartKind::Normal, |s| s.kind()),
