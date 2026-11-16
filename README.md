@@ -2480,6 +2480,24 @@ Normal support lines come as close to the part as the reference's
 with the same layers of air above and below. Tree supports are compared
 below.
 
+`support_interface_loop_pattern` (set by Bambu's "0.20mm Bambu Support W"
+process) edges a normal support's top contact with a loop where it faces
+the overhang, as the reference's `LoopInterfaceProcessor` does with one
+loop (Support/SupportCommon.cpp; 2026-11-16, `crates/edge-support/src/loops.rs`):
+hexagons 1.5 line widths across are set along each outline of the
+contact that comes within half a line of the overhang, three radii
+apart and at most one a stretch of outline, cut out of it, and what is
+left within 1.5 mm of the overhang is laid as interface before the
+contact's fill, which keeps 1.1 radii off it. With dense tops only, as
+there; tree supports have none (the reference's trees carry no
+overhang outline for it). On the X1 Carbon `mushroom` with that
+process, both lay the loop round the stem on the contact layer
+(z 10.2) with the same extents (x 122.44 to 133.56, y 120.44 to
+131.56); the hexagons fall at other places (4 notches here, 6 there),
+as the contact's outline is this engine's own, not the reference's.
+Support interface length: reference 8.66 m with the loop, 8.73 m
+without; here 8.70 m before (setting ignored), 8.64 m now.
+
 On `mcbrim_test.3mf`, printed in up to six filaments, tools are taken in
 the reference's order on every layer of plates 1 and 2 (plate 2 sets its
 own order on the first layer), and on every layer but the first of
