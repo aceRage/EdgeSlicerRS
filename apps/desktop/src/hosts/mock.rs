@@ -84,6 +84,25 @@ fn find(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
         .map(|at| at + from)
 }
 
+/// A body that starts with this is bytes, written as hex after it (a
+/// picture).
+pub const BYTES: &str = "\u{0}bytes:";
+
+/// `bytes` as a body the mock writes as they are.
+pub fn bytes_body(bytes: &[u8]) -> String {
+    let mut text = BYTES.to_owned();
+    for byte in bytes {
+        text.push_str(&format!("{byte:02x}"));
+    }
+    text
+}
+
+/// A small PNG's first bytes (the signature and an IHDR's start): enough
+/// to be taken for a picture.
+pub const PNG: [u8; 16] = [
+    0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 13, b'I', b'H', b'D', b'R',
+];
+
 /// What the mock answers: status and body.
 pub type Script = dyn Fn(&Got, &[Got]) -> (u16, String) + Send + Sync;
 
@@ -126,8 +145,17 @@ impl Printer {
                 let before = kept.lock().unwrap().clone();
                 let (status, text) = script(&one, &before);
                 kept.lock().unwrap().push(one);
-                let _ = request
-                    .respond(tiny_http::Response::from_string(text).with_status_code(status));
+                let _ = match text.strip_prefix(BYTES) {
+                    Some(hex) => {
+                        let bytes: Vec<u8> = (0..hex.len() / 2)
+                            .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
+                            .collect();
+                        request
+                            .respond(tiny_http::Response::from_data(bytes).with_status_code(status))
+                    }
+                    None => request
+                        .respond(tiny_http::Response::from_string(text).with_status_code(status)),
+                };
             }
         });
         Self { port, got, stop }
@@ -514,9 +542,21 @@ pub fn u1(setup: U1Setup) -> (Printer, Arc<Mutex<U1State>>) {
                 ("GET", "/server/files/metadata") => {
                     let name = arg("filename").unwrap_or_default();
                     match u1.files.iter().find(|(n, _)| *n == name) {
-                        Some((_, size)) => ok(serde_json::json!({
-                            "size": size, "gcode_start_byte": 0, "gcode_end_byte": size, "estimated_time": 1200.0,
-                        })),
+                        Some((_, size)) => {
+                            // Two pictures beside the file, as Moonraker
+                            // names them: relative to its own folder.
+                            let stem = name.rsplit('/').next().unwrap_or_default().trim_end_matches(".gcode");
+                            ok(serde_json::json!({
+                                "size": size, "gcode_start_byte": 0, "gcode_end_byte": size, "estimated_time": 1200.0,
+                                "filament_type": "PLA;PETG;PLA", "layer_height": 0.2, "object_height": 24.5,
+                                "nozzle_diameter": 0.4, "layer_count": 122, "slicer": "EdgeSlicer", "slicer_version": "2.4.9",
+                                "thumbnails": [
+                                    { "width": 32, "height": 32, "size": 900, "relative_path": format!(".thumbs/{stem}-32x32.png") },
+                                    { "width": 300, "height": 300, "size": 9000, "relative_path": format!(".thumbs/{stem}-300x300.png") },
+                                    { "width": 600, "height": 600, "size": 30000, "relative_path": format!(".thumbs/{stem}-600x600.png") },
+                                ],
+                            }))
+                        }
                         None => (404, serde_json::json!({ "error": { "code": 404, "message": "Metadata not available" } }).to_string()),
                     }
                 }
@@ -527,6 +567,19 @@ pub fn u1(setup: U1Setup) -> (Printer, Arc<Mutex<U1State>>) {
                         .map(|(i, (name, size))| serde_json::json!({ "path": name, "size": size, "modified": 100.0 + i as f64 }))
                         .collect(),
                 )),
+                ("GET", _) if path.starts_with("/server/files/gcodes/") => {
+                    let name = decode(&path["/server/files/gcodes/".len()..]);
+                    if name.contains("/.thumbs/") || name.starts_with(".thumbs/") {
+                        if name.ends_with("-300x300.png") {
+                            (200, bytes_body(&PNG))
+                        } else {
+                            // Not a picture: never handed to the page.
+                            (200, "<html>not a picture</html>".into())
+                        }
+                    } else {
+                        (404, serde_json::json!({ "error": { "code": 404, "message": "File does not exist" } }).to_string())
+                    }
+                }
                 ("DELETE", _) if path.starts_with("/server/files/gcodes/") => {
                     let name = decode(&path["/server/files/gcodes/".len()..]);
                     let before = u1.files.len();

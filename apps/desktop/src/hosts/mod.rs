@@ -43,6 +43,7 @@ pub mod mock;
 pub mod moonraker;
 pub mod octoprint;
 pub mod queue;
+pub mod sdcp_files;
 pub mod snapmaker;
 #[cfg(test)]
 mod tests;
@@ -231,7 +232,7 @@ impl From<String> for Failure {
 }
 
 /// A file on the printer, for the Device tab's "Storage".
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Stored {
     /// Its path under the printer's G-code folder, `/` between folders.
     pub name: String,
@@ -248,6 +249,46 @@ pub struct Stored {
     pub filament_mm: Option<f64>,
     pub filament_g: Option<f64>,
     pub filament_type: String,
+    /// The rest of what the details pane shows (PrinterStoragePanel.cpp
+    /// `update_details`, from `FileMetadata`), when the printer says.
+    pub filament_name: String,
+    pub layer_count: Option<u32>,
+    pub layer_height: Option<f64>,
+    pub object_height: Option<f64>,
+    pub nozzle_diameter: Option<f64>,
+    /// "Sliced with": the slicer and its version.
+    pub slicer: String,
+    /// The preview picture worth showing (`pick_thumbnail`, 300 wide), its
+    /// path under the G-code folder; fetched by `Host::thumbnail`.
+    pub thumbnail: Option<String>,
+}
+
+/// Before a start from "Storage" (PrinterStorage.hpp `start_check`): what
+/// the printer is doing, the file it is on, and what the person must read
+/// before it starts (`advice`; empty for most printers).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StartCheck {
+    pub state: String,
+    pub current: String,
+    /// Printing or paused: no new print over it.
+    pub busy: bool,
+    pub advice: String,
+}
+
+/// The largest preview picture taken from a printer (the reference's
+/// limit, PrinterStorage.cpp `MoonrakerFiles::thumbnail`: 4 MiB).
+pub const PICTURE_LIMIT: usize = 4 << 20;
+
+/// Whether `bytes` are a PNG or a JPEG, and which (`image/png`,
+/// `image/jpeg`): what the page is handed as a preview, nothing else.
+pub fn picture_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else {
+        None
+    }
 }
 
 /// One kind of print host.
@@ -272,6 +313,30 @@ pub trait Host: Send + Sync {
     }
     fn print(&self, _name: &str) -> Result<(), String> {
         Err("this printer's files cannot be printed from here".into())
+    }
+    /// Before the confirmation of a start from "Storage": `status`, and no
+    /// advice. A failure means the start is not offered.
+    fn start_check(&self, _name: &str, _options: &Options) -> Result<StartCheck, String> {
+        let status = self
+            .status()
+            .ok_or("This printer does not say what it is doing.")??;
+        Ok(StartCheck {
+            busy: matches!(status.state.as_str(), "printing" | "paused"),
+            state: status.state,
+            current: status.filename,
+            advice: String::new(),
+        })
+    }
+    /// A start from "Storage" once the person confirmed `shown` (the
+    /// advice they read): refused when what the printer would do now is
+    /// not what they were told.
+    fn print_confirmed(&self, name: &str, options: &Options, shown: &str) -> Result<(), String> {
+        let _ = (options, shown);
+        self.print(name)
+    }
+    /// The bytes of a preview picture at `path` (`Stored::thumbnail`).
+    fn thumbnail(&self, _path: &str) -> Option<Result<Vec<u8>, String>> {
+        None
     }
     /// The printer's toolheads and what each holds, when this host says.
     fn toolheads(&self) -> Option<Result<Vec<Toolhead>, String>> {
@@ -423,7 +488,7 @@ pub fn device_url(connection: &Connection) -> Option<String> {
 }
 
 /// Standard base64, for "Basic" authorisation.
-fn base64(bytes: &[u8]) -> String {
+pub fn base64(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
     for chunk in bytes.chunks(3) {
@@ -536,6 +601,24 @@ impl Http {
     pub fn get(&self, path: &str) -> Result<Answer, String> {
         let agent = self.agent(Some(self.timeouts.ask));
         read_answer(self.headers(agent.get(self.address.url(path))).call())
+    }
+
+    /// A GET whose answer is bytes (a picture), at most `limit` of them.
+    pub fn get_bytes(&self, path: &str, limit: usize) -> Result<(u16, Vec<u8>), String> {
+        let agent = self.agent(Some(self.timeouts.ask));
+        match self.headers(agent.get(self.address.url(path))).call() {
+            Ok(mut response) => {
+                let status = response.status().as_u16();
+                let body = response
+                    .body_mut()
+                    .with_config()
+                    .limit(limit as u64)
+                    .read_to_vec()
+                    .map_err(said)?;
+                Ok((status, body))
+            }
+            Err(error) => Err(said(error)),
+        }
     }
 
     pub fn delete(&self, path: &str) -> Result<Answer, String> {

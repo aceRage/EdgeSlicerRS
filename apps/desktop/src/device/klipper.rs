@@ -363,8 +363,13 @@ impl Device for Klipper {
                 ))
             }
             Command::Home => self.script("G28"),
-            // The speed is this app's: the U1's page's is not readable
-            // from its bundle (5 mm/s, slow enough for any hot end).
+            // As the U1's own page does it (the reference's bundled
+            // `resources/web/flutter_web/main.18a21b35cff8a197.js`, its
+            // extrude buttons: "M83", then `G1 E10 F300` / `G1 E-10 F300`,
+            // called with feed "300" and length "10"); its jog speeds,
+            // above, are that page's too (X/Y F3600, Z F1800). The
+            // reference has no other Klipper page, so every Klipper gets
+            // the U1's.
             Command::Extrude(mm) => self.script(&format!("M83\nG1 E{mm} F300")),
         }
     }

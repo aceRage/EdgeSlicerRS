@@ -36,7 +36,7 @@ fn number(value: &Value) -> Option<f64> {
 }
 
 /// `CurrentStatus`: a list, or one number on older firmware.
-fn machine(status: &Value) -> Vec<i64> {
+pub fn machine(status: &Value) -> Vec<i64> {
     match &status["CurrentStatus"] {
         Value::Array(list) => list.iter().filter_map(Value::as_i64).collect(),
         Value::Number(n) => n.as_i64().into_iter().collect(),
@@ -45,7 +45,7 @@ fn machine(status: &Value) -> Vec<i64> {
 }
 
 /// `hub_state`, in the page's states.
-fn state_of(status: &Value) -> &'static str {
+pub fn state_of(status: &Value) -> &'static str {
     let print = status["PrintInfo"]["Status"].as_i64().unwrap_or(0);
     if machine(status).contains(&MACHINE_PRINTING) {
         return match print {

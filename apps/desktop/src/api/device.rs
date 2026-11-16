@@ -27,6 +27,10 @@ pub(super) const JSON: [&str; 3] = ["device_info", "device_read", "device_comman
 pub(super) struct Devices {
     caps: Mutex<HashMap<String, Caps>>,
     kinds: Mutex<HashMap<String, &'static str>>,
+    /// "Storage"'s starts the person was asked about: the advice they
+    /// read, by printer and file; one confirmation, one start
+    /// (ElegooSdcpFiles.cpp `m_confirmed_plan`).
+    pub(super) confirmed: Mutex<HashMap<String, String>>,
 }
 
 /// A printer's page: its adapter, the key its facts are kept under, its
@@ -144,16 +148,9 @@ impl Session {
                 }),
             },
             "elegoolink" if !hosts::elegoo::is_cc2(&connection.printer_model) => {
-                #[cfg_attr(not(test), allow(unused_mut))]
-                let mut link = hosts::elegoo::ElegooLink::new(&connection, timeouts)?;
-                #[cfg(test)]
-                {
-                    let port = tests::SDCP_PORT.load(std::sync::atomic::Ordering::SeqCst);
-                    if port != 0 {
-                        link.ws_port = port;
-                    }
-                }
-                Box::new(device::sdcp::Sdcp { link })
+                Box::new(device::sdcp::Sdcp {
+                    link: hosts::elegoo::ElegooLink::new(&connection, timeouts)?,
+                })
             }
             "prusalink" | "prusaconnect" => Box::new(device::prusalink::PrusaLink {
                 http: Http::new(&connection, timeouts)?,

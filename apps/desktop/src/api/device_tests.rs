@@ -523,6 +523,83 @@ fn ids(list: &Value, key: &str) -> Vec<String> {
 }
 
 #[test]
+fn a_u1_s_storage_has_the_details_and_pictures_the_reference_shows() {
+    let (printer, shared) = hosts_mock::u1(U1Setup {
+        key: Some(KEY),
+        ..U1Setup::default()
+    });
+    shared
+        .lock()
+        .unwrap()
+        .files
+        .push(("sub/boat.gcode".into(), 5000));
+    let probe = Probe::on_host(U1, &printer.address(), Some(KEY));
+    let files = probe.ask("printer_files", json!({}))["files"].clone();
+    let file = &files[0];
+    assert_eq!(file["name"], "sub/boat.gcode");
+    // `pick_thumbnail`: the smallest at least 300 wide, relative to the
+    // file's own folder.
+    assert_eq!(file["thumbnail"], "sub/.thumbs/boat-300x300.png");
+    assert_eq!(
+        (
+            file["layer_count"].clone(),
+            file["layer_height"].clone(),
+            file["object_height"].clone(),
+            file["nozzle_diameter"].clone(),
+            file["slicer"].clone(),
+            file["filament_type"].clone()
+        ),
+        (
+            json!(122),
+            json!(0.2),
+            json!(24.5),
+            json!(0.4),
+            json!("EdgeSlicer 2.4.9"),
+            json!("PLA;PETG;PLA")
+        )
+    );
+    // The picture is fetched here, with the key, and handed over as data.
+    let picture = probe.ask(
+        "printer_file_thumbnail",
+        json!({ "path": "sub/.thumbs/boat-300x300.png" }),
+    )["picture"]
+        .clone();
+    assert!(
+        picture
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,iVBORw0KGgo"),
+        "{picture}"
+    );
+    let asked = printer
+        .got()
+        .into_iter()
+        .find(|got| got.url == "/server/files/gcodes/sub/.thumbs/boat-300x300.png")
+        .unwrap();
+    assert_eq!(asked.header("X-Api-Key"), Some(KEY));
+    // What is not a PNG or a JPEG is not handed over; a path out of the
+    // G-code folder is not asked for.
+    assert_eq!(
+        probe.refused(
+            "printer_file_thumbnail",
+            json!({ "path": "sub/.thumbs/boat-32x32.png" })
+        ),
+        "The printer's preview is not a PNG or JPEG picture."
+    );
+    let before = printer.got().len();
+    assert!(
+        probe
+            .refused(
+                "printer_file_thumbnail",
+                json!({ "path": "../config/printer.cfg" })
+            )
+            .starts_with("Not a picture on the printer")
+    );
+    assert_eq!(printer.got().len(), before);
+    probe.never_said(KEY);
+}
+
+#[test]
 fn a_u1_is_drawn_with_its_four_toolheads_and_what_they_hold() {
     let (printer, _) = hosts_mock::u1(U1Setup::default());
     let probe = Probe::on_host(U1, &printer.address(), None);
@@ -1026,11 +1103,19 @@ fn an_octoprint_print_is_paused_resumed_and_cancelled_and_its_files_are_its_own(
             json!(1800)
         )
     );
-    // Printing: Storage's Print is refused, the axes too.
-    assert!(
-        probe
-            .refused("printer_file_print", json!({ "name": "cube.gcode" }))
-            .starts_with("The printer is busy")
+    // Printing: Storage's Print is refused (the check says busy and keeps
+    // no confirmation; one confirmation was one start), the axes too.
+    assert_eq!(
+        probe.refused("printer_file_print", json!({ "name": "cube.gcode" })),
+        "Confirm the print first."
+    );
+    assert_eq!(
+        probe.ask("printer_file_check", json!({ "name": "cube.gcode" }))["busy"],
+        true
+    );
+    assert_eq!(
+        probe.refused("printer_file_print", json!({ "name": "cube.gcode" })),
+        "Confirm the print first."
     );
     assert_eq!(
         probe.refused("device_command", json!({ "action": "home" })),
@@ -1113,9 +1198,17 @@ fn an_octoprint_without_its_printer_or_with_a_wrong_key_says_so_without_the_key(
 
 // ---- Elegoo Centauri Carbon (SDCP) ----
 
-/// The SDCP websocket's port for the session's adapter (the printer's
-/// own is 3030); set by the one test that uses it.
-pub(super) static SDCP_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+/// The SDCP websocket's port for the session's adapters (the printer's
+/// own is 3030), while the test holds the lock.
+fn sdcp_port(port: u16) {
+    crate::hosts::elegoo::TEST_PORT.store(port, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn sdcp_lock() -> std::sync::MutexGuard<'static, ()> {
+    crate::hosts::elegoo::TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
 
 const CC1: &str = "Elegoo Centauri Carbon 0.4 nozzle";
 
@@ -1188,8 +1281,9 @@ fn a_centauri_carbon_is_drawn_and_driven_as_the_forks_sdcp_monitor_does() {
         print: 13,
         ..Centauri::default()
     }));
+    let _lock = sdcp_lock();
     let socket = centauri_socket(shared.clone());
-    SDCP_PORT.store(socket.port, std::sync::atomic::Ordering::SeqCst);
+    sdcp_port(socket.port);
     let probe = Probe::plain();
     probe.project("Elegoo", CC1);
     probe.ask(
@@ -1301,15 +1395,262 @@ fn a_centauri_carbon_is_drawn_and_driven_as_the_forks_sdcp_monitor_does() {
     drop(socket);
     std::thread::sleep(Duration::from_millis(200));
     let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    SDCP_PORT.store(
-        closed.local_addr().unwrap().port(),
-        std::sync::atomic::Ordering::SeqCst,
-    );
+    sdcp_port(closed.local_addr().unwrap().port());
     drop(closed);
     let read = probe.ask("device_read", json!({ "refresh": true }));
     assert_eq!(
         (read["online"].clone(), read["said"].clone()),
         (json!(false), json!("Offline"))
+    );
+}
+
+/// A Centauri Carbon's storage: its files, what command 0 says, its CANVAS.
+#[derive(Default)]
+struct Stock {
+    files: Vec<&'static str>,
+    machine: i64,
+    print: i64,
+    current: String,
+    /// `AmsConnectStatus`, when command 0 says it.
+    ams: Option<i64>,
+    /// A CANVAS tray with filament in it (command 324).
+    loaded: bool,
+    /// 259 answers Ack 0 and deletes nothing.
+    keeps: bool,
+    commands: Vec<Value>,
+}
+
+fn storage_socket(shared: Arc<Mutex<Stock>>) -> hosts_mock::Socket {
+    hosts_mock::Socket::start(Box::new(move |message: &Value, _| {
+        let mut cc = shared.lock().unwrap();
+        let data = &message["Data"];
+        let cmd = data["Cmd"].as_i64().unwrap_or(-1);
+        let answer = |inner: Value| {
+            Some(
+                json!({ "Id": "", "Data": { "Cmd": cmd, "Data": inner, "RequestID": data["RequestID"], "MainboardID": "mock" } }),
+            )
+        };
+        if cmd == 0 {
+            let mut status = json!({ "CurrentStatus": [cc.machine], "PrintInfo": { "Status": cc.print, "Filename": cc.current } });
+            if let Some(ams) = cc.ams {
+                status["AmsConnectStatus"] = json!(ams);
+            }
+            return Some(json!({ "Status": status, "MainboardID": "mock" }));
+        }
+        cc.commands.push(data.clone());
+        match cmd {
+            258 => answer(
+                json!({ "Ack": 0, "FileList": cc.files.iter().enumerate().map(|(i, name)| json!({
+                "name": format!("/local/{name}"), "FileSize": 1000 * (i + 1), "TotalLayers": 100 + i, "CreateTime": 1_700_000_000 + i as i64,
+            })).collect::<Vec<_>>() }),
+            ),
+            259 => {
+                if !cc.keeps {
+                    let gone: Vec<String> = data["Data"]["FileList"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|p| p.as_str().unwrap().trim_start_matches("/local/").to_owned())
+                        .collect();
+                    cc.files.retain(|f| !gone.iter().any(|g| g == f));
+                }
+                answer(json!({ "Ack": 0, "ErrData": [] }))
+            }
+            324 => answer(
+                json!({ "canvas_list": [{ "canvas_id": 0, "connected": 1, "tray_list": [
+                { "tray_id": 0, "filament_type": if cc.loaded { "PLA" } else { "" }, "filament_color": if cc.loaded { "#FF0000" } else { "" } },
+            ] }] }),
+            ),
+            128 => {
+                cc.machine = 1;
+                cc.print = 13;
+                cc.current = data["Data"]["Filename"]
+                    .as_str()
+                    .unwrap()
+                    .trim_start_matches("/local/")
+                    .to_owned();
+                answer(json!({ "Ack": 0 }))
+            }
+            _ => answer(json!({ "Ack": 1 })),
+        }
+    }))
+}
+
+#[test]
+fn a_centauri_carbon_s_storage_is_listed_deleted_and_started_as_the_forks_cc1_files_do() {
+    let _lock = sdcp_lock();
+    let shared = Arc::new(Mutex::new(Stock {
+        files: vec!["boat.gcode", "old.gcode", "model.3mf"],
+        ams: Some(1),
+        loaded: true,
+        ..Stock::default()
+    }));
+    let socket = storage_socket(shared.clone());
+    sdcp_port(socket.port);
+    let probe = Probe::plain();
+    probe.project("Elegoo", CC1);
+    probe.ask(
+        "print_host_set",
+        json!({ "host_type": "elegoolink", "print_host": "127.0.0.1" }),
+    );
+    let info = probe.ask("print_host", json!({}));
+    assert_eq!(
+        (info["storage"].clone(), info["storage_reason"].clone()),
+        (json!(true), Value::Null)
+    );
+    let files = probe.ask("printer_files", json!({}))["files"].clone();
+    let names: Vec<&str> = files
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["model.3mf", "old.gcode", "boat.gcode"]);
+    assert_eq!(
+        (
+            files[2]["size"].clone(),
+            files[2]["layer_count"].clone(),
+            files[2]["modified"].clone(),
+            files[0]["printable"].clone(),
+            files[2]["thumbnail"].clone()
+        ),
+        (
+            json!(1000),
+            json!(100),
+            json!(1_700_000_000.0),
+            json!(false),
+            Value::Null
+        )
+    );
+    // No preview pictures on this printer, and nothing asked for one.
+    assert_eq!(
+        probe.ask("printer_file_thumbnail", json!({ "path": "boat.gcode" }))["picture"],
+        Value::Null
+    );
+    // Delete: exactly the reference's body, then the list asked again.
+    assert_eq!(
+        probe.ask("printer_file_delete", json!({ "name": "old.gcode" }))["gone"],
+        false
+    );
+    let sent: Vec<Value> = shared.lock().unwrap().commands.clone();
+    assert_eq!(sent[1]["Cmd"], 259);
+    assert_eq!(sent[1]["Data"], json!({ "FileList": ["/local/old.gcode"] }));
+    assert_eq!(sent[0]["Data"], json!({ "Url": "/local" }));
+    assert_eq!(sent[2]["Cmd"], 258);
+    // A delete the printer only acknowledges is said.
+    shared.lock().unwrap().keeps = true;
+    assert_eq!(
+        probe.refused("printer_file_delete", json!({ "name": "model.3mf" })),
+        "The printer acknowledged the delete, but it still lists the file."
+    );
+    shared.lock().unwrap().keeps = false;
+    // Print: nothing without the check; the check reads the CANVAS and
+    // says it picks the trays; then command 128 with an empty slot_map.
+    assert_eq!(
+        probe.refused("printer_file_print", json!({ "name": "boat.gcode" })),
+        "Confirm the print first."
+    );
+    let options = json!({ "leveling": true, "timelapse": false, "smooth_plate": true });
+    let check = probe.ask(
+        "printer_file_check",
+        json!({ "name": "boat.gcode", "options": options }),
+    );
+    assert_eq!(check["busy"], false);
+    let advice = check["advice"].as_str().unwrap();
+    assert!(
+        advice.starts_with(
+            "Bed leveling before printing: on. Timelapse: off. Plate: smooth PC side."
+        ),
+        "{advice}"
+    );
+    assert!(advice.contains("A CANVAS with loaded trays is attached."));
+    shared.lock().unwrap().commands.clear();
+    probe.ask(
+        "printer_file_print",
+        json!({ "name": "boat.gcode", "options": options }),
+    );
+    let sent = shared.lock().unwrap().commands.clone();
+    let start = sent.iter().find(|c| c["Cmd"] == 128).unwrap();
+    assert_eq!(
+        start["Data"],
+        json!({ "Filename": "/local/boat.gcode", "StartLayer": 0, "Calibration_switch": 1, "PrintPlatformType": 1, "Tlp_Switch": 0, "slot_map": [] })
+    );
+    // One confirmation, one start.
+    assert_eq!(
+        probe.refused(
+            "printer_file_print",
+            json!({ "name": "boat.gcode", "options": options })
+        ),
+        "Confirm the print first."
+    );
+    // Printing now: the check says busy, the file it is on is not deleted.
+    let check = probe.ask("printer_file_check", json!({ "name": "model.3mf" }));
+    assert_eq!(
+        (
+            check["busy"].clone(),
+            check["state"].clone(),
+            check["current"].clone()
+        ),
+        (json!(true), json!("printing"), json!("boat.gcode"))
+    );
+    assert_eq!(
+        probe.refused("printer_file_delete", json!({ "name": "boat.gcode" })),
+        "The printer is printing this file. Finish or cancel the print first."
+    );
+    // Idle, a CANVAS with nothing loaded at the check, loaded before the
+    // start: refused, the person told to look again.
+    {
+        let mut cc = shared.lock().unwrap();
+        cc.machine = 0;
+        cc.print = 9;
+        cc.loaded = false;
+    }
+    let check = probe.ask("printer_file_check", json!({ "name": "boat.gcode" }));
+    assert!(!check["advice"].as_str().unwrap().contains("CANVAS"));
+    shared.lock().unwrap().loaded = true;
+    assert!(
+        probe
+            .refused("printer_file_print", json!({ "name": "boat.gcode" }))
+            .starts_with("The printer changed since you confirmed")
+    );
+    // No CANVAS attached: 324 is not asked, 128 has no slot_map.
+    {
+        let mut cc = shared.lock().unwrap();
+        cc.ams = Some(0);
+        cc.commands.clear();
+    }
+    probe.ask("printer_file_check", json!({ "name": "boat.gcode" }));
+    probe.ask("printer_file_print", json!({ "name": "boat.gcode" }));
+    let sent = shared.lock().unwrap().commands.clone();
+    assert!(sent.iter().all(|c| c["Cmd"] != 324), "{sent:?}");
+    let start = sent.iter().find(|c| c["Cmd"] == 128).unwrap();
+    assert!(start["Data"].get("slot_map").is_none());
+    // A busy machine (homing, CurrentStatus 2) is not started either.
+    {
+        let mut cc = shared.lock().unwrap();
+        cc.machine = 2;
+        cc.print = 0;
+    }
+    assert_eq!(
+        probe.ask("printer_file_check", json!({ "name": "boat.gcode" }))["state"],
+        "busy"
+    );
+    drop(socket);
+    sdcp_port(0);
+    // Another Elegoo model: no Storage, the reference's reason.
+    let other = Probe::plain();
+    other.project("Elegoo", "Elegoo Centauri 0.4 nozzle");
+    other.ask(
+        "print_host_set",
+        json!({ "host_type": "elegoolink", "print_host": "127.0.0.1" }),
+    );
+    let info = other.ask("print_host", json!({}));
+    assert_eq!(info["storage"], false);
+    assert!(
+        info["storage_reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("The Storage tab speaks Elegoo Link (SDCP) only to the Centauri Carbon")
     );
 }
 
@@ -1403,6 +1744,15 @@ fn a_prusalink_printer_is_shown_read_only_as_the_forks_status_reads_it() {
         (json!("idle"), json!(""), Value::Null)
     );
     assert_eq!(printer.asked().len() - before, 1);
+    // Storage: the reference refuses PrusaLink, and says why.
+    let info = probe.ask("print_host", json!({}));
+    assert_eq!(
+        (info["storage"].clone(), info["storage_reason"].clone()),
+        (
+            json!(false),
+            json!("PrusaLink and Prusa Connect printers are not supported by the Storage tab.")
+        )
+    );
     probe.never_said(KEY);
     // A wrong key: offline with the printer's 401, the key in no answer.
     let probe = Probe::plain();

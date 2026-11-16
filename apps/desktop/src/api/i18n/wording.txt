@@ -496,6 +496,10 @@ Start printing "%s" on %s?	GUI/PrinterStoragePanel.cpp:728
 The file prints exactly as it was sliced. Make sure the build plate is clear and the filament the file was sliced for is loaded.	GUI/PrinterStoragePanel.cpp:731
 Starting %s...	GUI/PrinterStoragePanel.cpp:738
 Print started: %s. Follow it on the printer page.	GUI/PrinterStoragePanel.cpp:742
+Select a file to see its details.	GUI/PrinterStoragePanel.cpp:579
+Folder	GUI/PrinterStoragePanel.cpp:594
+Sliced with	GUI/PrinterStoragePanel.cpp:620
+This file type cannot be started from here.	GUI/PrinterStoragePanel.cpp:622
 The print of "%s" did not start.	GUI/PrinterStoragePanel.cpp:745
 # A Bambu Lab printer over LAN (src/api/bambu_lan.rs, src/ultranet/send.rs).
 Network plug-in missing	GUI/GUI_App.cpp:5549
@@ -881,6 +885,7 @@ Draw %s mm of filament back from the nozzle on %s?
 The printer is not printing, so there is nothing to pause.
 The printer has no paused print to resume.
 The printer is not printing, so there is nothing to stop.
+The printer is busy.
 A temperature below 0 °C cannot be set.
 This printer cannot do that from here.
 The printer is printing: the axes and the extruder cannot be moved now.

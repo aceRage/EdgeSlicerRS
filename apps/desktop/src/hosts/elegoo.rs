@@ -50,8 +50,8 @@ use serde_json::{Value, json};
 use tungstenite::{Message, WebSocket};
 
 use super::{
-    Connection, Failure, Form, Host, Http, Progress, TIMED_OUT, Timeouts, UNPARSABLE, Upload,
-    http_error, octoprint, snapmaker::BUSY, uuid,
+    Connection, Failure, Form, Host, Http, Options, Progress, StartCheck, Stored, TIMED_OUT,
+    Timeouts, UNPARSABLE, Upload, http_error, octoprint, sdcp_files, snapmaker::BUSY, uuid,
 };
 use crate::api::i18n::{fill, tr};
 
@@ -75,10 +75,20 @@ pub struct ElegooLink {
     /// (`get_host_from_url_no_port`).
     ws_host: String,
     cc2: bool,
+    /// The Centauri Carbon 1, whose files "Storage" reaches
+    /// (`sdcp_files::is_cc1`).
+    cc1: bool,
     timeouts: Timeouts,
     /// For the tests: the websocket's port.
     pub ws_port: u16,
 }
+
+/// The tests' websocket port for every `ElegooLink` made while it is not
+/// 0 (the session makes its own); a test that sets it holds `TEST_LOCK`.
+#[cfg(test)]
+pub(crate) static TEST_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+#[cfg(test)]
+pub(crate) static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl ElegooLink {
     pub fn new(connection: &Connection, timeouts: Timeouts) -> Result<Self, String> {
@@ -87,8 +97,15 @@ impl ElegooLink {
             ws_host: http.address.host.clone(),
             http,
             cc2: is_cc2(&connection.printer_model),
+            cc1: sdcp_files::is_cc1(&connection.printer_model),
             timeouts,
+            #[cfg(not(test))]
             ws_port: WEBSOCKET_PORT,
+            #[cfg(test)]
+            ws_port: match TEST_PORT.load(Ordering::SeqCst) {
+                0 => WEBSOCKET_PORT,
+                port => port,
+            },
         })
     }
 
@@ -163,6 +180,97 @@ impl ElegooLink {
     }
 }
 
+/// "Storage" of a Centauri Carbon 1 (`sdcp_files`, ElegooSdcpFiles.cpp
+/// `Cc1Files`).
+impl ElegooLink {
+    fn storage(&self) -> Result<(), String> {
+        if self.cc1 {
+            Ok(())
+        } else {
+            Err("The Storage tab speaks Elegoo Link (SDCP) only to the Centauri Carbon; this printer's model is not one.".into())
+        }
+    }
+
+    /// Command 0's whole frame (its `Status`), or why not.
+    fn status_frame(&self) -> Result<Value, String> {
+        self.exchange(&envelope(0, json!({})), 0, self.timeouts.ask)
+            .map_err(|error| format!("The printer did not say what it is doing ({error})."))
+    }
+
+    /// Command 258: the files of the internal storage's root.
+    fn list_raw(&self) -> Result<Vec<Stored>, String> {
+        let frame = self
+            .exchange(
+                &envelope(sdcp_files::FILE_LIST, sdcp_files::list_request()),
+                sdcp_files::FILE_LIST,
+                self.timeouts.ask,
+            )
+            .map_err(|error| {
+                format!("The printer did not answer the file list request ({error}).")
+            })?;
+        let ack = sdcp_files::ack_of(&frame).unwrap_or(-1);
+        match sdcp_files::list_of(&frame) {
+            _ if ack > 0 => Err(format!(
+                "The printer refused to list its files (Ack {ack})."
+            )),
+            Some(files) => Ok(files),
+            None => {
+                Err("This printer's answer to the file list request carries no file list.".into())
+            }
+        }
+    }
+
+    /// What the printer is doing, and the plan of a start when it is free
+    /// (`start_check`, `plan_start`): every `CurrentStatus` idle; a CANVAS
+    /// asked (command 324) unless command 0 says none is attached.
+    fn start_plan(&self, options: &Options) -> Result<(StartCheck, sdcp_files::Plan), String> {
+        let frame = self.status_frame()?;
+        let status = &frame["Status"];
+        let mut state = crate::device::sdcp::state_of(status).to_owned();
+        let machine = crate::device::sdcp::machine(status);
+        let current = status["PrintInfo"]["Filename"]
+            .as_str()
+            .unwrap_or_default()
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        // On purpose stricter than the reference (sdcp_files.rs): any
+        // `CurrentStatus` but idle is busy.
+        let busy = matches!(state.as_str(), "printing" | "paused" | "busy")
+            || !machine.iter().all(|s| *s == IDLE);
+        if busy && !matches!(state.as_str(), "printing" | "paused") {
+            state = "busy".into();
+        }
+        let canvas = if busy || sdcp_files::canvas_attached(&frame) == Some(false) {
+            None
+        } else {
+            self.exchange(
+                &envelope(sdcp_files::CANVAS, json!({})),
+                sdcp_files::CANVAS,
+                self.timeouts.ask.min(Duration::from_secs(6)),
+            )
+            .ok()
+            .as_ref()
+            .and_then(sdcp_files::canvas_loaded)
+        };
+        let plan = sdcp_files::plan(options, canvas);
+        Ok((
+            StartCheck {
+                state,
+                current,
+                busy,
+                advice: if busy {
+                    String::new()
+                } else {
+                    plan.advice.clone()
+                },
+            },
+            plan,
+        ))
+    }
+}
+
 impl Host for ElegooLink {
     /// `ElegooLink::test`: OctoPrint first, then Elegoo's own page.
     fn test(&self) -> Result<(), String> {
@@ -179,6 +287,95 @@ impl Host for ElegooLink {
 
     fn test_failed(&self, reason: &str) -> String {
         format!("{}: {reason}", tr("Could not connect to ElegooLink"))
+    }
+
+    fn files(&self) -> Option<Result<Vec<Stored>, String>> {
+        Some(self.storage().and_then(|()| self.list_raw()))
+    }
+
+    /// Command 259 (`Cc1Files::remove`): never the file a job is on; the
+    /// printer's `ErrData` read, and the list asked again, so a delete the
+    /// printer only acknowledged is said.
+    fn delete(&self, name: &str) -> Result<(), String> {
+        self.storage()?;
+        if !super::moonraker::valid_path(name) {
+            return Err(format!("Not a file on the printer: {name}"));
+        }
+        let frame = self.status_frame()?;
+        let status = &frame["Status"];
+        let state = crate::device::sdcp::state_of(status);
+        if matches!(state, "printing" | "paused" | "busy")
+            && sdcp_files::same_file(
+                status["PrintInfo"]["Filename"].as_str().unwrap_or_default(),
+                name,
+            )
+        {
+            return Err(
+                "The printer is printing this file. Finish or cancel the print first.".into(),
+            );
+        }
+        let answer = self
+            .exchange(
+                &envelope(sdcp_files::DELETE_FILES, sdcp_files::delete_request(name)),
+                sdcp_files::DELETE_FILES,
+                self.timeouts.ask,
+            )
+            .map_err(|error| format!("The printer did not answer the delete request ({error})."))?;
+        if let Some(ack) = sdcp_files::ack_of(&answer).filter(|ack| *ack > 0) {
+            return Err(format!(
+                "The printer refused to delete the file (Ack {ack})."
+            ));
+        }
+        if sdcp_files::not_deleted(&answer)
+            .iter()
+            .any(|failed| sdcp_files::same_file(failed, name))
+        {
+            return Err("The printer could not delete the file.".into());
+        }
+        // The Ack alone is not trusted (unverified on this firmware).
+        match self.list_raw() {
+            Ok(files) if files.iter().any(|file| file.name == name) => {
+                Err("The printer acknowledged the delete, but it still lists the file.".into())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn start_check(&self, _name: &str, options: &Options) -> Result<StartCheck, String> {
+        self.storage()?;
+        Ok(self.start_plan(options)?.0)
+    }
+
+    /// Command 128 for a file already on the printer (`start_print`):
+    /// the printer read again just before, refused when it is busy or when
+    /// the plan is not the one the person confirmed.
+    fn print_confirmed(&self, name: &str, options: &Options, shown: &str) -> Result<(), String> {
+        self.storage()?;
+        if !super::moonraker::valid_path(name) || !super::moonraker::printable(name) {
+            return Err(format!("Not a G-code file the printer can print: {name}"));
+        }
+        let (check, plan) = self.start_plan(options)?;
+        if check.busy {
+            return Err(format!(
+                "The printer is {}, so the print was not started. Finish or cancel that job first.",
+                if check.state == "paused" {
+                    "paused mid-print"
+                } else {
+                    "printing"
+                }
+            ));
+        }
+        if check.advice != shown {
+            return Err("The printer changed since you confirmed (its CANVAS trays or the send choices). Press Print again to see what it will do now.".into());
+        }
+        let text = start_payload_with(name, options, plan.canvas, &uuid(), now_ms());
+        let answer = self.exchange(&text, 128, self.timeouts.ask).map_err(|_| {
+            "The printer did not answer the start request in time; it may still start. Check the printer.".to_owned()
+        })?;
+        match sdcp_files::ack_of(&answer) {
+            Some(ack) if ack > 0 => Err(sdcp_files::start_ack_text(ack)),
+            _ => Ok(()),
+        }
     }
 
     fn upload(&self, upload: &Upload, progress: &Progress) -> Result<(), Failure> {
@@ -233,20 +430,27 @@ impl ElegooLink {
     /// its status frame (`Status`), for any other the response to that
     /// command (`Data.Data`, with its `Ack`). Within the time for a question.
     pub fn ask(&self, cmd: u32, data: Value) -> Result<Value, String> {
+        let frame = self.exchange(&envelope(cmd, data), cmd, self.timeouts.ask)?;
+        Ok(if cmd == 0 {
+            frame["Status"].clone()
+        } else {
+            frame["Data"]["Data"].clone()
+        })
+    }
+
+    /// One request `text` (an SDCP envelope) on a connection of its own,
+    /// and the whole frame that answers it: for command 0 the first one
+    /// with a `Status`, for any other the one whose `Data.Cmd` is `cmd`;
+    /// within `within`.
+    fn exchange(&self, text: &str, cmd: u32, within: Duration) -> Result<Value, String> {
         if self.cc2 {
             return Err("This app cannot reach an Elegoo Centauri Carbon 2 yet.".into());
         }
         let mut socket = self.connect()?;
-        let request_id = uuid();
-        let text = json!({
-            "Id": "",
-            "Data": { "Cmd": cmd, "Data": data, "RequestID": request_id, "MainboardID": "", "TimeStamp": now_ms() as u64, "From": 1 }
-        })
-        .to_string();
         socket
             .send(Message::text(text))
             .map_err(|error| ws_said(&error))?;
-        let until = Instant::now() + self.timeouts.ask;
+        let until = Instant::now() + within;
         while Instant::now() < until {
             let message = match next(&mut socket) {
                 Ok(Some(message)) => message,
@@ -254,17 +458,14 @@ impl ElegooLink {
                 Err(Failure::Error(error)) => return Err(error),
                 Err(Failure::Cancelled) => return Err("cancelled".into()),
             };
-            if cmd == 0 {
-                if let Some(status) = message.get("Status") {
-                    let _ = socket.close(None);
-                    return Ok(status.clone());
-                }
-                continue;
-            }
-            let data = &message["Data"];
-            if data["Cmd"].as_u64() == Some(u64::from(cmd)) {
+            let answers = if cmd == 0 {
+                message.get("Status").is_some()
+            } else {
+                message["Data"]["Cmd"].as_u64() == Some(u64::from(cmd))
+            };
+            if answers {
                 let _ = socket.close(None);
-                return Ok(data["Data"].clone());
+                return Ok(message);
             }
         }
         Err(tr(TIMED_OUT))
@@ -314,6 +515,15 @@ fn now_ms() -> u128 {
         .unwrap_or_default()
 }
 
+/// An SDCP request with `data`, as the Device page sends it.
+fn envelope(cmd: u32, data: Value) -> String {
+    json!({
+        "Id": "",
+        "Data": { "Cmd": cmd, "Data": data, "RequestID": uuid(), "MainboardID": "", "TimeStamp": now_ms() as u64, "From": 1 }
+    })
+    .to_string()
+}
+
 /// An SDCP request (ElegooLink.cpp l.940): command `cmd`, no data.
 fn request(cmd: u32) -> String {
     json!({
@@ -324,19 +534,33 @@ fn request(cmd: u32) -> String {
 }
 
 /// Command 128, laid out as `ElegooStartPrint::build_payload` lays it out
-/// (its keys in that order). No `slot_map`: the Canvas is not built.
+/// (its keys in that order). "Upload and Print" sends no `slot_map` (the
+/// CANVAS mapping of the send dialog is not built); a start from "Storage"
+/// with a CANVAS that answered sends an empty one, as the reference's
+/// (`canvas`).
 pub fn start_payload(
     name: &str,
     options: &super::Options,
     request_id: &str,
     timestamp: u128,
 ) -> String {
+    start_payload_with(name, options, false, request_id, timestamp)
+}
+
+pub fn start_payload_with(
+    name: &str,
+    options: &super::Options,
+    canvas: bool,
+    request_id: &str,
+    timestamp: u128,
+) -> String {
     let file = serde_json::to_string(&format!("/local/{name}")).expect("a string");
     format!(
-        "{{\"Id\":\"\",\"Data\":{{\"Cmd\":128,\"Data\":{{\"Filename\":{file},\"StartLayer\":0,\"Calibration_switch\":{},\"PrintPlatformType\":{},\"Tlp_Switch\":{}}},\"RequestID\":\"{request_id}\",\"MainboardID\":\"\",\"TimeStamp\":{timestamp},\"From\":1}}}}",
+        "{{\"Id\":\"\",\"Data\":{{\"Cmd\":128,\"Data\":{{\"Filename\":{file},\"StartLayer\":0,\"Calibration_switch\":{},\"PrintPlatformType\":{},\"Tlp_Switch\":{}{}}},\"RequestID\":\"{request_id}\",\"MainboardID\":\"\",\"TimeStamp\":{timestamp},\"From\":1}}}}",
         u8::from(options.leveling),
         u8::from(options.smooth_plate),
         u8::from(options.timelapse),
+        if canvas { ",\"slot_map\":[]" } else { "" },
     )
 }
 

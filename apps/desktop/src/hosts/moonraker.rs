@@ -204,6 +204,26 @@ pub fn printable(name: &str) -> bool {
     ends_with(name, &[".gcode", ".g", ".gco"])
 }
 
+/// A path the tab may hand back to the printer (`valid_path`): relative,
+/// `/` between folders, 1..1024 bytes, no `.` or `..` or empty folder, no
+/// backslash or control character.
+pub fn valid_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= 1024
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && !path.chars().any(char::is_control)
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+/// What the tab lists (`is_listed_name`): printable names, `.bgcode` and
+/// `.3mf`.
+pub fn listed(name: &str) -> bool {
+    printable(name) || ends_with(name, &[".bgcode", ".3mf"])
+}
+
 /// What the Storage tab lists: printable names, `.bgcode` and `.3mf`, not
 /// under a hidden folder (`.thumbs/`), with a path it may hand back
 /// (`parse_file_list`, `valid_path`, `hidden_path`).
@@ -216,28 +236,87 @@ pub fn files_of(list: &Value) -> Vec<Stored> {
                 .as_str()
                 .or_else(|| item["filename"].as_str())?
                 .trim_start_matches('/');
-            let valid = !path.is_empty()
-                && path.len() <= 1024
-                && !path.ends_with('/')
-                && !path.contains('\\')
-                && !path.chars().any(char::is_control)
-                && path
-                    .split('/')
-                    .all(|part| !part.is_empty() && part != "." && part != "..");
             let hidden = path.split('/').any(|part| part.starts_with('.'));
-            let listed = printable(path) || ends_with(path, &[".bgcode", ".3mf"]);
-            (valid && !hidden && listed).then(|| Stored {
+            (valid_path(path) && !hidden && listed(path)).then(|| Stored {
                 name: path.to_owned(),
                 size: item["size"].as_f64().filter(|n| *n > 0.0).map(|n| n as u64),
                 modified: item["modified"].as_f64(),
                 printable: printable(path),
-                print_time: None,
-                filament_mm: None,
-                filament_g: None,
-                filament_type: String::new(),
+                ..Stored::default()
             })
         })
         .collect()
+}
+
+/// "a/./b/../c" made "a/c" (`normalize_relative`); `None` when it climbs
+/// out of the G-code folder or comes to nothing.
+fn normalized(path: &str) -> Option<String> {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/') {
+        match part {
+            ".." => {
+                parts.pop()?;
+            }
+            "" | "." => {}
+            other => parts.push(other),
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
+/// The preview pictures `server/files/metadata` names for the file at
+/// `file` (each `relative_path` is relative to the file's own folder; an
+/// older `thumbnail_path` to the root), and the one worth showing: the
+/// smallest at least 300 wide, else the widest (`parse_metadata`,
+/// `pick_thumbnail`).
+pub fn thumbnail_of(meta: &Value, file: &str) -> Option<String> {
+    let dir = file.rsplit_once('/').map_or("", |(dir, _)| dir);
+    let mut best_above: Option<(f64, String)> = None;
+    let mut widest: Option<(f64, String)> = None;
+    for picture in meta["thumbnails"].as_array().into_iter().flatten() {
+        let path = match picture["relative_path"].as_str().filter(|r| !r.is_empty()) {
+            Some(relative) if dir.is_empty() => normalized(relative),
+            Some(relative) => normalized(&format!("{dir}/{relative}")),
+            None => {
+                let root = picture["thumbnail_path"].as_str().unwrap_or_default();
+                normalized(root.strip_prefix("gcodes/").unwrap_or(root))
+            }
+        };
+        let Some(path) = path.filter(|path| valid_path(path)) else {
+            continue;
+        };
+        let width = picture["width"].as_f64().unwrap_or(0.0);
+        if widest.as_ref().is_none_or(|(w, _)| width > *w) {
+            widest = Some((width, path.clone()));
+        }
+        if width >= 300.0 && best_above.as_ref().is_none_or(|(w, _)| width < *w) {
+            best_above = Some((width, path));
+        }
+    }
+    best_above.or(widest).map(|(_, path)| path)
+}
+
+/// What `server/files/metadata` says of a file, put on it
+/// (`parse_metadata`).
+pub fn read_metadata(file: &mut Stored, meta: &Value) {
+    let positive = |key: &str| meta[key].as_f64().filter(|n| n.is_finite() && *n > 0.0);
+    let text = |key: &str| meta[key].as_str().unwrap_or_default().trim().to_owned();
+    file.print_time = positive("estimated_time").map(|t| t.round() as u32);
+    file.filament_mm = positive("filament_total");
+    file.filament_g = positive("filament_weight_total");
+    file.filament_type = text("filament_type");
+    file.filament_name = text("filament_name");
+    file.layer_count = positive("layer_count").map(|n| n as u32);
+    file.layer_height = positive("layer_height");
+    file.object_height = positive("object_height");
+    file.nozzle_diameter = positive("nozzle_diameter");
+    let version = text("slicer_version");
+    file.slicer = [text("slicer"), version]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    file.thumbnail = thumbnail_of(meta, &file.name);
 }
 
 /// The printer's files with what the slicer wrote into each (the
@@ -246,23 +325,15 @@ pub fn files_of(list: &Value) -> Vec<Stored> {
 pub fn list_files(http: &Http) -> Result<Vec<Stored>, String> {
     let mut files = files_of(&result(http, "server/files/list?root=gcodes")?);
     for file in files.iter_mut().take(100) {
-        let Ok(meta) = result(
+        if let Ok(meta) = result(
             http,
             &format!(
                 "server/files/metadata?filename={}",
                 encode(&file.name, false)
             ),
-        ) else {
-            continue;
-        };
-        let positive = |key: &str| meta[key].as_f64().filter(|n| *n > 0.0);
-        file.print_time = positive("estimated_time").map(|t| t.round() as u32);
-        file.filament_mm = positive("filament_total");
-        file.filament_g = positive("filament_weight_total");
-        file.filament_type = meta["filament_type"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
+        ) {
+            read_metadata(file, &meta);
+        }
     }
     // Newest first, the reference's first order.
     files.sort_by(|a, b| {
@@ -271,6 +342,25 @@ pub fn list_files(http: &Http) -> Result<Vec<Stored>, String> {
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     Ok(files)
+}
+
+/// A preview picture (`MoonrakerFiles::thumbnail`): `GET
+/// server/files/gcodes/<path>`, a PNG or a JPEG of at most 4 MiB.
+pub fn thumbnail(http: &Http, path: &str) -> Result<Vec<u8>, String> {
+    if !valid_path(path) {
+        return Err(format!("Not a picture on the printer: {path}"));
+    }
+    let (status, bytes) = http.get_bytes(
+        &format!("server/files/gcodes/{}", encode(path, true)),
+        super::PICTURE_LIMIT,
+    )?;
+    if !(200..300).contains(&status) {
+        return Err(format!("HTTP {status}"));
+    }
+    if super::picture_type(&bytes).is_none() {
+        return Err("The printer's preview is not a PNG or JPEG picture.".into());
+    }
+    Ok(bytes)
 }
 
 /// `DELETE server/files/gcodes/<path>`.

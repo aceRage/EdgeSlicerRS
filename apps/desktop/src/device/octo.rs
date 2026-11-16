@@ -294,8 +294,7 @@ pub fn files(http: &Http) -> Result<Vec<crate::hosts::Stored>, String> {
                     .as_f64()
                     .map(|t| t.round() as u32),
                 filament_mm: (mm > 0.0).then_some(mm),
-                filament_g: None,
-                filament_type: String::new(),
+                ..crate::hosts::Stored::default()
             });
         }
     }

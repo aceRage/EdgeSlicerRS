@@ -405,12 +405,25 @@
           </select>
           <button type="button" id="storage-refresh" title="List the printer's files again (F5)">Refresh</button>
         </div>
-        <div class="storage-scroll">
-          <table class="data-table" id="storage-table">
-            <thead><tr><th>Name</th><th class="num">Print time</th><th>Filament</th><th class="num">Size</th><th>Modified</th><th></th></tr></thead>
-            <tbody id="storage-body"></tbody>
-          </table>
-          <p id="storage-note" class="quiet"></p>
+        <!-- The files, and the selected one's details beside them (PrinterStoragePanel.cpp):
+             Enter or a double click prints, Delete deletes, F5 lists again. -->
+        <div class="storage-body">
+          <div class="storage-scroll">
+            <table class="data-table" id="storage-table" tabindex="0" aria-label="Files on the printer">
+              <thead><tr><th class="storage-pic"></th><th>Name</th><th class="num">Print time</th><th>Filament</th><th class="num">Size</th><th>Modified</th></tr></thead>
+              <tbody id="storage-body"></tbody>
+            </table>
+            <p id="storage-note" class="quiet"></p>
+          </div>
+          <aside id="storage-details" class="storage-details" hidden>
+            <div class="storage-preview"><img id="storage-preview" alt="" hidden></div>
+            <h3 id="storage-detail-name"></h3>
+            <p id="storage-detail-text" class="quiet"></p>
+            <div class="row">
+              <button type="button" id="storage-print" class="primary" title="Start printing this file on the printer (Enter)">Print</button>
+              <button type="button" id="storage-delete" title="Delete this file from the printer (Delete)">Delete</button>
+            </div>
+          </aside>
         </div>
       </div>
     </div>

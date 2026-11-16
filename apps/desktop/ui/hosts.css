@@ -62,24 +62,35 @@ p.warn { margin: 0; color: var(--warn); }
 #device-storage[hidden] { display: none; }
 .storage-head { display: flex; align-items: center; gap: var(--space-2); }
 .storage-head h2 { flex: 1; }
-.storage-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--line-2); border-radius: var(--radius-l); background: var(--surface-well); }
+.storage-body { flex: 1; min-height: 0; display: flex; gap: var(--space-3); }
+.storage-scroll { flex: 1; min-width: 0; min-height: 0; overflow: auto; border: 1px solid var(--line-2); border-radius: var(--radius-l); background: var(--surface-well); }
 .storage-scroll > p { padding: var(--space-4); white-space: pre-line; }
 .storage-scroll > p:empty { display: none; }
-#storage-table th:nth-child(2) { width: 88px; }
-#storage-table th:nth-child(3) { width: 120px; }
-#storage-table th:nth-child(4) { width: 92px; }
-#storage-table th:nth-child(5) { width: 150px; }
-#storage-table th:nth-child(6) { width: 270px; }
+#storage-table:focus { outline: none; }
+#storage-table:focus-visible tbody tr.on td:first-child { box-shadow: inset 2px 0 0 var(--accent), inset 0 0 0 1px var(--accent); }
+#storage-table th.storage-pic { width: 56px; padding: 0; }
+#storage-table th:nth-child(3) { width: 88px; }
+#storage-table th:nth-child(4) { width: 120px; }
+#storage-table th:nth-child(5) { width: 92px; }
+#storage-table th:nth-child(6) { width: 140px; }
+#storage-table td.storage-pic { padding: 0 var(--space-1); height: 52px; text-align: center; }
+.storage-pic img { display: block; width: 44px; height: 44px; margin: auto; object-fit: contain; border-radius: var(--radius-s); }
 .storage-head select { width: auto; }
 #device-storage .storage-head label { white-space: nowrap; display: block; flex: none; }
-/* Narrow: the filament and the date give way to the name and the buttons. */
-@media (max-width: 1000px) {
-  #storage-table th:nth-child(3), #storage-table td:nth-child(3) { display: none; }
-  #storage-table th:nth-child(5) { width: 100px; }
-  #storage-table td:nth-child(5) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Narrow: the filament and the date give way to the name. */
+@media (max-width: 1100px) {
+  #storage-table th:nth-child(4), #storage-table td:nth-child(4),
+  #storage-table th:nth-child(6), #storage-table td:nth-child(6) { display: none; }
 }
 #storage-table tbody tr { cursor: default; }
-.storage-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-1); height: 40px; }
+/* The selected file's picture, what the slicer wrote into it, Print and Delete. */
+.storage-details { flex: none; width: 260px; display: flex; flex-direction: column; gap: var(--space-2); overflow: auto; padding: var(--space-3); border: 1px solid var(--line-2); border-radius: var(--radius-l); background: var(--surface-raised); }
+.storage-details[hidden] { display: none; }
+.storage-preview { width: 100%; aspect-ratio: 1; display: grid; place-items: center; border-radius: var(--radius-m); background: var(--surface-well); }
+.storage-preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.storage-details h3 { margin: 0; overflow-wrap: anywhere; }
+#storage-detail-text { margin: 0; white-space: pre-line; font-size: var(--size-label); }
+#storage-delete:not(:disabled) { color: var(--danger); }
 #device-page .row { margin-top: var(--space-2); }
 
 /* A U1's toolheads in "Send G-code to printer host", and its state over Device. */

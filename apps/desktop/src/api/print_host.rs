@@ -19,11 +19,12 @@ use crate::api::i18n::tr;
 use crate::hosts::{
     self, Connection, HOST_TYPES, Options, Toolhead, Upload, elegoo,
     kept::{Key, Saved},
+    sdcp_files,
     snapmaker::{self, FileFilament},
 };
 
 /// The calls answered here.
-pub(super) const JSON: [&str; 14] = [
+pub(super) const JSON: [&str; 15] = [
     "print_host",
     "print_host_set",
     "print_host_test",
@@ -38,6 +39,7 @@ pub(super) const JSON: [&str; 14] = [
     "printer_toolheads",
     "printer_status",
     "printer_file_check",
+    "printer_file_thumbnail",
 ];
 
 /// The printer a project is on, as far as sending is concerned.
@@ -106,11 +108,8 @@ impl Session {
             "printer_file_check" => self.printer_file_check(args),
             "printer_toolheads" => self.printer_toolheads(args),
             "printer_status" => self.printer_status(args),
-            "printer_file_print" => {
-                let (host, _) = self.host(args)?;
-                host.print(needed(args, "name")?)?;
-                Ok(json!({ "started": true }))
-            }
+            "printer_file_thumbnail" => self.printer_file_thumbnail(args),
+            "printer_file_print" => self.printer_file_print(args),
             other => Err(format!("there is no call named {other}")),
         }
     }
@@ -228,8 +227,9 @@ impl Session {
             "can_start": made.as_ref().is_ok_and(|host| host.can_start()),
             // Storage (PrinterStorage.cpp `target_for_host`): Moonraker's
             // file API for "Octo/Klipper"; else the reference's reason.
-            "storage": matches!(route, "snapmaker" | "octoprint"),
-            "storage_reason": storage_reason(&connection.host_type),
+            "storage": matches!(route, "snapmaker" | "octoprint")
+                || (route == "elegoolink" && sdcp_files::is_cc1(&model)),
+            "storage_reason": storage_reason(&connection.host_type, &model),
             // The U1's toolhead map; the printer's state in Device.
             "toolheads": route == "snapmaker",
             "status": matches!(route, "snapmaker" | "octoprint"),
@@ -525,9 +525,10 @@ impl Session {
     }
 
     /// The files on the printer: `{ files: [{ name, size, modified,
-    /// printable, print_time, filament_mm, filament_g, filament_type }] }`.
-    /// A printer that answers 404 has no file API (the reference's
-    /// `Status::NotSupported`).
+    /// printable, print_time, filament_mm, filament_g, filament_type,
+    /// filament_name, layer_count, layer_height, object_height,
+    /// nozzle_diameter, slicer, thumbnail }] }`. A printer that answers 404
+    /// has no file API (the reference's `Status::NotSupported`).
     fn printer_files(&self, args: &Value) -> Result<Value, String> {
         let (host, _) = self.host(args)?;
         let files = match host
@@ -547,22 +548,69 @@ impl Session {
                     "name": file.name, "size": file.size, "modified": file.modified,
                     "printable": file.printable, "print_time": file.print_time,
                     "filament_mm": file.filament_mm, "filament_g": file.filament_g,
-                    "filament_type": file.filament_type,
+                    "filament_type": file.filament_type, "filament_name": file.filament_name,
+                    "layer_count": file.layer_count, "layer_height": file.layer_height,
+                    "object_height": file.object_height, "nozzle_diameter": file.nozzle_diameter,
+                    "slicer": file.slicer, "thumbnail": file.thumbnail,
                 }))
                 .collect::<Vec<_>>(),
         }))
     }
 
+    /// A file's preview picture, fetched here with the printer's key and
+    /// handed to the page as data (`data:image/png;base64,...`), never as an
+    /// address: `{ picture }`, `null` when there is none.
+    fn printer_file_thumbnail(&self, args: &Value) -> Result<Value, String> {
+        let (host, _) = self.host(args)?;
+        let path = needed(args, "path")?;
+        let Some(bytes) = host.thumbnail(path) else {
+            return Ok(json!({ "picture": null }));
+        };
+        let bytes = bytes?;
+        let kind = hosts::picture_type(&bytes).ok_or("The printer's preview is not a picture.")?;
+        Ok(json!({ "picture": format!("data:{kind};base64,{}", hosts::base64(&bytes)) }))
+    }
+
+    /// The key a start from Storage is kept under: the printer's
+    /// connection and the file.
+    fn start_key(&self, args: &Value, name: &str) -> Result<String, String> {
+        let printer = self
+            .printer(args)?
+            .ok_or("No printer is chosen for the project.")?;
+        let (connection, _) = self.connection(&printer);
+        Ok(format!(
+            "{}|{}|{name}",
+            connection.host_type,
+            connection.print_host.trim()
+        ))
+    }
+
     /// Before "Print" from Storage: what the printer is doing, and on
-    /// which file (PrinterStoragePanel.cpp `on_print`, `CheckStart`).
-    /// `{ state, current, busy }`.
+    /// which file, and what to read before it starts (PrinterStoragePanel.cpp
+    /// `on_print`, `CheckStart`). `{ state, current, busy, advice }`. A free
+    /// printer's plan is kept for the one start the person confirms.
     fn printer_file_check(&self, args: &Value) -> Result<Value, String> {
         let (host, _) = self.host(args)?;
-        let status = host
-            .status()
-            .ok_or("This printer does not say what it is doing.")??;
-        let busy = matches!(status.state.as_str(), "printing" | "paused");
-        Ok(json!({ "state": status.state, "current": status.filename, "busy": busy }))
+        let name = needed(args, "name")?;
+        let check = host.start_check(name, &start_options(args))?;
+        if !check.busy {
+            lock(&self.devices.confirmed).insert(self.start_key(args, name)?, check.advice.clone());
+        }
+        Ok(json!({
+            "state": check.state, "current": check.current, "busy": check.busy, "advice": check.advice,
+        }))
+    }
+
+    /// "Print" from Storage, once confirmed: only after `printer_file_check`
+    /// for that file, once; the printer is asked again before it starts.
+    fn printer_file_print(&self, args: &Value) -> Result<Value, String> {
+        let name = needed(args, "name")?;
+        let shown = lock(&self.devices.confirmed)
+            .remove(&self.start_key(args, name)?)
+            .ok_or("Confirm the print first.")?;
+        let (host, _) = self.host(args)?;
+        host.print_confirmed(name, &start_options(args), &shown)?;
+        Ok(json!({ "started": true }))
     }
 
     /// "Delete": `{ gone }` when it was not there any more (404).
@@ -574,6 +622,19 @@ impl Session {
             Err(error) => return Err(error),
         };
         Ok(json!({ "gone": gone }))
+    }
+}
+
+/// The choices a start from Storage is made with: the Centauri Carbon's
+/// last send ("Time-lapse", "Heated Bed Leveling", the plate side), as the
+/// page remembers them (PrintHostDialogs.cpp keeps them in `recent`).
+fn start_options(args: &Value) -> Options {
+    let flag = |key: &str| args["options"][key].as_bool().unwrap_or(false);
+    Options {
+        timelapse: flag("timelapse"),
+        leveling: flag("leveling"),
+        smooth_plate: flag("smooth_plate"),
+        ..Options::default()
     }
 }
 
@@ -623,11 +684,12 @@ fn toolhead_json(head: &Toolhead) -> Value {
 }
 
 /// Why a printer has no "Storage" (PrinterStorage.cpp l.364–373).
-fn storage_reason(host_type: &str) -> Option<String> {
+fn storage_reason(host_type: &str, model: &str) -> Option<String> {
     Some(match host_type {
         "octoprint" => return None,
+        "elegoolink" if sdcp_files::is_cc1(model) => return None,
         "elegoolink" => {
-            "Storage for the Centauri Carbon (its SDCP file commands) is not built yet.".into()
+            "The Storage tab speaks Elegoo Link (SDCP) only to the Centauri Carbon; this printer's model is not one.".into()
         }
         "flashforge" => "Flashforge printers are not supported by the Storage tab.".into(),
         "prusalink" | "prusaconnect" => {

@@ -116,6 +116,11 @@ impl Host for OctoPrint {
         })
     }
 
+    /// Moonraker's preview pictures; an OctoPrint's list names none.
+    fn thumbnail(&self, path: &str) -> Option<Result<Vec<u8>, String>> {
+        self.moonraker.thumbnail(path)
+    }
+
     fn delete(&self, name: &str) -> Result<(), String> {
         match self.moonraker.delete(name) {
             Err(error) if error.starts_with("HTTP 404") && self.is_octoprint() => {

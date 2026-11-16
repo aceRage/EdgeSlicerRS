@@ -285,7 +285,7 @@ does with each option.
 | The web view loads the printer's own page: `print_host_webui` if the preset has it, else `print_host`, with `http://` put in front; a Snapmaker U1 gets Snapmaker's bundled device page, driven over MQTT or a websocket; a device picked from the per-model "Devices" list comes before the preset's address | Plater.cpp l.4304–4430, `MainFrame::load_printer_url` l.5286, `Utils/PrintHostDevices` | **added** (twelfth pass): the printer's page at "Device UI", else "Hostname, IP or URL", `http://` put in front, in a frame of its own (below, "The printer's page in the app"); the connection kept for the printer, else the preset's. The frame is first pointed at the printer when Device is looked at. **differs**: a U1 shows its own page at its address, not Snapmaker's bundled page (that page and its MQTT pairing are not in the source). **not yet**: the "Devices" list |
 | With no address: a page "Printer Connection" — "Please set up your printer connection to view the device." | `resources/web/orca/missing_connection.html` | **added**: the same words, the preset's facts, and "Connect to printer", which opens "Physical Printer" |
 | The API key is put into every request of the page (`X-API-Key`) | `PrinterWebView::SendAPIKey` l.473 | **not yet**, on purpose: the key is never handed to a page the app does not control. What it would take: a page that needs the key (a Moonraker with keys on, for its own page) would be shown through the session, which would fetch the printer's page and its requests itself and add the header, a proxy for one origin; or in the window, a second web view of the printer alone with a request hook (Tauri's `on_web_resource_request`, not on every platform). The page is told only whether a key is set, never the key |
-| Bar over the page: "Printer page" / "Storage" (the G-code files on the printer: "Name", "Print time", "Filament", "Size", "Modified"; "Print", "Delete"), and "Printer:" to pick among several printers of the model | `PrinterWebView.cpp`, `Utils/PrinterStorage.cpp` l.337, `PrinterStoragePanel.cpp` | **added** for a U1 (twelfth pass) and (device pass) for **every "Octo/Klipper" printer**, which the reference asks as a Moonraker (`target_for_host`: `octoprint`, `moonraker`): "Files on %s", "Sort by" ("Newest first", "Oldest first", "Name", "Size"), "Refresh", the columns "Name", "Print time", "Filament" (each file's `server/files/metadata`: `estimated_time`, `filament_total`, `filament_weight_total`, `filament_type`, written as `format_duration` and `format_filament` write them), "Size", "Modified"; the list as `parse_file_list` makes it (`.gcode`, `.g`, `.gco` printable, `.bgcode` and `.3mf` listed and not started, hidden folders left out). "Delete": "Delete file" / "Delete \"%s\" from %s?\nThis cannot be undone.", "Deleting %s...", "Deleted %s.", "%s was already gone from the printer." (404), "Could not delete \"%s\"."; "Print": "Asking the printer whether it is free...", then "The printer is printing." / "The printer has a paused print." with the file and "Finish or cancel that job before starting another one.", else "Start printing \"%s\" on %s?" with "Print time", "Filament" and "The file prints exactly as it was sliced. Make sure the build plate is clear and the filament the file was sliced for is loaded.", "Starting %s...", "Print started: %s. Follow it on the printer page." or "The print of \"%s\" did not start."; the printer is asked again just before it starts. An OctoPrint that is not a Moonraker answers 404: "Storage is not available for this printer."; another host type shows the tab with the reference's reason (Flashforge, PrusaLink, the rest). The address, a button to load the page again, and "Connect to printer" in the bar; and (device pass) the printer's state, next row. **not yet**: the details pane and the thumbnails (`metadata`'s `thumbnails`), the keys (Enter, Delete, F5); "Printer:" and the "Devices" list (below); "Storage" for the Centauri Carbon (SDCP commands 258, 259: `ElegooSdcpFiles.cpp`, with its CANVAS start check) |
+| Bar over the page: "Printer page" / "Storage" (the G-code files on the printer: "Name", "Print time", "Filament", "Size", "Modified"; "Print", "Delete"), and "Printer:" to pick among several printers of the model | `PrinterWebView.cpp`, `Utils/PrinterStorage.cpp` l.337, `PrinterStoragePanel.cpp` | **added** for a U1 (twelfth pass) and (device pass) for **every "Octo/Klipper" printer**, which the reference asks as a Moonraker (`target_for_host`: `octoprint`, `moonraker`): "Files on %s", "Sort by" ("Newest first", "Oldest first", "Name", "Size"), "Refresh", the columns "Name", "Print time", "Filament" (each file's `server/files/metadata`: `estimated_time`, `filament_total`, `filament_weight_total`, `filament_type`, written as `format_duration` and `format_filament` write them), "Size", "Modified"; the list as `parse_file_list` makes it (`.gcode`, `.g`, `.gco` printable, `.bgcode` and `.3mf` listed and not started, hidden folders left out). "Delete": "Delete file" / "Delete \"%s\" from %s?\nThis cannot be undone.", "Deleting %s...", "Deleted %s.", "%s was already gone from the printer." (404), "Could not delete \"%s\"."; "Print": "Asking the printer whether it is free...", then "The printer is printing." / "The printer has a paused print." with the file and "Finish or cancel that job before starting another one.", else "Start printing \"%s\" on %s?" with "Print time", "Filament" and "The file prints exactly as it was sliced. Make sure the build plate is clear and the filament the file was sliced for is loaded.", "Starting %s...", "Print started: %s. Follow it on the printer page." or "The print of \"%s\" did not start."; the printer is asked again just before it starts. An OctoPrint that is not a Moonraker answers 404: "Storage is not available for this printer."; another host type shows the tab with the reference's reason (Flashforge, PrusaLink, the rest). The address, a button to load the page again, and "Connect to printer" in the bar; and (device pass) the printer's state, next row. **added** (device-pages pass 2): the details pane, the pictures (`metadata`'s `thumbnails`, fetched by the session and handed over as data), the keys (Enter, Delete, F5), "Storage" for the Centauri Carbon (SDCP commands 258, 259, 128: `ElegooSdcpFiles.cpp`, with its CANVAS start check); below, "Storage, its details, and Bambu's later parts". **not yet**: "Printer:" and the "Devices" list (below) |
 | The printer's state: the reference's phone hub and Printers tab ask a Moonraker printer `printer/objects/query?print_stats&display_status&virtual_sdcard&heater_bed&extruder…`, work the percent out as the U1's own device page does (the share of the G-code body read, `gcode_start_byte`..`gcode_end_byte` of the file's metadata, else `display_status`, else `virtual_sdcard`) and the time left as the slicer's estimate scaled by it | `SnapmakerLan.cpp` `status` l.795, `Utils/MoonrakerProgress.cpp`, `RemoteControl.cpp` `describe_hosts` | **added** (device pass) in Device's bar, for a U1 and every "Octo/Klipper" printer, asked every 3 s while Device is looked at: "Idle", "Printing", "Paused", "Finished", "Canceled", "Error", the file, the percent, the time left, "Layer" n/m, "Bed" and the toolheads being heated, °C; "Offline" (and why, as its tooltip) when it does not answer. **differs**: the reference shows none of this on the desktop's Device tab for a print host (its U1 page is Snapmaker's bundled page over MQTT; another printer has its own page); it is what its Printers tab and phone show. Only asked, never told: no pause, resume or stop here (the reference's Printers tab offers them for the preset's own Moonraker host). **changed** (device-pages pass): a U1 and every Klipper or OctoPrint printer behind "Octo/Klipper" have the native Device page ("Status" first), and this line over its tabs |
 | What the tab shows of the printer itself | the preset | **added**: name, vendor, model, nozzles, bed and height, G-code flavor, bed type in force, "Host Type" |
 | Where the address is set: "Physical Printer" ("Print Host upload": "Host Type", "Hostname, IP or URL", "Device UI", "Authorization Type", "API Key / Password", "HTTPS CA File", "User", "Password", "Test", "Browse ..."), and the "Devices" list for several printers of one model | `PhysicalPrinterDialog.cpp` l.127, l.596, `PrintHostDevicesDialog.cpp` | **added** (twelfth pass, `ui/hosts.js`): "Physical Printer" with "Print Host upload": "Host Type" (the types this app can send to, "Octo/Klipper" and "Elegoo Link", and the one in force if it is another, marked "(not yet)"), "Hostname, IP or URL" with "Test", "Device UI", "API Key / Password" (a field that shows only that a key is set; "Clear"), "HTTPS CA File" with "Browse ..." and the reference's hint; the reference's tooltips; "Test" tries what is typed before it is kept and says "Success!" and the host's own sentence, or its failure. Opened by "Connect to printer" on the Printer card (the fork's icon, `set_connection_tooltip`) and from Device. **differs**: the icon opens this dialog; in the fork it opens "Devices" with "Edit connection..." inside. "Use the preset's connection" takes a kept connection away. There is no name to save it under (the reference saves a physical printer preset; here it is kept for the printer preset, below). **not yet**: "Authorization Type", "User", "Password" (shown by the reference for PrusaLink only, which is not built), "Browse ..." for the address (Bonjour discovery), "Devices", "Printer" (`printhost_port`, Repetier and Obico), "Ignore HTTPS certificate revocation checks" (Windows) |
@@ -384,13 +384,73 @@ above the printer's limit is brought down to it, as the reference does.
 | Snapmaker U1 | Moonraker | state, file, percent, time left, layer, bed and four toolheads, part and cavity fans, speed, cavity LED, the filament loaded in each toolhead (`print_task_config`), homed axes | pause, resume, cancel, temperatures (bed 100, toolhead 300), fans, speed 50-150 %, LED, jog, home, extrude | Moonraker (as before) | Moonraker's webcams when one is a plain MJPEG stream (the U1's is WebRTC: not shown) | **beyond the reference** (its page is closed) |
 | Klipper (Moonraker) | Moonraker | what `printer/objects/list` holds: extruders, `heater_bed`, `heater_generic`, `fan`, `fan_generic`, `led`, `gcode_move`, `toolhead` | as the U1, limits from `configfile` | Moonraker | Moonraker's webcams (MJPEG) | **beyond the reference** (web view) |
 | OctoPrint | OctoPrint's REST API (`api/job`, `api/printer`, `api/printer/*`, `api/files`, `api/settings`) | state, file, percent, time left, tool and bed (and chamber) temperatures | pause, resume, cancel, temperatures, part fan (`M106`), feed rate 50-200 %, jog, home, extrude | `api/files` | `webcam.streamUrl` | **beyond the reference**, whose code has only `api/version` and the upload: OctoPrint's own published API |
-| Elegoo Centauri Carbon (SDCP) | its websocket | `ElegooSdcpMonitor.cpp`'s reading of command 0 | pause 129, resume 131, stop 130, fans and light 403 | not yet | command 386's URL | **beyond the reference** (web view and CANVAS card) |
-| PrusaLink | `api/v1/status`, `api/v1/job` | as `PrusaLinkStatus.cpp` reads them | none (the reference's code has none) | no | no | **beyond the reference** (web view) |
-| Duet / RepRapFirmware | `rr_gcode` / `machine/code` (`Duet.cpp`) | not in the reference's code | not built: the reference's code reads no status | no | no | web view, as the reference |
+| Elegoo Centauri Carbon (SDCP) | its websocket | `ElegooSdcpMonitor.cpp`'s reading of command 0 | pause 129, resume 131, stop 130, fans and light 403 | list 258, delete 259, print 128 with the CANVAS start check (`ElegooSdcpFiles.cpp`), the CC1 only | command 386's URL | **beyond the reference** (web view and CANVAS card); its Storage is the reference's |
+| PrusaLink | `api/v1/status`, `api/v1/job` | as `PrusaLinkStatus.cpp` reads them | none (the reference's code has none) | no: the reference refuses it, and its reason is shown ("PrusaLink and Prusa Connect printers are not supported by the Storage tab.", PrinterStorage.cpp l.370; the fork's newer main says the same) | no | **beyond the reference** (web view) |
+| Duet / RepRapFirmware | `rr_gcode` / `machine/code` (`Duet.cpp`) | not in the reference's code | not built: the reference's code reads no status (PrintHostDeviceStatus.hpp l.45: Duet "is not probed"), and this app cannot send to a Duet either; a status page would be this app's own, from RepRapFirmware's documentation, which is not in the pinned source (see "Duet" below) | no | no | web view, as the reference |
 | Flashforge | the closed `FlashNetwork.dll` | not in the source | not built | no | no | Flashforge's own pages, which this app does not have |
 
 What was built of this, and how it was checked, is in "The Device page:
 what is built", below.
+
+### Storage, its details, and Bambu's later parts (device-pages pass 2)
+
+All checked against mocks on 127.0.0.1 and the mock bridge only.
+
+- **Storage for the Centauri Carbon** (`src/hosts/sdcp_files.rs`, the
+  CC1 half of `src/hosts/elegoo.rs`; the reference's `Utils/ElegooSdcpFiles.cpp`
+  and the parts of `ElegooCanvas.cpp` its start check reads): command 258
+  with exactly `{"Url":"/local"}` lists the internal storage's root
+  (`FileSize`, `TotalLayers`, `CreateTime` in seconds or milliseconds;
+  folders, other storage, hidden and unlisted names skipped); 259 with
+  exactly `{"FileList":["/local/<path>"]}` deletes, refused for the file a
+  job is on, its `ErrData` read and the list asked again ("The printer
+  acknowledged the delete, but it still lists the file."); "Print" asks
+  command 0, then 324 for the CANVAS unless `AmsConnectStatus` says none,
+  shows the reference's advice (bed leveling, timelapse, plate side of the
+  last Elegoo send; "A CANVAS with loaded trays is attached. ..."), keeps
+  that plan for one start, reads the printer again before command 128 and
+  refuses when the plan changed ("The printer changed since you
+  confirmed ..."); 128 carries an empty `slot_map` when a CANVAS answered.
+  Only the model "Elegoo Centauri Carbon" (`canvas_capable_model`); another
+  Elegoo Link printer gets the reference's reason. **differs**: a start
+  needs every `CurrentStatus` idle (the reference starts over homing, a
+  file check or a self-test, which it reads as "standby"); the plate side
+  of the last send is remembered by the page as the reference's `bedType`
+  is.
+- **PrusaLink**: the reference refuses its Storage with a reason
+  (PrinterStorage.cpp l.369-370), and the fork's newer main still does; the
+  tab shows that reason.
+- **The details pane and the keys** (PrinterStoragePanel.cpp): the rows are
+  selected (the first when none), the picture column and a pane beside
+  the list with the picture, the name, "Folder", "Print time", "Filament",
+  "Filament type", "Layers", "Layer height", "Height", "Nozzle", "Size",
+  "Modified" (`%Y-%m-%d %H:%M`), "Sliced with", "This file type cannot be
+  started from here.", and Print / Delete; Enter or a double click prints,
+  Delete deletes, the arrows move the selection, F5 lists again. Moonraker's
+  `server/files/metadata` gives the facts and its `thumbnails`; the picture
+  is `pick_thumbnail`'s (the smallest at least 300 wide), fetched by the
+  session with the key (`printer_file_thumbnail`), checked to be a PNG or
+  a JPEG of at most 4 MiB and handed to the page as a `data:` URL; a path
+  out of the G-code folder is not asked for. The Centauri Carbon's list
+  has no pictures (as the reference says). **differs**: the reference
+  fetches the details of the rows on screen as they are shown; here the
+  first hundred files' details come with the list and the pictures of the
+  first sixty rows (the selected one first), one at a time.
+- **The extruder's feed**: Bambu F900 is the reference's own
+  (`command_axis_control("E", 1.0, ±10, 900)`, StatusPanel.cpp
+  l.3636-3662). Moonraker F300 is the U1's bundled page's
+  (`resources/web/flutter_web/main.18a21b35cff8a197.js`: "M83", then
+  `G1 E10 F300` / `G1 E-10 F300`; its jog X/Y F3600, Z F1800, which this
+  app already used); it was this app's guess before, the same number.
+- **Duet**: not built. The reference reads no status of a Duet (its
+  Printers tab and phone hub do not probe one: PrintHostDeviceStatus.hpp
+  l.45) and this app cannot send to one yet, so the whole page would be
+  this app's own, from RepRapFirmware's own documentation (`rr_connect`'s
+  session key, `rr_model`'s object model, `rr_gcode` M25 / M24 / M0, and
+  the SBC's `machine/*` API beside it), none of which is in the pinned
+  source to check against. Left for the owner to decide, as the pass's
+  rule says.
+- **Flashforge** keeps the printer's own page (a closed library).
 
 ### The Device page: what is built
 
@@ -496,8 +556,8 @@ printers on 127.0.0.1. None was ever sent to a printer.
   (`caps`: the CC1's command table has them commented out); no axes (SDCP
   as the reference uses it has none). **not built**: the camera (command
   386 gives `http://<host>:3031/video`, another origin than the printer's
-  page, which the page may not frame), "Storage" (commands 258, 259), the
-  CANVAS (324). **beyond the reference**, whose Device tab shows the
+  page, which the page may not frame), the CANVAS card (324 is read only
+  for Storage's start check). "Storage" (258, 259, 128) is built in pass 2. **beyond the reference**, whose Device tab shows the
   printer's own page and the CANVAS card.
 - **PrusaLink** and Prusa Connect's local PrusaLink (`src/device/prusalink.rs`):
   read as the fork's Printers tab reads it (`Utils/PrusaLinkStatus.cpp`):
