@@ -2757,7 +2757,8 @@ a project `crates/edge-3mf/src/text.rs`; the fonts and calls the session's
 | The text box, with "Embossed text cannot contain only white spaces." | `draw_text_input` | **added**; the box shows plain text, not the font (the reference draws it in the font with ImGui) |
 | "Font": the installed fonts by name, each drawn in itself, with a filter; italic and bold ("Set italic"/"Unset italic", "Set bold"/"Unset bold": the family's italic or bold face, else a skew of 0.2 or a boldness of 20) | `draw_font_list`, `draw_font_preview`, `draw_italic_button`, `draw_bold_button` | **added**, and a list of the family's faces beside it (wx picks a face by weight and slant; here they are named). The count of fonts that could not be read is said under the list |
 | "Height" (0.1 to 1000 mm), "Depth" (0.01 to 10 000 mm) | `draw_height`, `draw_depth`, `limits` | **added** |
-| "Advanced": "Use surface", "Per glyph", "Alignment" (left, center, right; top, middle, bottom), "Char gap" and "Line gap" (points, half the ascent each way; "Line gap" only for several lines), "Boldness", "Skew ratio", "From surface" (twice the depth each way; not for an object of one text, nor with "Use surface"), "Rotation" (clockwise, ±180°), "Keep up", "Set text to face camera" | `draw_advanced` | **added**, but "Use surface" and "Per glyph": shown, and can be taken off a text read with them, not put on (see below) |
+| "Advanced": "Use surface", "Per glyph", "Alignment" (left, center, right; top, middle, bottom), "Char gap" and "Line gap" (points, half the ascent each way; "Line gap" only for several lines), "Boldness", "Skew ratio", "From surface" (twice the depth each way; not for an object of one text, nor with "Use surface"), "Rotation" (clockwise, ±180°), "Keep up", "Set text to face camera" | `draw_advanced` | **added**, but "Per glyph": shown, and can be taken off a text read with it, not put on (see below). "Use surface" below |
+| "Use surface": the text cut from the surface of the object's other printed parts it is projected onto along its own Z, a part from 0.015 mm under that surface to the depth over it, a negative part or modifier from 0.015 mm over it to the depth under it; where the projection meets several layers of surface, the one nearest the text's plane, and a layer further back only where it fills what the nearer leave open; "There is no valid surface for text projection." when it meets none (the part kept as it was). The checkbox is off for an object's only printed part unless it is on already; turned on, the text's origin is moved onto the surface first (along its Z either way, else to the nearest point), and "From surface" is let go of and off. Made again on every change the panel makes (the text, the font and its options, the height and depth, the operation, "Rotation", "Set text to face camera"), as `UpdateSurfaceVolumeJob` is; a text added with the style's "Use surface" is cut from the surface it lands on, flat where it lands on none; an object of one text is never cut | `draw_advanced` (`can_use_surface`), EmbossJob.cpp `start_update_volume`, `create_volume_sources`, `cut_surface`, `cut_surface_to_its`, `create_emboss_projection`, `CreateVolumesJob::process`, `start_create_object_job`; SurfaceDrag.cpp `calc_surface_offset`; CutSurface.cpp `cut_surface`, `cut2model` | **added** (`edge_engine::emboss::emboss_on_surface`, `Model::text_surface`, `Model::text_surface_offset`; the session keeps the surface between changes). **differs**: the cut is made by one boolean of the model with the text's prism through `edge_mesh::boolean` rather than CGAL's corefinement, and the layers are ranked per patch by their distance from the text's plane rather than chosen point by point along the outline (`choose_best_distance`): the same where layers do not touch; a corner where two patches touch at a point only is made a corner of each, where `cut2model` shares one between four walls; a part whose mesh does not bound a volume is left out of the surface, where CGAL cuts open surfaces too |
 | "Operation": "Join", "Cut" (context "EmbossOperation"), "Modifier"; not for the object's last printed part ("You can't change a type of the last solid part of the object.") | `draw_model_type` | **added** |
 | Every change remakes the part in the session (jobs; "Emboss attribute change"), the add is "Add Emboss text Volume" / "Add Emboss text object" | `process`, `UpdateJob`, `create_volume` | **added**: the changes made while the tool stays open on one text are one step of the history; the reference takes one for each change |
 | A font a project names that is not installed: "Can't load exactly same font ...", only the font can be chosen, then "Apply" | `create_notification_not_valid_font`, `m_is_unknown_font` | **added** |
@@ -2817,6 +2818,36 @@ again as it was edited, saved and restored as editable, made negative and
 sliced; a negative text on the OrcaCube's top face sliced and seen engraved
 in Preview (`~/Dev/EdgeSlicerRS-shots/text/`).
 
+**"Use surface", how it was checked.** Tests
+(`crates/edge-engine/tests/emboss_surface.rs`): on a flat face the solid
+is the flat text's outline, 0.015 mm deeper as the reference makes it; on
+a cylinder and a sphere every corner within the depth of the surface and
+the volume the shape's area times the thickness to a tenth; across the
+edge between two faces of a block both faces carry it, moved off each by
+the depth along the text's Z; a negative part and a modifier inwards, and
+sliced; two plates one behind the other (the one behind not used where
+the front one covers it, used past its ends); turning it on moves the
+text onto the face; saved, read back with `use_surface`, made again the
+same and sliced the same; and the reference's own checks of its cut
+(`test_emboss_bend.cpp` `check_on_surface` on its sphere, lying cylinder
+and cylinder cap): one piece a letter, every corner of the cut on the
+target to 1e-3 mm, its area seen along Z the shape's to 2e-3, closed. In
+the session: turned on and off, a keystroke reusing the surface kept, the
+only printed part not cut. In the reference: projects saved here with a
+use-surface text on the 3DBenchy's hull ("Edge", a part and a negative
+part) and on a cylinder loaded and sliced by the pinned build's command
+line, which keeps the stored mesh: the same layers, filament within 0.1 %
+(the hull text as a part 3788.7 mm there, 3793.3 here), and written back
+by `--export-3mf` with `use_surface="1"`. Not compared: the reference's
+own cut, which only its GUI makes (its window is not opened here). How
+long: on the 3DBenchy (225 154 triangles) the surface takes 150 to
+200 ms once for a frame; each keystroke after that 25 to 95 ms, or 150
+to 250 ms when the text grows past the box the model was cut down to
+(release build). In the browser pane: a text on a cylinder made flat,
+then "Use surface" (wrapped round it, its ends left off where the face
+turns away), "Rotation" and "Cut" with it on
+(`~/Dev/EdgeSlicerRS-shots/text-surface/`).
+
 **Errors found in the C++** (by reading the pin; not run, no fix PR
 opened from here): `Model.cpp` l.3193, `ModelVolume::split` resets a
 text's `text_configuration` but not its `emboss_shape`, so each piece of a
@@ -2830,17 +2861,15 @@ value the reference divides by the size before growing the outline in font
 units (`apply_font_prop`), which `TextConfiguration.hpp` calls mm; it is
 taken as the reference takes it.
 
-**Not yet**, each refused in words where a text asks for it: "Use surface"
-(the text cut from the object's surface and raised along it,
-CutSurface.cpp, 4 140 lines on CGAL's corefinement: a port of its own),
+**Not yet**, each refused in words where a text asks for it:
 "Per glyph" (each letter placed on a section of the object), "Curve" (this
 fork's bent text, EmbossBend.cpp), inline shapes and the "Insert" popup,
 the style list (saving, renaming, other styles, kept in the app's
 settings), "Collection" (a font of a collection other than the first:
 written and read, not offered), dragging the text over the surface and the
 3D move and rotate handles, "Mirror" of a text, the QR code / barcode
-part. A text read with "Use surface", "Per glyph" or a curve keeps its mesh
-and description as read until those are taken off.
+part. A text read with "Per glyph" or a curve keeps its mesh and
+description as read until those are taken off.
 
 ### Repair/Remesh, and the object list's mesh warning
 

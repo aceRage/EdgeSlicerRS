@@ -555,6 +555,94 @@ fn a_text_on_the_surface_is_saved_and_read_back() {
     assert_eq!(sliced(&p.model), sliced(&again));
 }
 
+/// The pieces of a mesh that share no corner.
+fn pieces(mesh: &Mesh) -> usize {
+    let mut parent: Vec<usize> = (0..mesh.vertices.len()).collect();
+    fn root(parent: &mut [usize], mut at: usize) -> usize {
+        while parent[at] != at {
+            parent[at] = parent[parent[at]];
+            at = parent[at];
+        }
+        at
+    }
+    for t in &mesh.triangles {
+        for k in 1..3 {
+            let (a, b) = (
+                root(&mut parent, t[0] as usize),
+                root(&mut parent, t[k] as usize),
+            );
+            parent[a.max(b)] = a.min(b);
+        }
+    }
+    let used: std::collections::BTreeSet<usize> = mesh
+        .triangles
+        .iter()
+        .map(|t| root(&mut parent, t[0] as usize))
+        .collect();
+    used.len()
+}
+
+/// The reference's own checks of its cut (tests/libslic3r/test_emboss_bend.cpp
+/// `check_on_surface`, on its `sphere_below`, `lying_cylinder_below` and
+/// `cylinder_cap_below`, all in the text's frame with the text's origin on
+/// top): one piece for each letter, every corner of the cut on the target,
+/// the cut's area seen along the projection the shape's area to 2e-3,
+/// and the solid closed.
+#[test]
+fn the_references_own_checks_of_the_cut() {
+    let font = nanum();
+    let text = config("BOX 8");
+    let (shape, scale, _) = emboss::text_shape(fonts(&font), &text).unwrap();
+    let area: f64 =
+        shape.iter().map(|region| region.area_mm2()).sum::<f64>() * (scale / 1e-6).powi(2);
+    // Its sphere is of 2° steps, radius 30 mm, its top at the origin.
+    let mut ball = sphere(30.0, 180);
+    for v in &mut ball.vertices {
+        v[2] -= 30.0;
+    }
+    // A cylinder of radius 25 mm, 120 long, lying along X, its top line at 0.
+    let mut lying = cylinder(25.0, 120.0, 180);
+    for v in &mut lying.vertices {
+        *v = [v[2] - 60.0, -v[1], v[0] - 25.0];
+    }
+    // A cylinder standing, its top cap at 0.
+    let mut cap = cylinder(30.0, 10.0, 180);
+    for v in &mut cap.vertices {
+        v[2] -= 10.0;
+    }
+    for (name, target) in [("sphere", &ball), ("lying cylinder", &lying), ("cap", &cap)] {
+        assert!(target.signed_volume() > 0.0, "{name}");
+        let surface = emboss::Surface::new([(target, Transform::IDENTITY)]).unwrap();
+        let depth = 1.0;
+        let made =
+            emboss::emboss_on_surface(fonts(&font), &text, depth, PartKind::Normal, &surface)
+                .unwrap();
+        assert!(closed(&made.mesh), "{name}");
+        assert_eq!(pieces(&made.mesh), shape.len(), "{name}");
+        let tree = edge_mesh::raycast::Tree::new(target);
+        let mut seen = 0.0;
+        for t in 0..made.mesh.triangles.len() {
+            let [a, b, c] = made.mesh.triangle(t).map(|p| p.map(f64::from));
+            let along = ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) / 2.0;
+            if along <= 0.0 {
+                continue;
+            }
+            seen += along;
+            // The front is the cut moved the depth along Z.
+            for p in [a, b, c] {
+                let on = [p[0], p[1], p[2] - depth];
+                let (q, _, _) = tree.closest_point(on).unwrap();
+                let far = ((0..3).map(|i| (q[i] - on[i]).powi(2)).sum::<f64>()).sqrt();
+                assert!(far < 1e-3, "{name}: {far} at {on:?}");
+            }
+        }
+        assert!(
+            (seen / area - 1.0).abs() < 2e-3,
+            "{name}: {seen} against {area}"
+        );
+    }
+}
+
 /// How long a text on the 3DBenchy's hull takes to make again, as on each
 /// keystroke: the surface made once for the frame, then the text cut from
 /// it for each change. Release build:
@@ -631,4 +719,32 @@ fn timing_on_the_benchy() {
         "benchy ({triangles} triangles): surface {made_surface:?}, each text {:?}",
         times
     );
+    // For the reference to slice: the text added, a part and a negative
+    // part, each saved.
+    if let Some(keep) = std::env::var_os("EDGE_KEEP_SAVED") {
+        for (kind, name) in [
+            (PartKind::Normal, "benchy_surface_pos.3mf"),
+            (PartKind::Negative, "benchy_surface_neg.3mf"),
+        ] {
+            let mut model = model.clone();
+            let text =
+                emboss::emboss_on_surface(fonts(&font), &config("Edge"), 1.0, kind, &surface)
+                    .unwrap();
+            model
+                .add_text(
+                    bed,
+                    object,
+                    copy,
+                    Some((hit.point, hit.normal)),
+                    None,
+                    None,
+                    kind,
+                    text,
+                )
+                .unwrap();
+            model
+                .save(&Path::new(&keep).join(name), &Saving::None, bed)
+                .unwrap();
+        }
+    }
 }

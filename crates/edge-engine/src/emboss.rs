@@ -50,7 +50,7 @@ use crate::Failure;
 
 #[path = "emboss_surface.rs"]
 mod surface;
-pub use surface::{NO_SURFACE, Surface, emboss_on_surface, moved_in_frame};
+pub use surface::{NO_SURFACE, Surface, SurfaceKey, emboss_on_surface, moved_in_frame};
 
 /// How far a text's solid reaches past its surface, in mm (EmbossJob.cpp
 /// `SAFE_SURFACE_OFFSET`), so that it meets the object.
@@ -513,6 +513,20 @@ impl Model {
         let at = self.object_at(object)?;
         let index = self.part_at(at, part)?;
         Ok(self.objects[at].shape.parts[index].text.clone())
+    }
+
+    /// Whether a part is its object's only printed part
+    /// (`ModelVolume::is_the_only_one_part`): "Use surface" is not for it.
+    pub fn is_only_printed_part(&self, object: u64, part: u64) -> Result<bool, Failure> {
+        let at = self.object_at(object)?;
+        let index = self.part_at(at, part)?;
+        let parts = &self.objects[at].shape.parts;
+        Ok(parts[index].kind == PartKind::Normal
+            && parts
+                .iter()
+                .filter(|held| held.kind == PartKind::Normal)
+                .count()
+                == 1)
     }
 
     /// Where a text part's own frame is in its object: its matrix, or for

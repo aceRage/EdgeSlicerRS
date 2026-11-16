@@ -35,9 +35,10 @@
 //! which also leaves out the prism's sides) are the candidate surface,
 //! in patches connected across their edges; where several layers lie one
 //! behind another, they are taken nearest the text's plane first, and a
-//! patch further back only where at least a hundredth of its area is not
-//! covered by those taken (`select_patches`, whose margin is a hundredth
-//! of the shape's size, and which adds a whole patch where it fills some
+//! patch further back only where, seen along Z, some of it is not covered
+//! by those taken grown by a hundredth of the shape's size
+//! (`select_patches`' `extend_delta`, which also adds a whole patch where
+//! it fills some
 //! of what is left); and the patches taken are made a solid as
 //! `cut2model` makes it, the surface moved by the front and the back
 //! amounts and walls along its outline. Several printed parts are united
@@ -65,9 +66,10 @@
 //! A part whose mesh does not bound a volume cannot take part in a boolean
 //! and is left out of the surface (the reference cuts open surfaces too).
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use edge_3mf::{EmbossShape, PartKind, TextConfiguration, TextVolume};
+use edge_geom::{ExPolygon, Point2, Polygon, scaled};
 use edge_mesh::boolean::{Op, Solid};
 use edge_mesh::raycast::Tree;
 use edge_mesh::{Mesh, Transform};
@@ -83,11 +85,6 @@ type Vec3 = [f64; 3];
 /// `cut_surface`).
 pub const NO_SURFACE: &str = "There is no valid surface for text projection.";
 
-/// How much of a piece further back must be left uncovered by the pieces
-/// taken before it for it to be taken too (`select_patches`'
-/// `extend_delta`, a hundredth of the shape's size).
-const UNCOVERED: f64 = 0.01;
-
 /// The surface a text is projected onto: an object's printed parts other
 /// than the text, united, in the text's frame (`create_volume_sources`).
 /// Made once for a frame and used for every change of the text that keeps
@@ -100,6 +97,32 @@ pub struct Surface {
     /// The solid cut down to boxes about the text's origin, by their half
     /// sizes along X and Y, the latest last (see [`Surface::near`]).
     near: Mutex<Vec<([f64; 2], Solid)>>,
+}
+
+/// The parts a [`Surface`] is made of, each placed in the text's frame;
+/// equal when they are the same meshes placed the same way.
+#[derive(Clone, Debug)]
+pub struct SurfaceKey {
+    parts: Vec<(Arc<Mesh>, Transform)>,
+}
+
+impl PartialEq for SurfaceKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.parts.len() == other.parts.len()
+            && (self.parts.iter().zip(&other.parts))
+                .all(|(a, b)| Arc::ptr_eq(&a.0, &b.0) && a.1 == b.1)
+    }
+}
+
+impl SurfaceKey {
+    /// The surface of these parts; none when none bounds a volume.
+    pub fn surface(&self) -> Option<Surface> {
+        Surface::new(
+            self.parts
+                .iter()
+                .map(|(mesh, place)| (mesh.as_ref(), *place)),
+        )
+    }
 }
 
 /// How many cut-down solids a surface keeps.
@@ -263,7 +286,17 @@ pub fn emboss_on_surface(
         .and_then(|solid| solid.mesh())
         .map_err(fail)?;
     let patches = patches(&within);
-    let chosen = nearest_layers(&within, patches);
+    let (low, high) = regions.iter().flat_map(|(outline, _)| outline).fold(
+        ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]),
+        |(l, h), p| {
+            (
+                [l[0].min(f64::from(p[0])), l[1].min(f64::from(p[1]))],
+                [h[0].max(f64::from(p[0])), h[1].max(f64::from(p[1]))],
+            )
+        },
+    );
+    let delta = ((high[0] - low[0]) + (high[1] - low[1])) / (2.0 * 100.0);
+    let chosen = nearest_layers(&within, patches, delta);
     let mesh = cut2model(&within, &chosen, front, back);
     if mesh.triangles.is_empty() {
         return Err(refused(NO_SURFACE));
@@ -350,12 +383,14 @@ fn patches(within: &Mesh) -> Vec<Vec<usize>> {
 
 /// The patches nearest the text's plane, and those further back that
 /// fill what they leave open (see the module's words): the triangles
-/// kept, in order.
-fn nearest_layers(within: &Mesh, patches: Vec<Vec<usize>>) -> Vec<usize> {
+/// kept, in order. `delta` is how far, in mm, what is taken is grown
+/// before it is checked what is left (`select_patches`' `extend_delta`, a
+/// hundredth of the mean of the shape's width and height), so that the
+/// slivers between patches next to each other do not count as open.
+fn nearest_layers(within: &Mesh, patches: Vec<Vec<usize>>, delta: f64) -> Vec<usize> {
     if patches.len() <= 1 {
         return patches.into_iter().flatten().collect();
     }
-    let under = within.bounds().map_or(0.0, |(low, _)| f64::from(low[2])) - 1.0;
     // How far the text's plane is from each patch's reach along Z, and
     // from its middle.
     let mut order: Vec<(f64, f64, usize)> = patches
@@ -384,37 +419,35 @@ fn nearest_layers(within: &Mesh, patches: Vec<Vec<usize>>) -> Vec<usize> {
             .then(a.1.total_cmp(&b.1))
             .then(a.2.cmp(&b.2))
     });
-    let mut taken: Vec<Tree> = Vec::new();
+    // A patch as seen along Z (`to_expoly`): its triangles united.
+    let seen = |list: &[usize]| -> Vec<ExPolygon> {
+        let triangles: Vec<Polygon> = list
+            .iter()
+            .map(|&t| Polygon {
+                points: within
+                    .triangle(t)
+                    .iter()
+                    .map(|p| Point2::from_mm(f64::from(p[0]), f64::from(p[1])))
+                    .collect(),
+            })
+            .collect();
+        edge_clip::union(&triangles).unwrap_or_default()
+    };
+    let grow = scaled(delta);
+    let mut covered: Vec<ExPolygon> = Vec::new();
     let mut kept: Vec<usize> = Vec::new();
     for (_, _, at) in order {
         let list = &patches[at];
-        let (mut all, mut open) = (0.0, 0.0);
-        for &t in list {
-            let [a, b, c] = within.triangle(t).map(|p| p.map(f64::from));
-            // The area seen along Z.
-            let seen = ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) / 2.0;
-            all += seen;
-            let middle = [
-                (a[0] + b[0] + c[0]) / 3.0,
-                (a[1] + b[1] + c[1]) / 3.0,
-                under,
-            ];
-            let covered = taken.iter().any(|tree| {
-                tree.hit(middle, [0.0, 0.0, 1.0], (0.0, f64::INFINITY), &|_| true)
-                    .is_some()
-            });
-            if !covered {
-                open += seen;
+        let area = seen(list);
+        if !kept.is_empty() {
+            let open = edge_clip::difference(&area, &covered).unwrap_or_default();
+            if open.iter().map(ExPolygon::area_mm2).sum::<f64>() <= 0.0 {
+                continue;
             }
         }
-        if !taken.is_empty() && open <= UNCOVERED * all {
-            continue;
-        }
-        let piece = Mesh {
-            vertices: within.vertices.clone(),
-            triangles: list.iter().map(|&t| within.triangles[t]).collect(),
-        };
-        taken.push(Tree::new(&piece));
+        let grown = edge_clip::offset(&area, grow, edge_clip::Join::MITER).unwrap_or(area);
+        covered.extend(grown);
+        covered = edge_clip::union_ex(&covered).unwrap_or(covered);
         kept.extend_from_slice(list);
     }
     kept.sort_unstable();
@@ -522,18 +555,29 @@ impl Model {
         part: Option<u64>,
         frame: &Transform,
     ) -> Result<Option<Surface>, Failure> {
+        Ok(self.text_surface_key(object, part, frame)?.surface())
+    }
+
+    /// What [`Model::text_surface`] is made from, to tell whether a
+    /// surface made before can be used again: the same parts' meshes,
+    /// placed the same way, under the same frame.
+    pub fn text_surface_key(
+        &self,
+        object: u64,
+        part: Option<u64>,
+        frame: &Transform,
+    ) -> Result<SurfaceKey, Failure> {
         let at = self.object_at(object)?;
         let shape = &self.objects[at].shape;
         let back = frame
             .inverse()
             .ok_or_else(|| refused("the text is squashed flat"))?;
-        let sources = shape
-            .parts
-            .iter()
-            .zip(&shape.ids)
-            .filter(|(held, id)| held.kind == PartKind::Normal && Some(**id) != part)
-            .map(|(held, _)| (held.mesh.as_ref(), held.transform.then(&back)));
-        Ok(Surface::new(sources))
+        Ok(SurfaceKey {
+            parts: (shape.parts.iter().zip(&shape.ids))
+                .filter(|(held, id)| held.kind == PartKind::Normal && Some(**id) != part)
+                .map(|(held, _)| (held.mesh.clone(), held.transform.then(&back)))
+                .collect(),
+        })
     }
 
     /// How far a text's origin is to be moved, in its own frame, to lie on
