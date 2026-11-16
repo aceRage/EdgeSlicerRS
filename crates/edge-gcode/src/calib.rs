@@ -38,6 +38,253 @@ pub enum CalibrationKind {
     /// `Calib_Retraction_tower`: the retraction length `start`, `step`
     /// more for each whole mm above 0.4 mm ([`tower_retraction`]).
     RetractionTower { start: f64, step: f64 },
+    /// `Calib_Vol_speed_Tower`: the outer wall's speed `start + z × step`
+    /// mm/s at a layer whose top is at `z`, rounded (the volumetric
+    /// speeds asked for, already divided by the line's mm³ per mm).
+    VolumetricSpeedTower { start: f64, step: f64 },
+    /// `Calib_VFA_Tower`: the outer wall's speed in equal bands of `step`
+    /// from `start` to `end`, spread over the layers
+    /// ([`stepped_layer_value`]), rounded.
+    VfaTower { start: f64, end: f64, step: f64 },
+    /// `Calib_Input_shaping_freq`: the shaper's type and damping on the
+    /// second layer, the frequency from `x.0` to `x.1` (and `y.0` to
+    /// `y.1`) over the layers ([`spread_layer_value`]).
+    InputShapingFrequency {
+        firmware: ShaperFirmware,
+        damping: f64,
+        x: (f64, f64),
+        y: (f64, f64),
+        shaper: String,
+    },
+    /// `Calib_Cornering`: the corner speed from `start` to `end` over the
+    /// layers ([`spread_layer_value`]), in the printer's words.
+    Cornering {
+        start: f64,
+        end: f64,
+        corner: Corner,
+    },
+    /// `Calib_Input_shaping_damp`: the shaper's type and each axis's
+    /// frequency on the second layer, the damping from `start` to `end`
+    /// over the layers.
+    InputShapingDamping {
+        firmware: ShaperFirmware,
+        frequency: (f64, f64),
+        start: f64,
+        end: f64,
+        shaper: String,
+    },
+}
+
+/// How the cornering test tells the printer its corner speed at each
+/// layer (GCode.cpp `process_layer`, `Calib_Cornering`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Corner {
+    /// Marlin 2 with a junction deviation: `M205 J…` (GCodeWriter.cpp
+    /// `set_junction_deviation`), held to the machine's.
+    JunctionDeviation { max: f64 },
+    /// Every other: the jerk (GCodeWriter.cpp `set_jerk_xy`): Klipper's
+    /// `SET_VELOCITY_LIMIT SQUARE_CORNER_VELOCITY=`, Repetier's `M207 X`,
+    /// else `M205 X… Y…`, held to the machine's x and y jerk (`max`, as
+    /// the writer keeps them: whole numbers, `lrint`, for the flavours
+    /// that use the machine limits, else 0); a Bambu Lab printer is told
+    /// its z and e jerk beside it (`bambu`).
+    Jerk {
+        form: JerkForm,
+        max: [f64; 2],
+        bambu: Option<[f64; 2]>,
+    },
+}
+
+/// The words a jerk is set with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JerkForm {
+    Klipper,
+    Repetier,
+    Marlin,
+}
+
+/// GCodeWriter.cpp `set_jerk_xy`: nothing under 0.01 or for the jerk last
+/// set (`last`, which it then holds).
+pub fn jerk_line(
+    jerk: f64,
+    last: &mut f64,
+    form: JerkForm,
+    max: [f64; 2],
+    bambu: Option<[f64; 2]>,
+    comments: bool,
+) -> String {
+    use std::fmt::Write as _;
+    if jerk < 0.01 || (jerk - *last).abs() < 1e-4 {
+        return String::new();
+    }
+    *last = jerk;
+    let held = |limit: f64, jerk: f64| {
+        if limit > 0.0 && jerk > limit {
+            limit
+        } else {
+            jerk
+        }
+    };
+    let mut text = match form {
+        JerkForm::Klipper => format!(
+            "SET_VELOCITY_LIMIT SQUARE_CORNER_VELOCITY={}",
+            general(held(max[1], held(max[0], jerk)), 6)
+        ),
+        JerkForm::Repetier => format!("M207 X{}", general(held(max[1], held(max[0], jerk)), 6)),
+        JerkForm::Marlin => format!(
+            "M205 X{} Y{}",
+            general(held(max[0], jerk), 6),
+            general(held(max[1], jerk), 6)
+        ),
+    };
+    if let Some([z, e]) = bambu {
+        let _ = write!(text, " Z{} E{}", general(z, 2), general(e, 2));
+    }
+    if comments {
+        text.push_str(" ; adjust jerk");
+    }
+    text.push('\n');
+    text
+}
+
+/// GCodeWriter.cpp `set_junction_deviation`: `M205 J` to three places,
+/// held to the machine's, for a deviation and a machine's over 0.
+pub fn junction_deviation_line(deviation: f64, max: f64, comments: bool) -> String {
+    if deviation <= 0.0 || max <= 0.0 {
+        return String::new();
+    }
+    let comment = if comments {
+        " ; Junction Deviation"
+    } else {
+        ""
+    };
+    format!("M205 J{:.3}{comment}\n", deviation.min(max))
+}
+
+/// How a firmware is told its input shaper (GCodeWriter.cpp
+/// `set_input_shaping`), by `gcode_flavor` alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShaperFirmware {
+    /// `SET_INPUT_SHAPER`.
+    Klipper,
+    /// `M593 P"…" F… S…`.
+    RepRapFirmware,
+    /// Marlin 2: `M593 X|Y F… D…`.
+    Marlin,
+}
+
+impl ShaperFirmware {
+    /// The firmware of a `gcode_flavor`, or the reference's refusal
+    /// (GCodeWriter.cpp `set_input_shaping`, which throws).
+    pub fn of(flavor: Option<&str>) -> Result<Self, String> {
+        match flavor {
+            Some("klipper") => Ok(Self::Klipper),
+            Some("reprapfirmware") => Ok(Self::RepRapFirmware),
+            Some("marlin2") => Ok(Self::Marlin),
+            Some("marlin") | None => Err("Input shaping is not supported by Marlin < 2.1.2.\nCheck your firmware version and update your G-code flavor to 'Marlin 2'".to_owned()),
+            Some(_) => Err("Input shaping is only supported by Klipper, RepRapFirmware and Marlin 2".to_owned()),
+        }
+    }
+}
+
+/// The line that sets the input shaper (GCodeWriter.cpp
+/// `set_input_shaping`): for `axis` X, Y or A (both), `damp` and `freq`
+/// in single precision, each written only when over 0, and `shaper` its
+/// type ("Default" and "" none; "Disable" turns shaping off, both axes at
+/// 0). Nothing when there is nothing to say. The reference throws for a
+/// frequency under 0, a damping outside 0 to 1, or another axis.
+pub fn input_shaping_line(
+    firmware: ShaperFirmware,
+    axis: char,
+    damp: f32,
+    freq: f32,
+    shaper: &str,
+    comments: bool,
+) -> Result<String, String> {
+    use std::fmt::Write as _;
+    let disable = shaper == "Disable";
+    let (axis, damp, freq, shaper) = if disable {
+        ('A', 0.0_f32, 0.0_f32, "Default")
+    } else {
+        if freq < 0.0 || damp < 0.0 || damp > 1.0 || !matches!(axis, 'X' | 'Y' | 'Z' | 'A') {
+            return Err(format!(
+                "Invalid input shaping parameters: axis={axis}, freq={freq:.6}, damp={damp:.6}"
+            ));
+        }
+        (axis, damp, freq, shaper)
+    };
+    let mut params = String::new();
+    let line = match firmware {
+        ShaperFirmware::Klipper => {
+            if !shaper.is_empty() && shaper != "Default" {
+                let _ = write!(params, " SHAPER_TYPE={shaper}");
+            }
+            if axis != 'A' {
+                if freq > 0.0 {
+                    let _ = write!(params, " SHAPER_FREQ_{axis}={freq:.2}");
+                }
+                if damp > 0.0 {
+                    let _ = write!(params, " DAMPING_RATIO_{axis}={damp:.3}");
+                }
+            } else {
+                if freq > 0.0 || disable {
+                    let _ = write!(params, " SHAPER_FREQ_X={freq:.2} SHAPER_FREQ_Y={freq:.2}");
+                }
+                if damp > 0.0 || disable {
+                    let _ = write!(
+                        params,
+                        " DAMPING_RATIO_X={damp:.3} DAMPING_RATIO_Y={damp:.3}"
+                    );
+                }
+            }
+            "SET_INPUT_SHAPER"
+        }
+        ShaperFirmware::RepRapFirmware => {
+            if !shaper.is_empty() && shaper != "Default" && shaper != "DAA" {
+                let _ = write!(params, " P\"{shaper}\"");
+            }
+            if freq > 0.0 || disable {
+                let _ = write!(params, " F{freq:.2}");
+            }
+            if damp > 0.0 || disable {
+                let _ = write!(params, " S{damp:.3}");
+            }
+            "M593"
+        }
+        ShaperFirmware::Marlin => {
+            if axis != 'A' {
+                let _ = write!(params, " {axis}");
+            }
+            if freq > 0.0 || disable {
+                let _ = write!(params, " F{freq:.2}");
+            }
+            if damp > 0.0 || disable {
+                let _ = write!(params, " D{damp:.3}");
+            }
+            "M593"
+        }
+    };
+    if params.is_empty() {
+        return Ok(String::new());
+    }
+    let comment = if comments {
+        " ; Override input shaping"
+    } else {
+        ""
+    };
+    Ok(format!("{line}{params}{comment}\n"))
+}
+
+/// A value spread evenly over the layers from the third on (GCode.cpp
+/// `interpolate_value_across_layers` without a step): `start` on the
+/// second layer (index 1), then `start` to `end` from index 2 to the last,
+/// in single precision; index 0 is before the spread, at `start`.
+pub fn spread_layer_value(index: usize, count: usize, start: f32, end: f32) -> f32 {
+    if index == 1 {
+        return start;
+    }
+    let ratio = ((index as f32 - 2.0) / (count as f32 - 3.0)).clamp(0.0, 1.0);
+    start + ratio * (end - start)
 }
 
 /// How a firmware is told its pressure advance (GCodeWriter.cpp
@@ -159,6 +406,58 @@ pub(crate) fn at_layer(
     z: f64,
     tool: Option<usize>,
 ) -> String {
+    // The input shaper's values are checked when the calibration is made
+    // (`edge_engine::calib`), as the dialogs check them; a line refused
+    // here would write nothing.
+    let shaping = |firmware, axis, damp: f32, freq: f32, shaper: &str| {
+        input_shaping_line(firmware, axis, damp, freq, shaper, calibration.comments)
+            .unwrap_or_default()
+    };
+    match &calibration.kind {
+        CalibrationKind::InputShapingFrequency {
+            firmware,
+            damping,
+            x,
+            y,
+            shaper,
+        } => {
+            if index == 1 {
+                shaping(*firmware, 'A', *damping as f32, 0.0, shaper)
+            } else if x == y {
+                let freq = spread_layer_value(index, count, x.0 as f32, x.1 as f32);
+                shaping(*firmware, 'A', 0.0, freq, "")
+            } else {
+                let fx = spread_layer_value(index, count, x.0 as f32, x.1 as f32);
+                let fy = spread_layer_value(index, count, y.0 as f32, y.1 as f32);
+                shaping(*firmware, 'X', 0.0, fx, "") + &shaping(*firmware, 'Y', 0.0, fy, "")
+            }
+        }
+        CalibrationKind::InputShapingDamping {
+            firmware,
+            frequency,
+            start,
+            end,
+            shaper,
+        } => {
+            if index == 1 {
+                shaping(*firmware, 'X', 0.0, frequency.0 as f32, shaper)
+                    + &shaping(*firmware, 'Y', 0.0, frequency.1 as f32, shaper)
+            } else {
+                let damp = spread_layer_value(index, count, *start as f32, *end as f32);
+                shaping(*firmware, 'A', damp, 0.0, "")
+            }
+        }
+        _ => at_layer_plain(calibration, index, count, z, tool),
+    }
+}
+
+fn at_layer_plain(
+    calibration: &Calibration,
+    index: usize,
+    count: usize,
+    z: f64,
+    tool: Option<usize>,
+) -> String {
     match calibration.kind {
         CalibrationKind::PressureAdvanceTower { start, end, step } => {
             let advance = stepped_layer_value(index, count, start as f32, end as f32, step as f32);
@@ -172,10 +471,74 @@ pub(crate) fn at_layer(
             general(z, 6),
             general(tower_retraction(start, step, z), 6)
         ),
-        CalibrationKind::PressureAdvanceLine(_) | CalibrationKind::PressureAdvancePattern(_) => {
-            String::new()
+        CalibrationKind::PressureAdvanceLine(_)
+        | CalibrationKind::PressureAdvancePattern(_)
+        | CalibrationKind::VolumetricSpeedTower { .. }
+        | CalibrationKind::VfaTower { .. }
+        | CalibrationKind::InputShapingFrequency { .. }
+        | CalibrationKind::InputShapingDamping { .. }
+        | CalibrationKind::Cornering { .. } => String::new(),
+    }
+}
+
+/// What the cornering test writes at the change to layer `index` of
+/// `count`; `last_jerk` is the writer's jerk last set (`m_last_jerk`).
+pub(crate) fn corner_at(
+    calibration: &Calibration,
+    index: usize,
+    count: usize,
+    last_jerk: &mut f64,
+) -> String {
+    let CalibrationKind::Cornering { start, end, corner } = &calibration.kind else {
+        return String::new();
+    };
+    let value = f64::from(spread_layer_value(index, count, *start as f32, *end as f32));
+    match corner {
+        Corner::JunctionDeviation { max } => {
+            junction_deviation_line(value, *max, calibration.comments)
+        }
+        Corner::Jerk { form, max, bambu } => {
+            jerk_line(value, last_jerk, *form, *max, *bambu, calibration.comments)
         }
     }
+}
+
+/// The outer wall's speed a calibration sets at the change to layer
+/// `index` (from 0) of `count`, whose top is at `z` mm, in place of the
+/// process's (GCode.cpp `process_layer`: `m_calib_config`'s
+/// `outer_wall_speed`, which `_extrude` lays over each region's settings).
+pub(crate) fn outer_wall_speed_at(
+    calibration: &Calibration,
+    index: usize,
+    count: usize,
+    z: f64,
+) -> Option<f64> {
+    match calibration.kind {
+        CalibrationKind::VolumetricSpeedTower { start, step } => {
+            Some(volumetric_tower_speed(start, step, z))
+        }
+        CalibrationKind::VfaTower { start, end, step } => {
+            Some(vfa_tower_speed(index, count, start, end, step))
+        }
+        _ => None,
+    }
+}
+
+/// The volumetric speed tower's outer wall speed at a layer whose top is
+/// at `z` mm (GCode.cpp `process_layer`, `Calib_Vol_speed_Tower`): `start +
+/// z × step`, `std::round`ed. `start` and `step` are mm/s, the volumetric
+/// speeds asked for over the line's mm³ per mm (Plater.cpp
+/// `calib_max_vol_speed`).
+pub fn volumetric_tower_speed(start: f64, step: f64, z: f64) -> f64 {
+    // `std::round`: halves away from zero, as Rust's `round`.
+    (start + z * step).round()
+}
+
+/// The VFA tower's outer wall speed at layer `index` of `count` (GCode.cpp
+/// `process_layer`, `Calib_VFA_Tower`): the stepped value, worked in
+/// single precision, `std::round`ed as a float.
+pub fn vfa_tower_speed(index: usize, count: usize, start: f64, end: f64, step: f64) -> f64 {
+    f64::from(stepped_layer_value(index, count, start as f32, end as f32, step as f32).round())
 }
 
 /// The retraction length a calibration sets from the layer whose top is at

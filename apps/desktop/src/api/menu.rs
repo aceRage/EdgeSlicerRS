@@ -717,16 +717,14 @@ static INPUT_SHAPING: &[Node] = &[
         "calibration.shaping_frequency",
         "Input Shaping Frequency",
         "Input Shaping Frequency",
-        When::Always,
-    )
-    .waits(NO_CALIBRATION)),
+        When::Prepare,
+    )),
     I(item(
         "calibration.shaping_damping",
         "Input Shaping Damping/zeta factor",
         "Input Shaping Damping/zeta factor",
-        When::Always,
-    )
-    .waits(NO_CALIBRATION)),
+        When::Prepare,
+    )),
 ];
 
 static CALIBRATION: &[Node] = &[
@@ -765,23 +763,21 @@ static CALIBRATION: &[Node] = &[
         "calibration.max_flowrate",
         "Max flowrate",
         "Max flowrate",
-        When::Always,
-    )
-    .waits(NO_CALIBRATION)),
+        When::Prepare,
+    )),
     I(item(
         "calibration.cornering",
         "Cornering",
         "Cornering calibration",
-        When::Always,
-    )
-    .waits(NO_CALIBRATION)),
+        When::Prepare,
+    )),
     Node::Menu {
         id: "calibration.input_shaping",
         label: "Input Shaping",
         os: Os::All,
         items: INPUT_SHAPING,
     },
-    I(item("calibration.vfa", "VFA", "VFA", When::Always).waits(NO_CALIBRATION)),
+    I(item("calibration.vfa", "VFA", "VFA", When::Prepare)),
     I(item(
         "calibration.ironing",
         "Ironing flow",

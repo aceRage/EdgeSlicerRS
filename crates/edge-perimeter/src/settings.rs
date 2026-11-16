@@ -71,6 +71,9 @@ pub struct WallSettings {
     pub alternate_extra_wall: bool,
     /// Parts too thin for two walls get one line (`detect_thin_wall`).
     pub detect_thin_wall: bool,
+    /// Whether there is sparse fill (`sparse_infill_density` over 0):
+    /// without it, no gap inside the innermost wall is filled.
+    pub sparse_infill: bool,
     /// On every other layer walls over a steep overhang are laid the
     /// other way round (`overhang_reverse`), where the way round is not
     /// set outright (`wall_direction` at `auto`): none otherwise.
@@ -214,6 +217,7 @@ impl Default for WallSettings {
             fuzzy: FuzzySettings::default(),
             alternate_extra_wall: false,
             detect_thin_wall: false,
+            sparse_infill: true,
             overhang_reverse: None,
             counterbore: None,
         }
@@ -439,6 +443,8 @@ impl WallSettings {
             fuzzy,
             counterbore,
             detect_thin_wall: flag("detect_thin_wall", false)?,
+            // `sparse_infill_density.value == 0`, the percentage as it is.
+            sparse_infill: percent("sparse_infill_density", 20.0)? != 0.0,
             overhang_reverse: (flag("overhang_reverse", false)?
                 && matches!(settings.text("wall_direction"), None | Some("auto")))
             .then_some(crate::OverhangReverse {
@@ -668,6 +674,7 @@ impl WallSettings {
                 flow: solid_infill,
                 shortest: scaled(self.filter_out_gap_fill),
             }),
+            gaps_inside: self.sparse_infill,
             one_wall_top: None,
             precise_outer_wall: self.precise_outer_wall,
             over_air: None,

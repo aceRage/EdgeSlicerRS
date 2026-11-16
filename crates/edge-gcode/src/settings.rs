@@ -1237,10 +1237,60 @@ impl PrintSettings {
     }
 }
 
+/// GCode.cpp `print_machine_envelope`, `write_input_shaping`: the input
+/// shaper the printer is told before the print when asked
+/// (`input_shaping_emit`): never for Marlin before 2 or a Bambu Lab
+/// printer; for RepRapFirmware, or with "Disable", one line for both axes.
+fn input_shaping_override(settings: &Settings, flavor: &str) -> Result<String, ConfigError> {
+    let bambu = settings
+        .text("printer_model")
+        .filter(|model| !model.is_empty())
+        .or(settings.text("printer_settings_id"))
+        .is_some_and(|name| name.starts_with("Bambu Lab"));
+    if settings.flag("input_shaping_emit")? != Some(true) || flavor == "marlin" || bambu {
+        return Ok(String::new());
+    }
+    let firmware = match crate::calib::ShaperFirmware::of(Some(flavor)) {
+        Ok(firmware) => firmware,
+        // Only Marlin 2, RepRapFirmware and Klipper are told it.
+        Err(_) => return Ok(String::new()),
+    };
+    let number =
+        |key: &str| -> Result<f32, ConfigError> { Ok(settings.float(key)?.unwrap_or(0.0) as f32) };
+    let shaper = settings.text("input_shaping_type").unwrap_or("Default");
+    let comments = settings.flag("gcode_comments")?.unwrap_or(false);
+    let refused = |reason: String| ConfigError::BadValue {
+        key: "input_shaping_type".to_owned(),
+        found: reason,
+        expected: "input shaping values the firmware takes",
+    };
+    let mut out = crate::calib::input_shaping_line(
+        firmware,
+        'X',
+        number("input_shaping_damp_x")?,
+        number("input_shaping_freq_x")?,
+        shaper,
+        comments,
+    )
+    .map_err(refused)?;
+    if flavor != "reprapfirmware" && shaper != "Disable" {
+        out += &crate::calib::input_shaping_line(
+            firmware,
+            'Y',
+            number("input_shaping_damp_y")?,
+            number("input_shaping_freq_y")?,
+            "",
+            comments,
+        )
+        .map_err(refused)?;
+    }
+    Ok(out)
+}
+
 /// GCode.cpp `print_machine_envelope`: the machine's limits, for a Marlin
-/// or RepRapFirmware printer that is to be told them. Input shaping, which
-/// the reference sets there for Marlin 2 and RepRapFirmware where asked
-/// (`input_shaping_emit`), is not written; a note says so where set.
+/// or RepRapFirmware printer that is to be told them, and the input
+/// shaper where asked ([`input_shaping_override`]), which Klipper is told
+/// too.
 fn machine_envelope(settings: &Settings) -> Result<Option<String>, ConfigError> {
     // Only for a printer the settings describe: without one the file has
     // a generic preamble and no limits to tell (as `limits`).
@@ -1250,6 +1300,10 @@ fn machine_envelope(settings: &Settings) -> Result<Option<String>, ConfigError> 
     let emit = settings
         .flag("emit_machine_limits_to_gcode")?
         .unwrap_or(true);
+    if flavor == "klipper" {
+        let shaping = input_shaping_override(settings, flavor)?;
+        return Ok((!shaping.is_empty()).then_some(shaping));
+    }
     if !emit || !matches!(flavor, "marlin" | "marlin2" | "reprapfirmware") {
         return Ok(None);
     }
@@ -1308,6 +1362,7 @@ fn machine_envelope(settings: &Settings) -> Result<Option<String>, ConfigError> 
     if flavor == "marlin2" && deviation > 0.0 {
         out += &format!("M205 J{deviation:.3}\n");
     }
+    out += &input_shaping_override(settings, flavor)?;
     Ok(Some(out))
 }
 

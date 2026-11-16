@@ -541,6 +541,27 @@ Triangles: %llu	GUI/RemeshDialog.cpp:248
 Triangles: %llu -> about %llu	GUI/RemeshDialog.cpp:256
 Wiki Guide: Retraction Calibration	GUI/calib_dlg.cpp:941
 Printer error %s - see the printer screen or Bambu's error-code page	GUI/HMS.cpp:566
+Wiki Guide: Volumetric Speed Calibration	GUI/calib_dlg.cpp:617
+Please input valid values:\n(0 <= Cornering <= %s)	GUI/calib_dlg.cpp:1844
+Note: Lower values = sharper corners but slower speeds.\n	GUI/calib_dlg.cpp:1770
+Marlin 2 Junction Deviation detected:\nTo test Classic Jerk, set 'Maximum Junction Deviation' in Motion ability to 0.	GUI/calib_dlg.cpp:1777
+Marlin 2 Classic Jerk detected:\nTo test Junction Deviation, set 'Maximum Junction Deviation' in Motion ability to a value > 0.	GUI/calib_dlg.cpp:1779
+RepRap detected: Jerk in mm/s.\nOrcaSlicer will convert the values to mm/min when necessary.	GUI/calib_dlg.cpp:1784
+Wiki Guide: Cornering Calibration	GUI/calib_dlg.cpp:1800
+Cornering test	GUI/calib_dlg.cpp:1690
+NOTE: High values may cause Layer shift (>%s)	GUI/calib_dlg.cpp:1849
+Frequency (Start / End): 	GUI/calib_dlg.cpp:1340
+RepRap firmware uses the same frequency range for both axes.	GUI/calib_dlg.cpp:1386
+Recommended: Set Damp to 0.\nThis will use the printer's default or saved value.	GUI/calib_dlg.cpp:1403
+Frequency: 	GUI/calib_dlg.cpp:1555
+RepRap firmware uses the same frequency for both axes.	GUI/calib_dlg.cpp:1582
+Wiki Guide: Input Shaping Calibration	GUI/calib_dlg.cpp:1412
+The end speed (%.0f mm/s) exceeds the filament's maximum volumetric speed (%.1f mm³/s), which limits the outer wall to about %.0f mm/s at this line width and layer height.\nSpeeds above this will be clamped, so the upper blocks of the tower will not print at the requested speed.\n\n%s	GUI/calib_dlg.cpp:807
+The end speed (%.0f mm/s) exceeds the filament's maximum volumetric speed (%.1f mm³/s) at the default layer height (%.2f mm).\n\nThe layer height has been reduced to %.2f mm (a value used by this printer's profiles) so the tower can reach the requested speed.	GUI/calib_dlg.cpp:833
+Even at the smallest layer height used by this printer's profiles (%.2f mm) the end speed (%.0f mm/s) exceeds the filament's maximum volumetric speed (%.1f mm³/s).\n\nThe layer height will be set to %.2f mm and the end speed lowered to %.0f mm/s.\n\nContinue?	GUI/calib_dlg.cpp:842
+Continue anyway?	GUI/calib_dlg.cpp:855
+Enable "Auto-adjust" to fix this automatically, or continue anyway?	GUI/calib_dlg.cpp:861
+Enable "Auto-scale for nozzle" and "Auto-adjust" to fix this automatically, or continue anyway?	GUI/calib_dlg.cpp:862
 
 [own]
 # This app's own words on the static page, with no counterpart in the

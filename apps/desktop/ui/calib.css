@@ -31,3 +31,13 @@
 .calib-links a { color: var(--accent); font-size: var(--size-label); }
 .calib-two { display: grid; grid-template-columns: 1fr 1fr; }
 .calib-field input:disabled { opacity: 0.45; }
+/* A tick before its words ("Auto-scale for nozzle"). */
+.calib-field.calib-tick { display: flex; flex-direction: row; align-items: center; justify-content: flex-start; gap: var(--space-2); }
+.calib-field.calib-tick > span:first-child { color: var(--text-1); }
+.calib-tick > span { color: var(--text-1); }
+/* A label then two numbers with units ("X Start / End: "). */
+.calib-field:has(> input + span + input) { grid-template-columns: minmax(120px, auto) 1fr auto 1fr auto; }
+/* Start and end side by side (cornering). */
+.calib-pair { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
+.calib-pair .calib-field { grid-template-columns: auto 1fr auto; }
+.calib-note { white-space: pre-line; margin: 0; font-size: var(--size-label); }

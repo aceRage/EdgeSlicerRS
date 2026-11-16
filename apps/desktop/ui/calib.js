@@ -59,8 +59,9 @@ const Calib = (() => {
         if (event.submitter && event.submitter.value === 'cancel') return;
         event.preventDefault();
         const error = await take();
+        // '' keeps the dialog open with nothing said (a question answered No).
         if (error) await inform(dialog.querySelector('h2').textContent, error);
-        else dialog.close('ok');
+        else if (error !== '') dialog.close('ok');
       });
       dialog.showModal();
     });
@@ -254,6 +255,250 @@ const Calib = (() => {
     });
   }
 
+  // A dialog of three numbers with units and a guide (calib_dlg.cpp
+  // `MaxVolumetricSpeed_Test_Dlg`, `VFA_Test_Dlg`): its fields, then the
+  // test made from what they hold (`ToDouble`; the session checks them).
+  function threeNumbers({ title, labels, unit, values, guide, test, extra = [] }) {
+    const fields = labels.map((label) => field(label, unit));
+    fields.forEach((f, index) => { f.input.value = values[index]; });
+    const link = el('a', { href: guide[1], textContent: t(guide[0]) });
+    link.addEventListener('click', (event) => { event.preventDefault(); attempt(() => openGuide(link.href)); });
+    const dialog = el('dialog', { className: 'calib-dialog' }, el('form', { method: 'dialog' },
+      el('h2', { textContent: t(title) }),
+      group('Settings', ...fields.map((f) => f.row), ...extra.map((e) => e.row)),
+      el('div', { className: 'calib-links' }, link),
+      el('div', { className: 'row end' },
+        el('button', { type: 'submit', value: 'ok', className: 'primary', textContent: t('OK') }),
+        el('button', { type: 'submit', value: 'cancel', formNoValidate: true, textContent: t('Cancel') }))));
+    return { dialog, fields };
+  }
+
+  // A number as `wxString::ToDouble` reads it: the whole text, or nothing.
+  const readNumber = (f) => (f.input.value.trim() === '' ? null : Number(f.input.value));
+
+  // "Max volumetric speed test" (calib_dlg.cpp `MaxVolumetricSpeed_Test_Dlg`).
+  function maxFlowrate() {
+    const { dialog, fields } = threeNumbers({
+      title: 'Max volumetric speed test',
+      labels: ['Start volumetric speed: ', 'End volumetric speed: ', `${t('Step')}: `],
+      unit: 'mm\u00b3/s',
+      values: ['5', '20', shown(0.5)],
+      guide: ['Wiki Guide: Volumetric Speed Calibration', 'https://github.com/SoftFever/OrcaSlicer/wiki/volumetric-speed-calib'],
+    });
+    return run(dialog, async () => {
+      const [start, end, step] = fields.map(readNumber);
+      try {
+        await make({ test: 'max_flowrate', start, end, step });
+      } catch (error) {
+        return error.message;
+      }
+      return null;
+    });
+  }
+
+  // A tick with its words, and the tooltip on both (calib_dlg.cpp
+  // `add_scale_checkbox` and the rest).
+  function tick(label, tooltip, checked = true) {
+    const input = el('input', { type: 'checkbox', checked });
+    const row = el('label', { className: 'calib-field calib-tick', title: t(tooltip) }, input, el('span', { textContent: t(label) }));
+    return { row, input };
+  }
+
+  // "VFA test" (calib_dlg.cpp `VFA_Test_Dlg`).
+  function vfa() {
+    const resize = tick('Auto-scale for nozzle', 'This model is designed around a 0.4 mm nozzle with a 0.2 mm layer height.\nWhen the scaling option is enabled (recommended), it dynamically resizes to match your current nozzle diameter and an appropriate layer height, making the test both accurate and easy to read.\nTurn scaling off only if you wish to print the reference model exactly as-is.');
+    const adjust = tick('Auto-adjust to max volumetric speed', "If the end speed would exceed the filament's maximum volumetric speed, automatically lower the layer height (keeping standard values and staying within the machine's limits) to reach it. If even the minimum layer height is not enough, lower the end speed instead.");
+    const { dialog, fields } = threeNumbers({
+      title: 'VFA test',
+      labels: ['Start speed: ', 'End speed: ', `${t('Step')}: `],
+      unit: 'mm/s',
+      values: ['40', '200', shown(10)],
+      guide: ['Wiki Guide: VFA', 'https://github.com/SoftFever/OrcaSlicer/wiki/vfa-calib'],
+      extra: [resize, adjust],
+    });
+    const title = t('VFA test');
+    const yesNo = (text) => confirmBox(title, text, t('Yes'), t('No'));
+    return run(dialog, async () => {
+      const [start, end, step] = fields.map(readNumber);
+      const args = { test: 'vfa', start, end, step, resize: resize.input.checked };
+      try {
+        // on_start: the end speed against what the filament melts.
+        const check = await call('calib_vfa_check', args);
+        const clamp = (question) => yesNo(fmt(t("The end speed (%.0f mm/s) exceeds the filament's maximum volumetric speed (%.1f mm³/s), which limits the outer wall to about %.0f mm/s at this line width and layer height.\nSpeeds above this will be clamped, so the upper blocks of the tower will not print at the requested speed.\n\n%s"),
+          check.end, check.max_volumetric_speed, check.limit, question));
+        if (check.over) {
+          if (adjust.input.checked && resize.input.checked) {
+            const plan = check.plan || { kind: 'fits' };
+            if (plan.kind === 'layer_height') {
+              args.layer_height = plan.layer_height;
+              await inform(title, fmt(t("The end speed (%.0f mm/s) exceeds the filament's maximum volumetric speed (%.1f mm³/s) at the default layer height (%.2f mm).\n\nThe layer height has been reduced to %.2f mm (a value used by this printer's profiles) so the tower can reach the requested speed."),
+                check.end, check.max_volumetric_speed, check.default_layer_height, plan.layer_height));
+            } else if (plan.kind === 'end_speed') {
+              const go = await yesNo(fmt(t("Even at the smallest layer height used by this printer's profiles (%.2f mm) the end speed (%.0f mm/s) exceeds the filament's maximum volumetric speed (%.1f mm³/s).\n\nThe layer height will be set to %.2f mm and the end speed lowered to %.0f mm/s.\n\nContinue?"),
+                plan.layer_height, check.end, check.max_volumetric_speed, plan.layer_height, plan.end));
+              if (!go) return '';
+              args.end = plan.end;
+              args.layer_height = plan.layer_height;
+            } else if (plan.kind === 'no_candidates') {
+              if (!(await clamp(t('Continue anyway?')))) return '';
+            }
+          } else if (!(await clamp(resize.input.checked
+            ? t('Enable "Auto-adjust" to fix this automatically, or continue anyway?')
+            : t('Enable "Auto-scale for nozzle" and "Auto-adjust" to fix this automatically, or continue anyway?')))) {
+            return '';
+          }
+        }
+        await make(args);
+      } catch (error) {
+        return error.message;
+      }
+      return null;
+    });
+  }
+
+  // A row of two numbers after one label (the input shaping dialogs'
+  // "X Start / End: " and the rest), each with its unit.
+  function pair(label, unit, values) {
+    const inputs = values.map((value) => el('input', { type: 'text', inputMode: 'decimal', autocomplete: 'off', spellcheck: false, value }));
+    const row = el('div', { className: 'calib-field' }, el('span', { textContent: label }),
+      ...inputs.flatMap((input) => [input, el('span', { className: 'quiet', textContent: unit })]));
+    return { row, inputs };
+  }
+
+  // The firmware's note under the shaper types (calib_dlg.cpp; not
+  // translated there).
+  function firmwareNote(flavor, fallback) {
+    switch (flavor) {
+      case 'marlin2': case 'marlin': return 'Marlin version => 2.1.2\nFixed-Time motion not yet implemented.';
+      case 'klipper': return 'Klipper version => 0.9.0';
+      case 'reprapfirmware': return 'RepRap firmware version => 3.4.0\nCheck your firmware documentation for supported shaper types.';
+      default: return fallback;
+    }
+  }
+
+  // "Input shaping Frequency test" and "Input shaping Damp test"
+  // (calib_dlg.cpp `Input_Shaping_Freq_Test_Dlg`, `Input_Shaping_Damp_Test_Dlg`).
+  async function inputShaping(damping) {
+    const printer = await call('calib_printer');
+    const reprap = printer.flavor === 'reprapfirmware';
+    const model = radios('calib-model', ['Ringing Tower', 'Fast Tower'], 0);
+    const types = el('div', { className: 'calib-radios calib-two', role: 'radiogroup' }, ...printer.shaper_types.map((type, index) =>
+      el('label', {}, el('input', { type: 'radio', name: 'calib-shaper', value: type, checked: index === 0 }), type)));
+    const note = el('p', { className: 'quiet calib-note', textContent: firmwareNote(printer.flavor, damping ? 'Check firmware compatibility.' : 'Please ensure the selected type is compatible with your firmware version.') });
+    let settings;
+    let read;
+    if (!damping) {
+      const x = pair(reprap ? t('Frequency (Start / End): ') : `X ${t('Start / End')}: `, 'Hz', ['15', '110']);
+      const y = pair(`Y ${t('Start / End')}: `, 'Hz', ['15', '110']);
+      if (reprap) {
+        y.row.hidden = true;
+        for (const input of x.inputs) input.title = t('RepRap firmware uses the same frequency range for both axes.');
+      }
+      const damp = field('Damp: ');
+      damp.input.value = (0.15).toFixed(3);
+      settings = group('Frequency settings', x.row, y.row, damp.row,
+        el('p', { className: 'quiet calib-note', textContent: t("Recommended: Set Damp to 0.\nThis will use the printer's default or saved value.") }));
+      read = () => ({
+        freq_start_x: readNumber({ input: x.inputs[0] }), freq_end_x: readNumber({ input: x.inputs[1] }),
+        freq_start_y: readNumber({ input: y.inputs[0] }), freq_end_y: readNumber({ input: y.inputs[1] }),
+        damping: readNumber(damp),
+      });
+    } else {
+      const freq = pair(reprap ? t('Frequency: ') : `${t('Frequency')} X / Y: `, 'Hz', ['30', '30']);
+      if (reprap) {
+        freq.inputs[1].hidden = true;
+        freq.row.lastChild.hidden = true;
+        freq.inputs[0].title = t('RepRap firmware uses the same frequency for both axes.');
+      }
+      const damp = pair(`${t('Damp')} ${t('Start / End')}: `, '', [(0).toFixed(3), (0.4).toFixed(3)]);
+      settings = group('Frequency settings', freq.row, damp.row,
+        el('p', { className: 'quiet calib-note', textContent: t('Note: Use previously calculated frequencies.') }));
+      read = () => ({
+        freq_x: readNumber({ input: freq.inputs[0] }), freq_y: readNumber({ input: freq.inputs[1] }),
+        damping_start: readNumber({ input: damp.inputs[0] }), damping_end: readNumber({ input: damp.inputs[1] }),
+      });
+    }
+    const url = 'https://github.com/SoftFever/OrcaSlicer/wiki/input-shaping-calib';
+    const link = el('a', { href: url, textContent: t('Wiki Guide: Input Shaping Calibration') });
+    link.addEventListener('click', (event) => { event.preventDefault(); attempt(() => openGuide(url)); });
+    const title = damping ? 'Input shaping Damp test' : 'Input shaping Frequency test';
+    const dialog = el('dialog', { className: 'calib-dialog' }, el('form', { method: 'dialog' },
+      el('h2', { textContent: t(title) }),
+      group('Test model', model),
+      group('Input shaper type', types, note),
+      settings,
+      el('div', { className: 'calib-links' }, link),
+      el('div', { className: 'row end' },
+        el('button', { type: 'submit', value: 'ok', className: 'primary', textContent: t('OK') }),
+        el('button', { type: 'submit', value: 'cancel', formNoValidate: true, textContent: t('Cancel') }))));
+    return run(dialog, async () => {
+      const shaper = types.querySelector('input:checked');
+      try {
+        await make({
+          test: damping ? 'shaping_damping' : 'shaping_frequency', reprap,
+          model: Number(model.querySelector('input:checked').value),
+          shaper: shaper ? shaper.value : '', ...read(),
+        });
+      } catch (error) {
+        return error.message;
+      }
+      return null;
+    });
+  }
+
+  // "Cornering test" (calib_dlg.cpp `Cornering_Test_Dlg`): junction
+  // deviation (mm) on Marlin 2 with one set, else the jerk (mm/s).
+  async function cornering() {
+    const printer = await call('calib_printer');
+    const deviation = printer.junction_deviation;
+    const model = radios('calib-model', ['Ringing Tower', 'Fast Tower', 'SCV-V2'], 0);
+    const unit = deviation ? 'mm' : 'mm/s';
+    const start = field('Start: ', unit);
+    const end = field('End: ', unit);
+    start.input.value = (deviation ? 0 : 1).toFixed(3);
+    end.input.value = (deviation ? 0.25 : 15).toFixed(3);
+    let note = t('Note: Lower values = sharper corners but slower speeds.\n');
+    if (printer.flavor === 'marlin2') {
+      note += deviation
+        ? t("Marlin 2 Junction Deviation detected:\nTo test Classic Jerk, set 'Maximum Junction Deviation' in Motion ability to 0.")
+        : t("Marlin 2 Classic Jerk detected:\nTo test Junction Deviation, set 'Maximum Junction Deviation' in Motion ability to a value > 0.");
+    } else if (printer.flavor === 'reprapfirmware') {
+      note += t('RepRap detected: Jerk in mm/s.\nOrcaSlicer will convert the values to mm/min when necessary.');
+    }
+    const url = 'https://github.com/SoftFever/OrcaSlicer/wiki/cornering-calib';
+    const link = el('a', { href: url, textContent: t('Wiki Guide: Cornering Calibration') });
+    link.addEventListener('click', (event) => { event.preventDefault(); attempt(() => openGuide(url)); });
+    const dialog = el('dialog', { className: 'calib-dialog' }, el('form', { method: 'dialog' },
+      el('h2', { textContent: t('Cornering test') }),
+      group('Test model', model),
+      group('Cornering settings', el('div', { className: 'calib-pair' }, start.row, end.row),
+        el('p', { className: 'quiet calib-note', textContent: note })),
+      el('div', { className: 'calib-links' }, link),
+      el('div', { className: 'row end' },
+        el('button', { type: 'submit', value: 'ok', className: 'primary', textContent: t('OK') }),
+        el('button', { type: 'submit', value: 'cancel', formNoValidate: true, textContent: t('Cancel') }))));
+    return run(dialog, async () => {
+      const args = {
+        test: 'cornering', junction_deviation: deviation,
+        model: Number(model.querySelector('input:checked').value),
+        start: readNumber(start), end: readNumber(end),
+      };
+      // on_start: past the warning's threshold it is said, then made.
+      const warning = deviation ? 0.3 : 20;
+      const most = deviation ? 1 : 100;
+      if (Number.isFinite(args.end) && Number.isFinite(args.start) && args.start >= 0 && args.start < args.end
+          && args.end <= most && args.end > warning) {
+        await inform(t('Cornering test'), fmt(t('NOTE: High values may cause Layer shift (>%s)'), warning.toFixed(3)));
+      }
+      try {
+        await make(args);
+      } catch (error) {
+        return error.message;
+      }
+      return null;
+    });
+  }
+
   // "Flow rate" (MainFrame.cpp, Plater.cpp `calib_flowrate`): no dialog;
   // the menu item makes the test's project at once.
   function flowRate(test) {
@@ -267,5 +512,5 @@ const Calib = (() => {
     return openGuide('https://github.com/SoftFever/OrcaSlicer/wiki/Calibration');
   }
 
-  return { pressureAdvance, temperature, retraction, flowRate, tutorial, parseList };
+  return { pressureAdvance, temperature, retraction, maxFlowrate, vfa, inputShaping, cornering, flowRate, tutorial, parseList };
 })();

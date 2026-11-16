@@ -71,6 +71,11 @@ pub struct Params {
     pub infill_resolution: Coord,
     /// How gaps between walls are filled; none leaves them empty.
     pub gap_fill: Option<GapFill>,
+    /// Whether what is left inside the innermost wall is looked over for
+    /// gaps too: not where there is no sparse fill
+    /// (PerimeterGenerator.cpp: the loop's last run, which collects them,
+    /// is not made when `sparse_infill_density` is 0).
+    pub gaps_inside: bool,
     /// Set where a top surface with more of the part above it elsewhere
     /// keeps only its outer wall (`only_one_wall_top`).
     pub one_wall_top: Option<OneWallTop>,
@@ -546,6 +551,13 @@ pub fn classic_between(
                     split_top_surfaces(&last, around, params, top, &mut covered_above)?
             {
                 (top_fills, fill_clip, last) = (split.top, split.clip, split.rest);
+            }
+            // The run after the innermost wall only collects the gaps
+            // inside it; without gap fill or sparse fill it is not made
+            // (PerimeterGenerator.cpp, "The last run of this loop is
+            // executed to collect gaps for gap fill").
+            if depth == loop_number && (params.gap_fill.is_none() || !params.gaps_inside) {
+                break;
             }
             depth += 1;
         }
@@ -1474,6 +1486,7 @@ mod tests {
             resolution: scaled(0.01),
             infill_resolution: scaled(0.01),
             gap_fill: None,
+            gaps_inside: true,
             arachne: None,
             precise_outer_wall: false,
             over_air: None,
@@ -1749,6 +1762,7 @@ mod tests {
                 flow: base.inner,
                 shortest: 0,
             }),
+            gaps_inside: true,
             ..base
         }
     }

@@ -49,7 +49,7 @@ use edge_geom::{ExPolygon, Point2, scaled, unscaled};
 use edge_template::{TemplateError, Value, Variables, stream_double};
 use rayon::prelude::*;
 
-pub use calib::{AdvanceFirmware, Calibration, CalibrationKind};
+pub use calib::{AdvanceFirmware, Calibration, CalibrationKind, Corner, JerkForm, ShaperFirmware};
 pub use calib_draw::{HANDLE_SIZE as PA_HANDLE_SIZE, PaLine, PaPattern, Pen, pa_pattern};
 pub use contour::Contours;
 pub use edge_avoid::{Detour, Slices};
@@ -1363,6 +1363,13 @@ struct State {
     /// of the filament's (GCode.cpp `process_layer`,
     /// `Calib_Retraction_tower`: `writer().config.apply`).
     calibration_retraction: Option<f64>,
+    /// The outer wall's speed a calibration sets from a layer on, in place
+    /// of the process's (GCode.cpp `process_layer`, `Calib_VFA_Tower` and
+    /// `Calib_Vol_speed_Tower`: `m_calib_config`).
+    calibration_outer_wall_speed: Option<f64>,
+    /// The jerk the cornering calibration last set (GCodeWriter.cpp
+    /// `m_last_jerk`; nothing else here sets a jerk).
+    calibration_jerk: f64,
     /// Whether the nozzle holds molten plastic that would ooze on a travel:
     /// true once anything is extruded, or once the machine's start G-code
     /// has run, since that purges.
@@ -2262,8 +2269,20 @@ impl Writer<'_> {
             let tool = (self.all.len() > 1 && !s.single_nozzle).then_some(self.state.tool);
             let text = calib::at_layer(calibration, index, self.layer_count, layer.z, tool);
             self.out.extend_from_slice(text.as_bytes());
+            let corner = calib::corner_at(
+                calibration,
+                index,
+                self.layer_count,
+                &mut self.state.calibration_jerk,
+            );
+            self.out.extend_from_slice(corner.as_bytes());
             if let Some(length) = calib::retraction_at(calibration, layer.z) {
                 self.state.calibration_retraction = Some(length);
+            }
+            if let Some(speed) =
+                calib::outer_wall_speed_at(calibration, index, self.layer_count, layer.z)
+            {
+                self.state.calibration_outer_wall_speed = Some(speed);
             }
         }
         if index == 1 {
@@ -3098,9 +3117,9 @@ impl Writer<'_> {
             let small = wall.length_mm() <= s.small_perimeter_threshold * std::f64::consts::TAU;
             self.state.small_wall = small.then(|| {
                 if s.small_perimeter_speed == FloatOrPercent::Value(0.0) {
-                    0.5 * s.outer_wall_speed
+                    0.5 * self.outer_wall_speed()
                 } else {
-                    s.small_perimeter_speed.resolve(s.outer_wall_speed)
+                    s.small_perimeter_speed.resolve(self.outer_wall_speed())
                 }
             });
             self.state.circle_wall = self.circle_wall_speed(wall);
@@ -4051,7 +4070,7 @@ impl Writer<'_> {
                 // a small loop or of anything else the wall is slowed
                 // by: that is `motion.speed`, which no step exceeds.
                 let own = if role == Role::ExternalPerimeter {
-                    s.outer_wall_speed
+                    self.outer_wall_speed()
                 } else {
                     s.inner_wall_speed
                 };
@@ -4327,7 +4346,7 @@ impl Writer<'_> {
             }
             Role::Ironing => s.ironing_speed,
             _ if first_layer => s.initial_layer_infill_speed,
-            Role::ExternalPerimeter => self.wall_speed(s.outer_wall_speed),
+            Role::ExternalPerimeter => self.wall_speed(self.outer_wall_speed()),
             Role::Perimeter => self.wall_speed(s.inner_wall_speed),
             Role::SparseInfill => s.sparse_infill_speed,
             Role::SolidInfill | Role::BottomSurface => s.internal_solid_infill_speed,
@@ -4335,7 +4354,7 @@ impl Writer<'_> {
             Role::BridgeInfill | Role::OverhangPerimeter => s.bridge_speed,
             Role::InternalBridge => s.internal_bridge_speed.resolve(s.bridge_speed),
             Role::GapFill => s.gap_infill_speed,
-            Role::Skirt | Role::Brim => s.outer_wall_speed,
+            Role::Skirt | Role::Brim => self.outer_wall_speed(),
             Role::Support => s.support_speed,
             Role::SupportInterface => s.support_interface_speed,
         };
@@ -4931,6 +4950,14 @@ impl Writer<'_> {
     /// `layer_change` says the retraction is the one between layers.
     fn retract(&mut self, layer_change: bool) -> io::Result<()> {
         self.retract_by(self.retraction_length(), layer_change)
+    }
+
+    /// The process's outer wall speed, or what a calibration has set in
+    /// its place for the layer.
+    fn outer_wall_speed(&self) -> f64 {
+        self.state
+            .calibration_outer_wall_speed
+            .unwrap_or(self.settings.outer_wall_speed)
     }
 
     /// The filament's retraction length, or what a calibration has set in
