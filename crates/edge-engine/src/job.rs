@@ -347,6 +347,7 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
             Some("3") => Some("High Temp Plate"),
             Some("4") => Some("Textured PEI Plate"),
             Some("5") => Some("Textured Cool Plate"),
+            Some("6") => Some("Graphic Effect Plate"),
             Some("7") => Some("Supertack Plate"),
             Some(name) if name.ends_with("Plate") => Some(name),
             _ => None,

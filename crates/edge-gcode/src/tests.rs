@@ -2234,6 +2234,47 @@ fn the_next_tool_is_warmed_ahead_of_its_turn() {
     write_tools(&mut out, &plan, &warm).unwrap();
     let text = String::from_utf8(out).unwrap();
     assert!(!text.contains("preheat") && !text.contains("cooldown"));
+    // A filament's own idle temperature counts as cooling its tool: it is
+    // preheated again, and only it (GCode.cpp `OozePrevention`,
+    // GCodeProcessor.cpp: the preheat goes by `ooze_prevention`).
+    let [a, b] = warm;
+    let idle = [
+        a,
+        PrintSettings {
+            idle_temperature: Some(150.0),
+            ..b
+        },
+    ];
+    let mut out = Vec::new();
+    write_tools(&mut out, &plan, &idle).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(
+        text.contains("; preheat T1") && !text.contains("cooldown"),
+        "{text}"
+    );
+}
+
+#[test]
+fn an_idle_tool_waits_at_its_filaments_idle_temperature() {
+    // Tool 0 waits at its filament's 170 °C, not 150 below its own; tool 1
+    // has none and waits 150 below; the delta need not be set at all.
+    let [a, b] = two_tools(Some(CHANGE));
+    let settings = [
+        PrintSettings {
+            idle_temperature: Some(170.0),
+            standby_temperature_delta: None,
+            ..a
+        },
+        b,
+    ];
+    let (text, _) = in_filaments(&[&[0, 1], &[1, 0], &[0, 1]], &settings);
+    let first = text.split(";LAYER_CHANGE").nth(1).unwrap();
+    assert!(
+        first.contains("M104 S170 T0 ; set nozzle temperature ;cooldown"),
+        "{first}"
+    );
+    let second = text.split(";LAYER_CHANGE").nth(2).unwrap();
+    assert!(second.contains("M104 S90 T1 ; set nozzle temperature ;cooldown"));
 }
 
 #[test]
