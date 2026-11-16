@@ -19,6 +19,7 @@ edge-engine = { path = "../../crates/edge-engine" }
 edge-extrusion = { path = "../../crates/edge-extrusion" }
 edge-gcode = { path = "../../crates/edge-gcode" }
 edge-geom = { path = "../../crates/edge-geom" }
+edge-text = { path = "../../crates/edge-text" }
 # The Centauri Carbon is sent the MD5 of each file it is sent (ElegooLink.cpp).
 md-5 = "0.10.6"
 serde_json = "1"

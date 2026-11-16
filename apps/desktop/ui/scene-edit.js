@@ -58,6 +58,10 @@
     seam: { name: t('Seam painting'), key: 'p', one: true, paint: 'seam', icon: 'M8,1.5a6.5,6.5,0,1,0,0.01,0ZM8,1.5v13' },
     fuzzy_skin: { name: t('Paint-on fuzzy skin'), key: 'h', one: true, paint: 'fuzzy_skin', icon: 'M2,13.5l1.5-2l1.5,1l1.5-2l1.5,1l1.5-2l1.5,1l1.5-2l1.5,1M3.5,8.5l7-7l3,3l-7,7' },
     color: { name: t('Color Painting'), key: 'n', one: true, paint: 'color', icon: 'M9.5,1.5l5,5l-7,7l-5-5ZM2.5,8.5l-1,6h6M6,5l5,5' },
+    // GLGizmoEmboss.cpp: on a text part, or adding one to the object
+    // selected, or an object of a text with nothing selected; text.js.
+    // The icon is the reference's T (toolbar_text.svg) drawn in lines.
+    text: { name: t('Emboss'), key: 't', text: true, icon: 'M2,1.5h12v3h-4.5v10h-3v-10h-4.5Z' },
   };
   const ICONS = {
     add: 'M1.5,12.5v-9a1,1,0,0,1,1-1h3l1.5,2h6.5a1,1,0,0,1,1,1v7a1,1,0,0,1-1,1h-11A1,1,0,0,1,1.5,12.5ZM8,7v4M6,9h4',
@@ -157,6 +161,7 @@
       // The painting tools, with what they need of this.
       if (GL.cutter) GL.cutter.init(host, this);
       if (GL.mesher) GL.mesher.init(host, this);
+      if (GL.texter) GL.texter.init(host, this);
       if (GL.vlh) GL.vlh.init(host, this);
       if (GL.painter) {
         GL.painter.init({
@@ -204,7 +209,7 @@
       const b = this.buttons;
       this.bar = el('div', { className: 'toolbar', id: 'edit-bar' },
         b.add, b.addPlate, gap(), b.orient, b.arrange, gap(), b.splitObjects, b.splitParts, b.layers, gap(), b.move, b.rotate, b.scale, b.flatten, b.cut, b.boolean, gap(),
-        b.supports, b.seam, b.fuzzy_skin, b.color, gap(), b.undo, b.redo);
+        b.supports, b.seam, b.fuzzy_skin, b.color, b.text, gap(), b.undo, b.redo);
       this.bar.setAttribute('role', 'toolbar');
       this.bar.setAttribute('aria-label', t('Prepare'));
       this.buttons.arrange.setAttribute('aria-pressed', 'false');
@@ -344,6 +349,7 @@
         const answer = await this.host.call(which, { project: project.id, tool_state: kept });
         this.take(answer);
         if (GL.mesher && 'tool_state' in answer) GL.mesher.restore(answer.tool_state);
+        if (GL.texter && GL.texter.active()) GL.texter.reread();
       } catch (error) {
         this.host.say(error.message, true);
       } finally {
@@ -531,6 +537,13 @@
     // Whether a tool can be opened for what is selected. "Lay on face" is
     // for a whole object (GLGizmoFlatten.cpp `is_selection_supported`).
     usable(tool, chosen = this.chosen()) {
+      // "Emboss" opens on a text part, on one object to add a text to, or
+      // with nothing selected to make an object of a text.
+      if (TOOLS[tool].text) {
+        if (!chosen) return Boolean(this.host.project());
+        if (this.partMode()) { const items = this.partItems(); return items.length === 1 && Boolean(items[0].part.text); }
+        return chosen.copies.length === 1;
+      }
       const one = Boolean(chosen) && (!TOOLS[tool].one || (chosen.copies.length === 1 && !this.partMode()));
       if (!one || !TOOLS[tool].boolean) return one;
       const object = this.data().objects[chosen.copies[0].object];
@@ -560,11 +573,15 @@
         if (chosen) cutter.start(chosen.copies[0]);
       }
       if (tool && GL.meshTools) GL.meshTools.close();
+      const texter = GL.texter;
+      if (texter && texter.active() && tool !== 'text') texter.close();
+      const opening = tool === 'text' && tool !== this.tool;
       this.tool = tool;
       this.hot = null;
       this.fields.of = '';
       this.refresh();
       this.stage.frame();
+      if (opening && texter) texter.start();
     },
 
     // Escape closes the tool that is open before it lets go of what is
@@ -610,6 +627,9 @@
             [t('Load...'), () => this.addPart(object, one, kind)],
             null,
             [t('Cube'), () => this.commit({ op: 'part_add', object: object.id, copy: one.id, kind, shape: 'Cube' }, { part: true }), { disabled: !this.host.settled() || !this.host.settled().printer }],
+            // "Text" (`append_menu_item_add_text`), where the menu was
+            // opened, for a part, a negative part and a modifier.
+            ...(GL.texter && ['part', 'negative', 'modifier'].includes(kind) ? [null, [t('Text'), () => this.addText(kind, one, x, y)]] : []),
           ],
         }]);
       const items = [
@@ -668,6 +688,20 @@
       this.host.menu(x, y, items);
     },
 
+    // "Text" under "Add part" and the rest: a text added where the menu
+    // was opened, the tool then open on it.
+    addText(kind, copy, x, y) {
+      if (!GL.texter || this.busy) return;
+      const rect = this.host.stageNode.getBoundingClientRect();
+      if (GL.texter.active()) GL.texter.close();
+      if (this.tool !== 'text') {
+        this.setTool(null);
+        this.tool = 'text';
+        this.refresh();
+      }
+      GL.texter.add(kind, copy, [x - rect.left, y - rect.top]);
+    },
+
     // "Load..." under "Add part" and the rest: a file's geometry as a part
     // of the object (GUI_ObjectList.cpp `load_subobject`).
     async addPart(object, copy, kind) {
@@ -678,9 +712,9 @@
 
     // The menu of the parts selected (GUI_Factories.cpp
     // `create_bbl_part_menu`, the one the object list shows, and
-    // `part_menu`). What the model cannot do yet is left out: "Edit
-    // text", "Repair", "Separate", "Reload from disk" and the
-    // rest (UI_PARITY.md, section 13).
+    // `part_menu`). What the model cannot do yet is left out:
+    // "Separate", "Reload from disk" and the rest (UI_PARITY.md,
+    // section 13).
     partMenu(x, y) {
       const items = this.partItems();
       const data = this.data();
@@ -705,6 +739,8 @@
       const own = items.length === 1 ? items[0].part.own : undefined;
       const menu = [
         [`${t('Delete')} Del`, () => this.remove(), { title: t('Delete the selected object') }],
+        // "Edit text" (`append_menu_item_edit_text`), for one text part.
+        ...(items.length === 1 && items[0].part.text ? [[t('Edit text'), () => this.setTool('text')]] : []),
         ...(GL.meshTools ? GL.meshTools.partItems(object, ids) : []),
         [t('Center'), shift(centre && middle ? [middle[0] - centre[0], middle[1] - centre[1], 0] : [0, 0, 0]), { disabled: centred }],
         [t('Drop'), shift([0, 0, box ? -box[0][2] : 0]), { disabled: !box || Math.abs(box[0][2]) <= 0.001 }],
@@ -810,6 +846,7 @@
     },
 
     sceneChanged() {
+      if (GL.texter && GL.texter.active()) GL.texter.follow();
       if (this.tool && !this.usable(this.tool)) this.setTool(null);
       this.followCut();
       if (GL.meshTools) GL.meshTools.follow();
@@ -828,6 +865,7 @@
     },
 
     selectionChanged() {
+      if (GL.texter && GL.texter.active()) GL.texter.follow();
       if (this.tool && !this.usable(this.tool)) this.setTool(null);
       this.followCut();
       if (GL.meshTools) GL.meshTools.follow();
@@ -874,6 +912,7 @@
       if (this.tool === 'flatten' && chosen && chosen.copies.length === 1) this.wantFaces(chosen.copies[0]);
       if (this.tool === 'cut' && GL.cutter) GL.cutter.panel();
       if (GL.mesher && GL.mesher.active()) GL.mesher.panel();
+      if (GL.texter && GL.texter.active()) GL.texter.panel();
       // A plate with an object over its edge cannot be printed
       // (Plater.cpp `validate_current_plate`).
       const over = data && data.placings.some((placing) => placing.over && placing.plate === project.plate);
@@ -1367,7 +1406,7 @@
     showFields(live = false) {
       // A painting tool has its own panel (paint.js), and so has "Cut"
       // (cut.js).
-      const chosen = this.tool && !TOOLS[this.tool].paint && !TOOLS[this.tool].cut && !TOOLS[this.tool].boolean && this.editing() ? this.chosen() : null;
+      const chosen = this.tool && !TOOLS[this.tool].paint && !TOOLS[this.tool].cut && !TOOLS[this.tool].boolean && !TOOLS[this.tool].text && this.editing() ? this.chosen() : null;
       this.panel.hidden = !chosen;
       if (!chosen) return;
       const { el } = this.host;

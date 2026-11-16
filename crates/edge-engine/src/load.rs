@@ -737,6 +737,7 @@ mod tests {
             seam: None,
             transform: Transform::IDENTITY,
             decoration: false,
+            text: None,
         };
         let at = |x, y| Instance {
             transform: Transform::translation([x, y, 0.0]),

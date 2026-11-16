@@ -673,6 +673,8 @@ impl Session {
                             "box": part.mesh.bounds().map(|(low, high)| [low, high]),
                             "triangles": mesh.parts.get(at),
                             "split": object.shape().part_splits(at),
+                            // Whether it is a text the Text tool edits.
+                            "text": part.text.is_some(),
                             "settings": own_count(&part.settings(), ItemKind::Part),
                             "errors": super::mesh::errors_json(&object.shape().part_errors()[at]),
                         })

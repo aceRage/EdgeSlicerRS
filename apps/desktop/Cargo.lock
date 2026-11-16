@@ -1205,6 +1205,7 @@ dependencies = [
  "edge-extrusion",
  "edge-gcode",
  "edge-geom",
+ "edge-text",
  "keyring-core",
  "md-5",
  "serde_json",

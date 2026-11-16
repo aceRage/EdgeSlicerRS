@@ -2177,6 +2177,7 @@ fn connector_parts(
         seam: None,
         transform,
         decoration: false,
+        text: None,
         kept: Some(Arc::new(PartKept::of_connector(info))),
         ..template.clone()
     };

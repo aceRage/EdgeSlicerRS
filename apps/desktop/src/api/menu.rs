@@ -1427,7 +1427,7 @@ fn sections(mac: bool) -> Vec<(&'static str, Vec<Shortcut>)> {
                 row(K(plain("H")), "Gizmo FDM paint-on fuzzy skin", true),
                 row(K(plain("L")), "Gizmo SLA support points", true),
                 row(K(plain("P")), "Gizmo FDM paint-on seam", true),
-                row(K(plain("T")), "Gizmo text emboss/engrave", false),
+                row(K(plain("T")), "Gizmo text emboss/engrave", true),
                 row(K(plain("U")), "Gizmo measure", false),
                 row(K(plain("Y")), "Gizmo assemble", false),
                 row(K(plain("E")), "Gizmo brim ears", false),
