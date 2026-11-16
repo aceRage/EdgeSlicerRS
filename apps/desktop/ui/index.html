@@ -15,6 +15,7 @@
 <link rel="stylesheet" href="paint.css">
 <link rel="stylesheet" href="hosts.css">
 <link rel="stylesheet" href="bambu.css">
+<link rel="stylesheet" href="device.css">
 <link rel="stylesheet" href="menu.css">
 <link rel="stylesheet" href="presets.css">
 <link rel="stylesheet" href="setup.css">
@@ -300,10 +301,34 @@
   <!-- Device: the printer of the project shown. With a connection, the printer's own page in a frame
        of its own (hosts.js), and its files; without one, what the preset says of it. -->
   <section id="device" role="tabpanel" hidden>
+    <!-- A Bambu Lab printer on the LAN, through the UltraNet bridge (bambu.js): which printer, its
+         session, the bridge's state. Its page is the Device page below (device.js). -->
+    <div id="device-bambu" hidden>
+      <div class="bambu-head">
+        <label for="bambu-printer" class="colon">Printer</label>
+        <select id="bambu-printer"></select>
+        <button type="button" id="bambu-add" title="Connect the printer using IP and access code">Add</button>
+        <button type="button" id="bambu-remove">Remove</button>
+        <button type="button" id="bambu-connect">Connect</button>
+        <span id="bambu-session" class="quiet" role="status"></span>
+      </div>
+      <div id="bambu-bridge" class="bambu-note" hidden>
+        <p id="bambu-bridge-text"></p>
+        <button type="button" id="bambu-retry">Retry</button>
+      </div>
+      <!-- Where the access codes are kept, when it is not the system's store (crate::secrets). -->
+      <div id="bambu-secrets" class="bambu-note" role="status" hidden>
+        <p id="bambu-secrets-text"></p>
+      </div>
+      <p id="bambu-none" class="quiet" hidden>No available printers</p>
+    </div>
     <div id="device-bar" hidden>
       <div class="tabs" role="tablist" aria-label="Device">
-        <button type="button" role="tab" id="device-tab-page" aria-selected="true" title="The printer's own page">Printer page</button>
+        <button type="button" role="tab" id="device-tab-status" aria-selected="false">Status</button>
         <button type="button" role="tab" id="device-tab-storage" aria-selected="false" title="The G-code files on the printer">Storage</button>
+        <button type="button" role="tab" id="device-tab-hms" aria-selected="false">HMS</button>
+        <button type="button" role="tab" id="device-tab-update" aria-selected="false">Update</button>
+        <button type="button" role="tab" id="device-tab-page" aria-selected="true" title="The printer's own page">Printer page</button>
       </div>
       <span id="device-status" hidden></span>
       <span id="device-address" class="quiet"></span>
@@ -316,6 +341,57 @@
     </div>
     <div id="device-view" hidden>
       <!-- The printer's page: another origin, sandboxed, without the app's calls or the API key. -->
+      <!-- One page for every family (device.js, src/device): drawn from what the session says the
+           printer can do; a control its API has not got is not drawn. -->
+      <div id="device-native" hidden>
+        <div class="dv-grid">
+          <div class="dv-column">
+            <section class="card dv-card" id="dv-camera-card" hidden>
+              <h3 class="caps">Camera</h3>
+              <iframe id="dv-camera" title="Camera" sandbox="allow-same-origin" referrerpolicy="no-referrer"></iframe>
+            </section>
+            <section class="card dv-card">
+              <h3 class="caps">Printing Progress</h3>
+              <p id="dv-file" class="bambu-file"></p>
+              <div class="bambu-progress"><div class="queue-bar"><span id="dv-bar"></span></div><span id="dv-percent" class="num"></span></div>
+              <p class="bambu-line"><span id="dv-said"></span><span id="dv-layer"></span><span id="dv-left"></span></p>
+              <p id="dv-message" class="quiet" hidden></p>
+              <div class="row">
+                <button type="button" id="dv-pause" disabled>Pause</button>
+                <button type="button" id="dv-stop" disabled>Stop</button>
+              </div>
+            </section>
+          </div>
+          <div class="dv-column">
+            <section class="card dv-card">
+              <h3 class="caps">Control</h3>
+              <div id="dv-heaters" class="dv-rows"></div>
+              <div id="dv-fans" class="dv-rows"></div>
+              <div id="dv-speed-row" class="dv-row" hidden><label for="dv-speed">Speed</label><span class="num" id="dv-speed-now"></span><span id="dv-speed-box"></span></div>
+              <div id="dv-light-row" class="dv-row" hidden><label class="tick"><input type="checkbox" id="dv-light"> Lamp</label></div>
+            </section>
+            <section class="card dv-card" id="dv-axes" hidden>
+              <h3 class="caps">Axes</h3>
+              <div class="dv-jog">
+                <div class="dv-ring" id="dv-ring"></div>
+                <div class="dv-z"><span id="dv-z-label" class="quiet"></span><div id="dv-z"></div></div>
+                <div class="dv-z" id="dv-e-box"><span class="quiet">Extruder</span><div id="dv-e"></div></div>
+              </div>
+            </section>
+          </div>
+          <section class="card dv-card dv-wide" id="dv-slots-card" hidden>
+            <h3 class="caps" id="dv-slots-title"></h3>
+            <div id="dv-slots" class="bambu-ams"></div>
+          </section>
+        </div>
+      </div>
+      <div id="device-hms" class="dv-pane" hidden>
+        <div id="dv-hms" class="dv-list"></div>
+      </div>
+      <div id="device-update" class="dv-pane" hidden>
+        <dl id="dv-versions" class="bambu-temps"></dl>
+        <p class="quiet">Updating the firmware from here is not built: the list of firmware comes from Bambu's cloud.</p>
+      </div>
       <iframe id="device-frame" title="Printer page" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads" referrerpolicy="no-referrer"></iframe>
       <div id="device-storage" hidden>
         <div class="storage-head">
@@ -346,47 +422,6 @@
       <p id="device-connection"></p>
       <p class="quiet" id="device-offline"></p>
       <div class="row"><button type="button" id="device-setup" hidden>Connect to printer</button></div>
-    </div>
-    <!-- A Bambu Lab printer on the LAN, through the UltraNet bridge (bambu.js): the printer's state as
-         StatusPanel.cpp shows it ("Printing Progress", the temperatures, the AMS), pause, resume, stop. -->
-    <div id="device-bambu" hidden>
-      <div class="bambu-head">
-        <label for="bambu-printer" class="colon">Printer</label>
-        <select id="bambu-printer"></select>
-        <button type="button" id="bambu-add" title="Connect the printer using IP and access code">Add</button>
-        <button type="button" id="bambu-remove">Remove</button>
-        <button type="button" id="bambu-connect">Connect</button>
-        <span id="bambu-session" class="quiet" role="status"></span>
-      </div>
-      <div id="bambu-bridge" class="bambu-note" hidden>
-        <p id="bambu-bridge-text"></p>
-        <button type="button" id="bambu-retry">Retry</button>
-      </div>
-      <!-- Where the access codes are kept, when it is not the system's store (crate::secrets). -->
-      <div id="bambu-secrets" class="bambu-note" role="status" hidden>
-        <p id="bambu-secrets-text"></p>
-      </div>
-      <p id="bambu-none" class="quiet" hidden>No available printers</p>
-      <div id="bambu-panels" class="bambu-panels" hidden>
-        <section class="card bambu-card">
-          <h3 class="caps">Printing Progress</h3>
-          <p id="bambu-file" class="bambu-file"></p>
-          <div class="bambu-progress"><div class="queue-bar"><span id="bambu-bar"></span></div><span id="bambu-percent" class="num">N/A</span></div>
-          <p class="bambu-line"><span id="bambu-said"></span><span id="bambu-layer"></span><span id="bambu-left"></span></p>
-          <div class="row">
-            <button type="button" id="bambu-pause" disabled>Pause</button>
-            <button type="button" id="bambu-stop" disabled>Stop</button>
-          </div>
-        </section>
-        <section class="card bambu-card">
-          <h3 class="caps">Temperature</h3>
-          <dl id="bambu-temps" class="bambu-temps"></dl>
-        </section>
-        <section class="card bambu-card bambu-wide">
-          <h3 class="caps">AMS</h3>
-          <div id="bambu-ams" class="bambu-ams"></div>
-        </section>
-      </div>
     </div>
   </section>
 </div>

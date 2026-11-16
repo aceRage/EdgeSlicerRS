@@ -1,0 +1,47 @@
+/* The Device page of every printer family (device.js): the Bambu monitor's
+   layout, "Status", "HMS", "Update". Only what is theirs alone; the cards,
+   bars and trays are style.css's and bambu.css's. No colour or size here
+   that is not a token. */
+
+#device-native, .dv-pane { flex: 1; min-height: 0; overflow: auto; padding: var(--space-4) var(--space-5); }
+#device-native[hidden], .dv-pane[hidden] { display: none; }
+.dv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: var(--space-3); align-items: start; }
+.dv-column { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
+.dv-card { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); min-width: 0; }
+.dv-card[hidden] { display: none; }
+.dv-card h3 { margin: 0; }
+.dv-wide { grid-column: 1 / -1; }
+#device-native.offline .dv-card { opacity: 0.75; }
+#dv-message { margin: 0; white-space: pre-line; }
+#dv-message[hidden] { display: none; }
+#dv-left:empty, #dv-layer:empty { display: none; }
+
+.dv-rows { display: flex; flex-direction: column; gap: var(--space-1); }
+.dv-rows:empty { display: none; }
+.dv-row { display: grid; grid-template-columns: minmax(80px, 1fr) 104px 96px 24px; align-items: center; gap: var(--space-2); min-height: var(--control-m); }
+.dv-row[hidden] { display: none; }
+.dv-row > select, .dv-row > input, #dv-speed-box > * { width: 100%; }
+.dv-label, .dv-row > label { color: var(--text-2); }
+.dv-now { text-align: right; }
+#dv-light-row { grid-template-columns: 1fr; }
+
+#dv-camera { width: 100%; aspect-ratio: 16 / 9; border: 0; border-radius: var(--radius-m); background: var(--cover-plate); }
+
+.dv-jog { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--space-4); }
+.dv-ring { display: grid; grid-template-columns: repeat(5, 52px); grid-auto-rows: 32px; gap: var(--space-1); }
+.dv-z { display: flex; flex-direction: column; gap: var(--space-1); align-items: stretch; }
+.dv-z[hidden] { display: none; }
+.dv-z > div { display: flex; flex-direction: column; gap: var(--space-1); }
+.dv-step, .dv-home { padding: 0 var(--space-1); min-width: 0; font-variant-numeric: tabular-nums; font-size: var(--size-small); }
+.dv-home { font-size: var(--size-title); }
+#dv-axes.dv-off .dv-step, #dv-axes.dv-off .dv-home { opacity: 0.5; }
+
+.dv-unit { display: flex; flex-direction: column; gap: var(--space-1); }
+.dv-unit-name { font-size: var(--size-small); }
+
+.dv-list { display: flex; flex-direction: column; gap: var(--space-2); max-width: 880px; }
+.dv-hms { display: grid; grid-template-columns: 88px 1fr max-content; gap: var(--space-3); align-items: baseline; padding: var(--space-2) var(--space-3); border: 1px solid var(--line-2); border-left: 2px solid var(--warn); border-radius: var(--radius-m); background: var(--surface-raised); }
+.dv-hms-level { color: var(--text-2); font-size: var(--size-label); }
+.dv-hms-text { overflow-wrap: anywhere; }
+#device-update dl { max-width: 640px; }
+.dv-unit-name:empty { display: none; }

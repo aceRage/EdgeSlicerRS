@@ -17,6 +17,7 @@
 mod arrange;
 mod bambu_lan;
 mod calib;
+mod device;
 mod edit;
 mod export;
 mod filaments;
@@ -80,6 +81,8 @@ pub struct Session {
     hosts: Hosts,
     /// Bambu Lab printers on the LAN, through the UltraNet bridge.
     bambu: bambu_lan::Bambu,
+    /// What each printer's Device page has.
+    devices: device::Devices,
     /// The language the page is shown in and the calls compose in.
     language: Mutex<Arc<i18n::Catalog>>,
 }
@@ -1115,6 +1118,7 @@ impl Session {
                 timeouts: crate::hosts::Timeouts::default(),
             },
             bambu,
+            devices: device::Devices::default(),
             language: Mutex::new(language),
         }
     }
@@ -1385,6 +1389,7 @@ impl Session {
             name if filaments::JSON.contains(&name) => self.filaments_json(name, args),
             name if print_host::JSON.contains(&name) => self.print_host_json(name, args),
             name if bambu_lan::JSON.contains(&name) => self.bambu_lan_json(name, args),
+            name if device::JSON.contains(&name) => self.device_json(name, args),
             name if scene::JSON.contains(&name) => self.scene_json(name, args),
             name if paint::JSON.contains(&name) => self.paint_json(name, args),
             name if scene::BYTES.contains(&name) => {

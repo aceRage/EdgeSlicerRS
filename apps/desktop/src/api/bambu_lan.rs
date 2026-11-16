@@ -410,7 +410,7 @@ impl Session {
     }
 
     /// The printer named, else the one selected.
-    fn bambu_printer(&self, args: &Value) -> Result<Printer, String> {
+    pub(super) fn bambu_printer(&self, args: &Value) -> Result<Printer, String> {
         let kept = lock(&self.bambu.kept);
         let dev_id = args
             .get("dev_id")
@@ -426,7 +426,7 @@ impl Session {
     /// A printer's access code, read from where codes are kept the first
     /// time one is needed (which may make the system ask the person), and
     /// handed to the bridge's list of what it must never say.
-    fn bambu_code(&self, dev_id: &str) -> Result<Option<String>, String> {
+    pub(super) fn bambu_code(&self, dev_id: &str) -> Result<Option<String>, String> {
         let mut kept = lock(&self.bambu.kept);
         let code = kept.code(dev_id)?;
         self.bambu.client.set_codes(kept.codes());

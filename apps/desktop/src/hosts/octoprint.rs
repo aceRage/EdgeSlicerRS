@@ -74,6 +74,14 @@ pub fn upload_file(http: &Http, upload: &Upload, progress: &Progress) -> Result<
     Ok(())
 }
 
+impl OctoPrint {
+    /// An OctoPrint that is not a Moonraker: Moonraker's `server/info`
+    /// answers 404.
+    pub fn is_octoprint(&self) -> bool {
+        matches!(self.moonraker.http.get("server/info"), Ok(answer) if answer.status == 404)
+    }
+}
+
 impl Host for OctoPrint {
     fn test(&self) -> Result<(), String> {
         version(&self.http)
@@ -97,19 +105,89 @@ impl Host for OctoPrint {
         upload_file(&self.http, upload, progress)
     }
 
+    /// Moonraker's file API first (the reference's Storage tab speaks only
+    /// that, `PrinterStorage.cpp` `target_for_host`); an OctoPrint that is
+    /// not a Moonraker answers 404 there, and then OctoPrint's own
+    /// `api/files` is used (beyond the reference: the owner's Device pages).
     fn files(&self) -> Option<Result<Vec<Stored>, String>> {
-        self.moonraker.files()
+        Some(match self.moonraker.files()? {
+            Err(error) if error.starts_with("HTTP 404") => crate::device::octo::files(&self.http),
+            other => other,
+        })
     }
 
     fn delete(&self, name: &str) -> Result<(), String> {
-        self.moonraker.delete(name)
+        match self.moonraker.delete(name) {
+            Err(error) if error.starts_with("HTTP 404") && self.is_octoprint() => {
+                let answer = self.http.delete(&format!(
+                    "api/files/local/{}",
+                    super::snapmaker::encode(name, true)
+                ))?;
+                if answer.ok() {
+                    Ok(())
+                } else {
+                    Err(http_error(&answer))
+                }
+            }
+            other => other,
+        }
     }
 
     fn print(&self, name: &str) -> Result<(), String> {
-        self.moonraker.print(name)
+        if !self.is_octoprint() {
+            return self.moonraker.print(name);
+        }
+        // Refused while it prints (PrinterStorage.cpp l.499), then
+        // OctoPrint's `select` with `print`.
+        let status = self.status().ok_or("no status")??;
+        if matches!(status.state.as_str(), "printing" | "paused") {
+            return Err(tr(super::snapmaker::BUSY));
+        }
+        let answer = self.http.post_json(
+            &format!("api/files/local/{}", super::snapmaker::encode(name, true)),
+            &serde_json::json!({ "command": "select", "print": true }),
+            std::time::Duration::from_secs(30),
+        )?;
+        if answer.ok() {
+            Ok(())
+        } else {
+            Err(http_error(&answer))
+        }
     }
 
     fn status(&self) -> Option<Result<Status, String>> {
-        self.moonraker.status()
+        if !self.is_octoprint() {
+            return self.moonraker.status();
+        }
+        use crate::device::Device;
+        let device = crate::device::octo::Octo {
+            http: self.http.clone(),
+        };
+        let caps = match device.caps() {
+            Ok(caps) => caps,
+            Err(error) => return Some(Err(error)),
+        };
+        Some(device.read(&caps).map(|reading| {
+            Status {
+                bed: reading.heater("bed").map(|h| (h.now, h.target)),
+                state: match reading.state.as_str() {
+                    "idle" => "standby".into(),
+                    "finished" => "complete".into(),
+                    other => other.to_owned(),
+                },
+                filename: reading.file,
+                message: reading.message,
+                percent: reading.percent.unwrap_or(0),
+                left: reading.left.unwrap_or(0),
+                layer: 0,
+                total_layers: 0,
+                nozzles: reading
+                    .heaters
+                    .iter()
+                    .filter(|h| h.id.starts_with("tool"))
+                    .map(|h| (h.now, h.target))
+                    .collect(),
+            }
+        }))
     }
 }

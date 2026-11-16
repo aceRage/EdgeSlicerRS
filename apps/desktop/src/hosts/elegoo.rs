@@ -228,6 +228,48 @@ impl Host for ElegooLink {
 }
 
 impl ElegooLink {
+    /// One SDCP request on a connection of its own (the Device page's):
+    /// command `cmd` with `data`, and the printer's answer: for command 0
+    /// its status frame (`Status`), for any other the response to that
+    /// command (`Data.Data`, with its `Ack`). Within the time for a question.
+    pub fn ask(&self, cmd: u32, data: Value) -> Result<Value, String> {
+        if self.cc2 {
+            return Err("This app cannot reach an Elegoo Centauri Carbon 2 yet.".into());
+        }
+        let mut socket = self.connect()?;
+        let request_id = uuid();
+        let text = json!({
+            "Id": "",
+            "Data": { "Cmd": cmd, "Data": data, "RequestID": request_id, "MainboardID": "", "TimeStamp": now_ms() as u64, "From": 1 }
+        })
+        .to_string();
+        socket
+            .send(Message::text(text))
+            .map_err(|error| ws_said(&error))?;
+        let until = Instant::now() + self.timeouts.ask;
+        while Instant::now() < until {
+            let message = match next(&mut socket) {
+                Ok(Some(message)) => message,
+                Ok(None) => continue,
+                Err(Failure::Error(error)) => return Err(error),
+                Err(Failure::Cancelled) => return Err("cancelled".into()),
+            };
+            if cmd == 0 {
+                if let Some(status) = message.get("Status") {
+                    let _ = socket.close(None);
+                    return Ok(status.clone());
+                }
+                continue;
+            }
+            let data = &message["Data"];
+            if data["Cmd"].as_u64() == Some(u64::from(cmd)) {
+                let _ = socket.close(None);
+                return Ok(data["Data"].clone());
+            }
+        }
+        Err(tr(TIMED_OUT))
+    }
+
     /// The printer's websocket, every read timed.
     fn connect(&self) -> Result<WebSocket<TcpStream>, String> {
         let address = (self.ws_host.as_str(), self.ws_port)

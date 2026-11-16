@@ -468,6 +468,7 @@ pub fn uuid() -> String {
 // ---- HTTP ----
 
 /// The requests to one printer.
+#[derive(Clone)]
 pub struct Http {
     pub address: Address,
     api_key: Option<String>,
@@ -550,6 +551,16 @@ impl Http {
             .headers(agent.post(self.address.url(path)))
             .header("Content-Type", "application/json");
         read_answer(request.send("{}"))
+    }
+
+    /// A POST with a JSON body (OctoPrint's commands), answered within
+    /// `within`.
+    pub fn post_json(&self, path: &str, body: &Value, within: Duration) -> Result<Answer, String> {
+        let agent = self.agent(Some(within));
+        let request = self
+            .headers(agent.post(self.address.url(path)))
+            .header("Content-Type", "application/json");
+        read_answer(request.send(body.to_string()))
     }
 
     /// A multipart form, the file last, its bytes counted into `progress`

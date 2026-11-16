@@ -63,12 +63,14 @@ const EDIT: [(&str, &str); 16] = [
 /// closes.
 const SAVE_SCRIPT: &str = include_str!("../ui/save.js");
 /// Sending to printers, and the printer's page in Device.
-const HOSTS: [(&str, &str); 4] = [
+const HOSTS: [(&str, &str); 6] = [
     ("hosts.js", include_str!("../ui/hosts.js")),
     ("hosts.css", include_str!("../ui/hosts.css")),
     // A Bambu Lab printer over LAN, through the UltraNet bridge.
     ("bambu.js", include_str!("../ui/bambu.js")),
     ("bambu.css", include_str!("../ui/bambu.css")),
+    ("device.js", include_str!("../ui/device.js")),
+    ("device.css", include_str!("../ui/device.css")),
 ];
 /// A person's own presets: the lists' cog menus and their dialogs; setting
 /// up printers and filaments.

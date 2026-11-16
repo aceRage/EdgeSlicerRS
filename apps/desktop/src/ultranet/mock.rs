@@ -90,6 +90,17 @@ pub struct Seen {
     pub percent: i64,
     pub layer: i64,
     pub subtask: String,
+    /// What the Device page set: targets, fans (0..255), speed level,
+    /// lamp, homed axes (`home_flag`), and the HMS list.
+    pub nozzle_target: f64,
+    pub bed_target: f64,
+    pub fans: [i64; 3],
+    pub speed: i64,
+    pub light: bool,
+    pub home_flag: i64,
+    pub hms: Vec<(u64, u64)>,
+    /// Every G-code line it was sent (`gcode_line`).
+    pub gcode: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -107,6 +118,10 @@ impl Mock {
     pub fn new(setup: Setup) -> Self {
         let seen = Seen {
             state: setup.state.clone(),
+            nozzle_target: 220.0,
+            bed_target: 55.0,
+            speed: 2,
+            home_flag: 0,
             ..Seen::default()
         };
         Mock {
@@ -197,8 +212,19 @@ impl Mock {
             "subtask_name": seen.subtask,
             "gcode_file": "",
             "job_id": seen.job_id.to_string(),
-            "nozzle_temper": 219.5, "nozzle_target_temper": 220,
-            "bed_temper": 54.8, "bed_target_temper": 55,
+            "nozzle_temper": 219.5, "nozzle_target_temper": seen.nozzle_target,
+            "bed_temper": 54.8, "bed_target_temper": seen.bed_target,
+            // Classic 0..15 steps (BambuFans.hpp); the P1S has the aux and
+            // chamber fans.
+            "cooling_fan_speed": fan_step(seen.fans[0]),
+            "big_fan1_speed": fan_step(seen.fans[1]),
+            "big_fan2_speed": fan_step(seen.fans[2]),
+            "support_aux_fan": true,
+            "support_chamber_fan": true,
+            "spd_lvl": seen.speed,
+            "lights_report": [{ "node": "chamber_light", "mode": if seen.light { "on" } else { "off" } }],
+            "home_flag": seen.home_flag,
+            "hms": seen.hms.iter().map(|(attr, code)| json!({ "attr": attr, "code": code })).collect::<Vec<_>>(),
             "chamber_temper": 31,
             "sdcard": setup.sdcard,
             "fun": if setup.secured { "20000000" } else { "0" },
@@ -303,10 +329,30 @@ impl Mock {
                 }
                 "disconnect_printer" => answer(json!({ "ret": 0 })),
                 "send_message_to_printer" => {
-                    answer(json!({ "ret": 0 }));
                     let sent: Value = serde_json::from_str(p["json"].as_str().unwrap_or("{}"))
                         .unwrap_or_default();
+                    // Taken before it is answered, so a test sees it once
+                    // the app has its answer.
+                    let changed = self.device_command(&sent);
+                    answer(json!({ "ret": 0 }));
                     if sent["pushing"]["command"] == "pushall" {
+                        self.report(self.full_report());
+                    }
+                    if sent["info"]["command"] == "get_version" {
+                        let serial = setup.serial.clone();
+                        let reply = json!({ "info": { "command": "get_version", "module": [
+                            { "name": "ota", "sw_ver": "01.08.02.00", "hw_ver": "", "sn": serial },
+                            { "name": "ams/0", "sw_ver": "00.00.06.49", "hw_ver": "AMS08", "sn": "00600A000000001" },
+                        ] } });
+                        send(
+                            &out,
+                            &event(
+                                "local_message",
+                                json!({ "dev_id": serial, "msg": reply.to_string() }),
+                            ),
+                        );
+                    }
+                    if changed {
                         self.report(self.full_report());
                     }
                     let command = sent["print"]["command"]
@@ -351,6 +397,49 @@ impl Mock {
                 _ => refuse(-32601, "no such method"),
             }
         }
+    }
+
+    /// A Device page's command, as a P1S takes it: the targets of
+    /// `M104` / `M140`, `M106 P<n> S<v>`, `G28` (all homed), `print_speed`,
+    /// `ledctrl`. Answers whether anything changed.
+    fn device_command(&self, sent: &Value) -> bool {
+        let mut seen = lock(&self.seen);
+        if let Some(gcode) = sent["print"]["param"].as_str()
+            && sent["print"]["command"] == "gcode_line"
+        {
+            seen.gcode.push(gcode.to_owned());
+            let word = |line: &str, letter: char| {
+                line.split_whitespace()
+                    .find_map(|w| w.strip_prefix(letter).and_then(|v| v.parse::<f64>().ok()))
+            };
+            for line in gcode.lines() {
+                if line.starts_with("M104") {
+                    seen.nozzle_target = word(line, 'S').unwrap_or(0.0);
+                } else if line.starts_with("M140") {
+                    seen.bed_target = word(line, 'S').unwrap_or(0.0);
+                } else if line.starts_with("M106") {
+                    let index = word(line, 'P').unwrap_or(1.0) as usize;
+                    if (1..=3).contains(&index) {
+                        seen.fans[index - 1] = word(line, 'S').unwrap_or(0.0) as i64;
+                    }
+                } else if line.starts_with("G28") {
+                    seen.home_flag = 7;
+                }
+            }
+            return true;
+        }
+        if sent["print"]["command"] == "print_speed" {
+            seen.speed = sent["print"]["param"]
+                .as_str()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(2);
+            return true;
+        }
+        if sent["system"]["command"] == "ledctrl" {
+            seen.light = sent["system"]["led_mode"] == "on";
+            return true;
+        }
+        false
     }
 
     fn run_job(&self, out: &Out, job: u64, method: &str, params: &Value, cancelled: &AtomicBool) {
@@ -447,6 +536,15 @@ impl Write for Shared {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+/// A fan's 0..255 as the printer's 0..15 steps, rounded so the
+/// reference's reading (`classic_fan_byte`) gives the tens back.
+fn fan_step(byte: i64) -> String {
+    ((byte as f64 / 25.5).round() * 1.5)
+        .ceil()
+        .min(15.0)
+        .to_string()
 }
 
 fn event(name: &str, params: Value) -> Value {

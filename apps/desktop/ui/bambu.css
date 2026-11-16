@@ -3,7 +3,7 @@
    theirs alone; everything else is the components of style.css and
    hosts.css. No colour or size here that is not a token. */
 
-#device-bambu { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); overflow: auto; height: 100%; box-sizing: border-box; }
+#device-bambu { flex: none; display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--line-1); background: var(--surface-panel); }
 #device-bambu[hidden] { display: none; }
 
 .bambu-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }

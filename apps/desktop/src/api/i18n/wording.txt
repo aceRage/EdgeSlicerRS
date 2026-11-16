@@ -540,6 +540,7 @@ Remesh	GUI/RemeshDialog.cpp:195
 Triangles: %llu	GUI/RemeshDialog.cpp:248
 Triangles: %llu -> about %llu	GUI/RemeshDialog.cpp:256
 Wiki Guide: Retraction Calibration	GUI/calib_dlg.cpp:941
+Printer error %s - see the printer screen or Bambu's error-code page	GUI/HMS.cpp:566
 Wiki Guide: Volumetric Speed Calibration	GUI/calib_dlg.cpp:617
 Please input valid values:\n(0 <= Cornering <= %s)	GUI/calib_dlg.cpp:1844
 Note: Lower values = sharper corners but slower speeds.\n	GUI/calib_dlg.cpp:1770
@@ -821,3 +822,28 @@ Toolheads
 Paused
 # And its chamber's temperature (the reference shows an icon).
 Chamber
+# The Device page of every printer family (device.js, src/device): its
+# questions before a command (the owner asks before everything that makes
+# a printer act; the reference only before "Stop"), its refusals, and the
+# words of its tabs the reference has none for.
+Preparing
+Axes
+HMS	GUI/Monitor.cpp:206 (the reference's tab name, not translated there)
+Off
+On
+Sent to the printer.
+Set %s to %s on %s?
+Pause the print on %s?
+Resume the print on %s?
+Move %s by %s mm on %s?
+Home all axes on %s?
+Push %s mm of filament through the nozzle on %s?
+Draw %s mm of filament back from the nozzle on %s?
+The printer is not printing, so there is nothing to pause.
+The printer has no paused print to resume.
+The printer is not printing, so there is nothing to stop.
+A temperature below 0 °C cannot be set.
+This printer cannot do that from here.
+The printer is printing: the axes and the extruder cannot be moved now.
+Before you go on, look at the printer: the bed and the space around the toolhead should be clear, and nobody's hands near it.
+Updating the firmware from here is not built: the list of firmware comes from Bambu's cloud.

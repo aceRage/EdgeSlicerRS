@@ -41,11 +41,11 @@ pub(super) const JSON: [&str; 14] = [
 ];
 
 /// The printer a project is on, as far as sending is concerned.
-struct Printer {
+pub(super) struct Printer {
     /// The preset's name (or the name a project's own printer was saved
     /// under): what its connection is kept by.
-    name: String,
-    settings: Arc<Settings>,
+    pub(super) name: String,
+    pub(super) settings: Arc<Settings>,
 }
 
 impl Printer {
@@ -57,7 +57,7 @@ impl Printer {
             .to_owned()
     }
 
-    fn model(&self) -> String {
+    pub(super) fn model(&self) -> String {
         self.text("printer_model")
     }
 
@@ -115,7 +115,7 @@ impl Session {
         }
     }
 
-    fn printer(&self, args: &Value) -> Result<Option<Printer>, String> {
+    pub(super) fn printer(&self, args: &Value) -> Result<Option<Printer>, String> {
         let (choices, file) = {
             let state = lock(&self.state);
             let project = &state.projects[state.target(args)?];
@@ -136,7 +136,7 @@ impl Session {
 
     /// The connection in force for a printer: the one kept, else the
     /// preset's; and where it comes from.
-    fn connection(&self, printer: &Printer) -> (Connection, &'static str) {
+    pub(super) fn connection(&self, printer: &Printer) -> (Connection, &'static str) {
         let kept = lock(&self.hosts.kept);
         match kept.get(&printer.name) {
             Some(saved) => (
@@ -233,6 +233,11 @@ impl Session {
             // The U1's toolhead map; the printer's state in Device.
             "toolheads": route == "snapmaker",
             "status": matches!(route, "snapmaker" | "octoprint"),
+            // The native Device page (src/device): a U1, and a Klipper or an
+            // OctoPrint behind "Octo/Klipper".
+            "native": matches!(route, "snapmaker" | "octoprint")
+                || (route == "elegoolink" && !elegoo::is_cc2(&model))
+                || matches!(route, "prusalink" | "prusaconnect"),
             "device_url": hosts::device_url(&connection),
             "route": route,
             "offers": { "elegoo": elegoo, "unload": unload },

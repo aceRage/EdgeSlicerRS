@@ -154,12 +154,18 @@ the controls it is built from are described in `apps/desktop/ui/STYLE.md`.
   Windows Credential Manager, the Secret Service: one item for every
   printer, read at the first Connect or send of a run and not before),
   else, saying so in Device, in a file readable by the user alone.
-- **Device**: with a connection, the printer's own page in an isolated
-  frame, the printer's state over it (printing, percent, time left,
-  layer, temperatures, or offline), and for a U1 or any Octo/Klipper
-  printer that runs Moonraker its files ("Storage": sort, print time,
-  filament, "Print", "Delete"); without one, the printer of the project
-  shown as its preset describes it.
+- **Device**: one native page for every printer family, on the Bambu
+  monitor's layout ("Status": progress with Pause / Resume / Stop, the
+  camera where the printer gives a plain stream, temperatures, fans,
+  speed, lamp, axes and extruder, the AMS or the toolheads; Bambu's
+  "HMS" and "Update"), drawn from what each family's API has: Bambu
+  through UltraNet, a Snapmaker U1 and any Klipper printer (Moonraker),
+  OctoPrint, the Elegoo Centauri Carbon (SDCP), PrusaLink (readings
+  only). Every command is asked first. The printer's own page stays as
+  "Printer page" in an isolated frame, without the key, and its files
+  as "Storage" (sort, print time, filament, "Print", "Delete"); without
+  a connection, the printer of the project shown as its preset
+  describes it.
 
 - **Printer Selection** ("Select/Remove printers (system presets)" in
   the printer list, or the gear beside "Printer"): every printer model

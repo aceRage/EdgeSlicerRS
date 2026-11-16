@@ -56,9 +56,9 @@ function bambuSecretsNote(printers) {
 // ---- Device ----
 
 // Called by `showPrinterPage` (hosts.js) for a Bambu Lab printer's
-// project: this panel in place of the printer's own page.
+// project: which printer, its session and the bridge, over its Device
+// page (device.js).
 async function showBambuDevice() {
-  for (const id of ['device-bar', 'device-view', 'device-page']) $(id).hidden = true;
   $('device-bambu').hidden = false;
   let printers;
   try {
@@ -70,7 +70,6 @@ async function showBambuDevice() {
   bambuOptions($('bambu-printer'), printers.printers, printers.selected);
   const none = !printers.printers.length;
   $('bambu-none').hidden = !none;
-  $('bambu-panels').hidden = none;
   $('bambu-remove').disabled = none;
   $('bambu-connect').disabled = none;
   bambuBridgeNote(printers.bridge);
@@ -114,6 +113,8 @@ function watchBambu() {
 
 const SESSION_WORDS = { idle: '', connecting: 'connecting...', connected: '', lost: 'Offline' };
 
+// The header's part of the printer's state: its session (the rest is the
+// Device page's, device.js).
 function drawBambu(s) {
   if (!s || !s.machine) {
     if (s && s.error) $('bambu-session').textContent = s.error;
@@ -124,40 +125,13 @@ function drawBambu(s) {
   $('bambu-session').textContent = s.said || (SESSION_WORDS[s.session] ? t(SESSION_WORDS[s.session]) : '');
   $('bambu-session').className = s.session === 'failed' || s.session === 'lost' ? 'error' : 'quiet';
   $('bambu-connect').hidden = s.session === 'connected' || s.session === 'connecting';
-  const m = s.machine;
-  $('bambu-file').textContent = m.file || t('N/A');
-  const percent = m.percent ?? null;
-  $('bambu-bar').style.width = `${percent ?? 0}%`;
-  $('bambu-percent').textContent = percent === null ? t('N/A') : `${percent}%`;
-  $('bambu-said').textContent = m.said || '';
-  $('bambu-layer').textContent = m.total_layers && percent !== null
-    ? t('Layer: %d/%d').replace('%d', m.layer ?? 0).replace('%d', m.total_layers)
-    : t('Layer: %s').replace('%s', t('N/A'));
-  $('bambu-left').textContent = m.left_text || '';
-  $('bambu-pause').disabled = !(m.can_pause || m.can_resume);
-  $('bambu-pause').textContent = m.can_resume ? t('Resume') : t('Pause');
-  $('bambu-stop').disabled = !m.can_stop;
-  const temps = [];
-  const pair = (name, value) => {
-    if (!value) return;
-    temps.push(el('dt', { textContent: name }), el('dd', { className: 'num', textContent: Array.isArray(value) ? `${Math.round(value[0])} / ${Math.round(value[1])} °C` : `${Math.round(value)} °C` }));
-  };
-  pair(t('Nozzle'), m.nozzle);
-  pair(t('Bed'), m.bed);
-  pair(t('Chamber'), m.chamber);
-  $('bambu-temps').replaceChildren(...temps);
-  const units = (m.ams || []).map((ams) => el('div', { className: 'bambu-unit' },
-    ...ams.trays.map((tray) => el('div', { className: `bambu-tray${tray.active ? ' active' : ''}${tray.exists ? '' : ' empty'}`, title: tray.exists ? `${tray.name} ${tray.type}` : `${tray.name} ${t('Empty')}` },
-      el('span', { className: 'swatch', style: tray.exists && tray.color ? `background:${trayColour(tray.color)}` : '' }),
-      el('span', { className: 'bambu-tray-name', textContent: tray.name }),
-      el('span', { className: 'bambu-tray-type', textContent: tray.exists ? (tray.type || '?') : t('Empty') })))));
-  $('bambu-ams').replaceChildren(...(units.length ? units : [el('p', { className: 'quiet', textContent: t('N/A') })]));
 }
 
 $('bambu-printer').addEventListener('change', () => attempt(async () => {
   await call('bambu_select', { dev_id: $('bambu-printer').value });
   bambuState.dialled.delete($('bambu-printer').value);
   await showBambuDevice();
+  if (typeof watchDevice === 'function') watchDevice(true);
 }));
 $('bambu-connect').addEventListener('click', () => attempt(async () => {
   $('bambu-session').textContent = t('connecting...');
@@ -176,18 +150,6 @@ $('bambu-remove').addEventListener('click', () => attempt(async () => {
   await call('bambu_printer_remove', { dev_id: printer.dev_id });
   await showBambuDevice();
 }));
-$('bambu-pause').addEventListener('click', () => attempt(async () => {
-  const action = $('bambu-pause').textContent === t('Resume') ? 'resume' : 'pause';
-  await call('bambu_control', { action });
-}));
-// "Stop": only after the reference's question.
-$('bambu-stop').addEventListener('click', () => attempt(async () => {
-  const asked = await call('bambu_control', { action: 'stop' });
-  if (!asked.confirm) return;
-  if (!await confirmBox(asked.confirm.title, asked.confirm.lines.join('\n'), t('Confirm'), t('Cancel'))) return;
-  await call('bambu_control', { action: 'stop', confirmed: true });
-}));
-
 // ---- "Connect the printer using IP and access code" ----
 
 function bambuAddReady() {
