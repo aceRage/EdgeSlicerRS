@@ -1874,8 +1874,9 @@ pub fn flow_rate(
     ));
     // `spiral_mode` off: the tiles are read by their tops, which vase
     // mode does not print. (Printing them object by object, which the
-    // reference then arranges for, is not followed here: the slice says
-    // so, and prints them together, as the file places them.)
+    // reference then arranges for, is not arranged for here: the tiles
+    // stand as the file places them, and a slice by object refuses them
+    // where they stand too close for the head.)
     process.extend(pairs(&[
         ("reduce_crossing_wall", "1"),
         ("spiral_mode", "0"),

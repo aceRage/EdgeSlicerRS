@@ -1909,6 +1909,13 @@ impl Writer<'_> {
         self.state.swaps += 1;
         let count = self.state.swaps as i64;
         let top = (self.variables.value("max_layer_z")).unwrap_or(Value::Float(0.0));
+        // Object by object, the layer's number in the print, not in its
+        // copy (GCode.cpp `m_layer_index`); between copies, the last
+        // layer's.
+        let number = match (self.object_layer, layer) {
+            (Some(_), Some(_)) => self.state.layer as i64,
+            (_, layer) => layer.map_or(-1, |layer| layer as i64),
+        };
         let v = &mut self.variables;
         v.set("previous_extruder", Value::Int(from.unwrap_or(-1)));
         v.set("next_extruder", Value::Int(to as i64));
@@ -1916,10 +1923,7 @@ impl Writer<'_> {
         v.set("next_filament_id", Value::Int(to as i64));
         v.set("current_hotend", Value::Int(-1));
         v.set("next_hotend", Value::Int(-1));
-        v.set(
-            "layer_num",
-            Value::Int(layer.map_or(-1, |layer| layer as i64)),
-        );
+        v.set("layer_num", Value::Int(number));
         v.set("layer_z", Value::Float(z));
         v.set("toolchange_z", Value::Float(toolchange_z));
         v.set("relative_e_axis", Value::Bool(true));
@@ -2409,20 +2413,15 @@ impl Writer<'_> {
         if first.filament != self.state.tool {
             self.flush_labels()?;
             self.change_tool(first.filament, 0, first.z, 0, None, &[], None, None, true)?;
-            // The fans the change G-code may have touched, set back to
-            // what they were.
-            let mut resume = String::new();
-            if let Some(speed) = self.state.auxiliary_fan {
-                resume.push_str(&format!("M106 P2 S{speed}\n"));
-            }
-            if let Some(speed) = self.state.fan {
-                resume.push_str(&format!("M106 S{speed}\n"));
-            }
-            let text = String::from_utf8_lossy(&self.out).replace(
-                std::str::from_utf8(RESUME_FAN_MARK).unwrap_or_default(),
-                &resume,
-            );
+            // The fans the change G-code may have touched are not known:
+            // the next copy's first layer sets them, whatever they were
+            // (the reference leaves its mark for them unread here, its
+            // cooling being off between copies).
+            let text = String::from_utf8_lossy(&self.out)
+                .replace(std::str::from_utf8(RESUME_FAN_MARK).unwrap_or_default(), "");
             self.out = text.into_bytes();
+            self.state.fan = None;
+            self.state.auxiliary_fan = None;
         } else {
             self.retract(false)?;
             self.flush_labels()?;

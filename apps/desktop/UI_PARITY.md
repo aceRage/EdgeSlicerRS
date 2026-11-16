@@ -1291,7 +1291,7 @@ reference's own numbers; each is named in `scene.js` with where it is from.
 | A grid from the plate's origin: every 10 mm (20, 50 or 100 on a bed 600, 1200 or 6000 mm across), every fifth line bold, and the bed's outline; (0.89), dark (0.431, 0.431, 0.463); the plate shown (0.5294, 0.5451, 0.5333), dark (0.298, 0.298, 0.3333) | `calc_gridlines` l.476, `render_grid` l.995, 2DBed.cpp l.27 | **added**; the bold lines are two pixels wide, drawn as quads (WebGL has no wide lines) |
 | The plate's number, "01" to "36", at its bottom right, and its name ("Untitled" without one) at its top left, in (242, 117, 78) | `calc_vertex_for_number` l.545, `generate_plate_name_texture` l.2264 | **added** |
 | Icons beside each plate: "Remove current plate (if not last one)", "Auto orient objects on current plate", "Arrange objects on current plate", "Lock current plate", "Customize current plate", "Move plate to the front", "Print history", "Edit current plate name" | `render_icons` l.1154 | **added** (tenth pass): a column of the page's own tools at the far right corner of the plate shown, with these tooltips ("Unlock current plate" on a locked one; a dot of the accent on "Customize current plate" when the plate sets anything, as the reference draws its changed icon). **differs**: beside the plate shown only, not every plate; HTML over the scene, placed as the scene is drawn and hidden while the corner is out of sight. "Auto orient objects on current plate" since the auto orient pass. **not yet**: "Print history" |
-| Height limits for printing by object, the areas a printer keeps clear, the stripes of a two-nozzle bed | l.858, l.968, `calc_height_limit` | **not yet** |
+| Height limits for printing by object, the areas a printer keeps clear, the stripes of a two-nozzle bed | l.858, l.968, `calc_height_limit` | **not yet** drawn in the scene; the clearances and heights of printing by object are checked when the plate is sliced (the by-object pass), and a plate that fails them is a slice error in the reference's words |
 
 ### Objects
 
@@ -1575,9 +1575,13 @@ paint depth option only for its mode are the reference's
 (ConfigManipulation.cpp l.1400–1421, `rules.rs`).
 
 Turned on, two more are read with a note: `raft_layers`,
-`draft_shield`; and `print_sequence` (read since the tenth pass) has one at
-"by object", which is not followed: every object is printed together, layer
-by layer. `zaa_enabled` turned on is followed, and its
+`draft_shield`. `print_sequence` (read since the tenth pass) is followed
+at "by object" since the by-object pass, the plate's own ("Customize current
+plate") over the project's: each copy is printed whole in turn, in the order
+the head's clearances allow, and a plate whose copies stand too close for
+the head, too close to an excluded area or too tall where they come fails
+to slice with the reference's words, naming the copy ("MC Arms is too close
+to others, and collisions may be caused."), shown as any slice error is. `zaa_enabled` turned on is followed, and its
 `zaa_speed_scaling` then has a note while layers are slowed to cool.
 
 Nothing is said of an option the reference's rules have greyed out: it is
