@@ -4,7 +4,7 @@ use edge_extrusion::Flow;
 use edge_geom::Point2;
 use edge_template::{Value, Variables};
 
-use crate::{scarf::Scarf, seam::Seam, small_area::SmallArea};
+use crate::{fan_mover::FanTiming, scarf::Scarf, seam::Seam, small_area::SmallArea};
 
 /// How the nozzle rises before a travel (`z_hop_types`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -243,6 +243,9 @@ pub struct PrintSettings {
     /// percent once the first layers are down.
     pub auxiliary_fan: bool,
     pub additional_cooling_fan_speed: f64,
+    /// The part fan told early and kick-started (`fan_speedup_time`,
+    /// `fan_speedup_overhangs`, `fan_kickstart`), where asked.
+    pub fan_timing: Option<FanTiming>,
     /// Speed of the skirt; zero for the usual speeds.
     pub skirt_speed: f64,
     /// Speeds of a support's sparse body and of its dense top.
@@ -509,6 +512,7 @@ impl Default for PrintSettings {
             dont_slow_down_outer_wall: false,
             circle_compensation_speed: 200.0,
             auxiliary_fan: false,
+            fan_timing: None,
             additional_cooling_fan_speed: 0.0,
             skirt_speed: 50.0,
             support_speed: 80.0,
@@ -1052,6 +1056,11 @@ impl PrintSettings {
             .max(0.0),
             auxiliary_fan: flag("auxiliary_fan", false)?,
             additional_cooling_fan_speed: number("additional_cooling_fan_speed", 0.0)?,
+            fan_timing: FanTiming::of(
+                number("fan_speedup_time", 0.0)?,
+                flag("fan_speedup_overhangs", true)?,
+                number("fan_kickstart", 0.0)?,
+            ),
             skirt_speed: number("skirt_speed", defaults.skirt_speed)?,
             support_speed: number("support_speed", defaults.support_speed)?,
             support_interface_speed: number(

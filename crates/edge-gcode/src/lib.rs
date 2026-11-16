@@ -18,6 +18,7 @@ mod chain;
 mod circle;
 mod contour;
 mod cooling;
+mod fan_mover;
 mod flush;
 mod inside;
 mod labels;
@@ -55,6 +56,7 @@ pub use calib::{
 pub use calib_draw::{HANDLE_SIZE as PA_HANDLE_SIZE, PaLine, PaPattern, Pen, pa_pattern};
 pub use contour::Contours;
 pub use edge_avoid::{Detour, Slices};
+pub use fan_mover::FanTiming;
 pub use labels::label_outline;
 pub use scarf::{Scarf, ScarfSeam};
 pub use seam::Seam;
@@ -702,6 +704,10 @@ pub fn write_timed(
         .settings
         .spiral
         .map(|spiral| spiral_vase::SpiralVase::new(spiral, writer.settings.resolution));
+    // The part fan told early and kick-started: each layer's finished text
+    // is read again, after the cooling and the spiral (GCode.cpp
+    // `process_layers`, the `fan_mover` filter; `fan_mover.rs`).
+    let mut fan_mover = writer.settings.fan_timing.map(fan_mover::FanMover::new);
     // How many layers each copy has, printing object by object.
     let mut run_layers = vec![0; runs.len()];
     for (run, _) in &own {
@@ -765,6 +771,10 @@ pub fn write_timed(
             let (text, more) = vase.process_layer(&text, last);
             writer.out = text.into_bytes();
             writer.fed(more);
+        }
+        if let Some(mover) = &mut fan_mover {
+            let text = String::from_utf8_lossy(&writer.out);
+            writer.out = mover.process_layer(&text).into_bytes();
         }
         // Whole or not at all, and never off the bed: an arc counts by
         // its bulge, which the points it was fitted to do not show.
