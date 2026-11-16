@@ -1382,6 +1382,18 @@ feature filaments (`wall_filament`, `sparse_infill_filament`,
   - Cooling: a layer shorter than `slow_down_layer_time` is laid out again
     with its fastest lines slowed, down to `slow_down_min_speed`; the part
     fan follows layer time and the auxiliary fan is driven.
+  - Fan speed-up (`fan_speedup_time`, `fan_speedup_overhangs`,
+    `fan_kickstart`, set on every Elegoo Centauri Carbon): each layer's
+    finished text is read again as the reference's FanMover reads it. A
+    part fan command that raises the fan is moved back by that many
+    seconds of moves (only for an overhang wall, by default), splitting a
+    `G1` where the moment falls inside it, never past the layer's start
+    and never inside the printer's own tool-change G-code; with a
+    kick-start the fan first runs at full speed for its share of
+    `fan_kickstart`. A command repeating the speed the fan is at is
+    dropped, as there. Not as the reference: an arc takes its time (the
+    reference counts none, so after arcs it moved a command about 1.7 s
+    back where 0.5 s was asked), and no empty line follows a kick-start.
   - Overhangs: every wall is measured against the outline of the layer
     beneath, as the reference measures it (ExtrusionProcessor.hpp). A
     stretch whose middle is further out than that outline grown by half
@@ -1482,7 +1494,9 @@ feature filaments (`wall_filament`, `sparse_infill_filament`,
     ties and of the order it is handed the tools in; both are ported as
     they stand, because the tower is a layer taller or shorter by it.
   - A tool change follows the reference: pull the filament well back, cool
-    the tool being put away, run the printer's own tool-change G-code,
+    the tool being put away (with `ooze_prevention`, to its filament's
+    `idle_temperature` where that is set, else by
+    `standby_temperature_delta`), run the printer's own tool-change G-code,
     heat and select the new tool, and push its filament back as far as it
     was pulled when last put away (on a printer of one nozzle, as far as
     the change pulled it back: the one retraction is shared, Extruder.cpp

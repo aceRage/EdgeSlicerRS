@@ -460,23 +460,23 @@ const PLATES: [(&str, &str); 6] = [
 ];
 
 /// A Snapmaker U1's plates, as the reference names them there
-/// (`enum_labels_u1`). Its Graphic Effect Plate is left out: the engine
-/// has no bed temperature for it yet.
-const PLATES_U1: [(&str, &str); 3] = [
+/// (`enum_labels_u1`).
+const PLATES_U1: [(&str, &str); 4] = [
     ("Textured PEI Plate", "Textured PEI Plate"),
     ("High Temp Plate", "Smooth PEI Plate"),
+    ("Graphic Effect Plate", "Graphic Effect Plate"),
     ("Cool Plate", "Cool Plate"),
 ];
 
-/// A U1 that takes every plate (`enum_labels_ex`), again without the
-/// Graphic Effect Plate.
-const PLATES_U1_ALL: [(&str, &str); 6] = [
+/// A U1 that takes every plate (`enum_labels_ex`).
+const PLATES_U1_ALL: [(&str, &str); 7] = [
     ("Cool Plate", "Smooth Cool Plate"),
     ("Engineering Plate", "Engineering Plate"),
     ("High Temp Plate", "Smooth PEI Plate"),
     ("Textured PEI Plate", "Textured PEI Plate"),
     ("Textured Cool Plate", "Textured Cool Plate"),
     ("Supertack Plate", "Cool Steel Plate"),
+    ("Graphic Effect Plate", "Graphic Effect Plate"),
 ];
 
 /// The build plates to choose from for a printer, whether there is a
@@ -494,6 +494,7 @@ fn bed_types(printer: &Settings, vendor: Option<&str>, chosen: Option<&str>) -> 
         Some("3") => Some("High Temp Plate"),
         Some("4") => Some("Textured PEI Plate"),
         Some("5") => Some("Textured Cool Plate"),
+        Some("6") => Some("Graphic Effect Plate"),
         Some("7") => Some("Supertack Plate"),
         Some(name) if name.ends_with("Plate") => Some(name),
         _ => None,
@@ -3197,6 +3198,11 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .contains(&json!({ "value": "High Temp Plate", "label": "Smooth PEI Plate" }))
+        );
+        // Its Graphic Effect Plate too, which has bed temperatures of its own.
+        assert_eq!(
+            plates["choices"][2],
+            json!({ "value": "Graphic Effect Plate", "label": "Graphic Effect Plate" })
         );
         assert_eq!(settled["process"]["layer_height"], 0.2);
         assert!(settled["process"]["wall_loops"].as_f64().unwrap() >= 1.0);

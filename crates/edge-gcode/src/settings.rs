@@ -4,7 +4,7 @@ use edge_extrusion::Flow;
 use edge_geom::Point2;
 use edge_template::{Value, Variables};
 
-use crate::{scarf::Scarf, seam::Seam, small_area::SmallArea};
+use crate::{fan_mover::FanTiming, scarf::Scarf, seam::Seam, small_area::SmallArea};
 
 /// How the nozzle rises before a travel (`z_hop_types`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -243,6 +243,9 @@ pub struct PrintSettings {
     /// percent once the first layers are down.
     pub auxiliary_fan: bool,
     pub additional_cooling_fan_speed: f64,
+    /// The part fan told early and kick-started (`fan_speedup_time`,
+    /// `fan_speedup_overhangs`, `fan_kickstart`), where asked.
+    pub fan_timing: Option<FanTiming>,
     /// Speed of the skirt; zero for the usual speeds.
     pub skirt_speed: f64,
     /// Speeds of a support's sparse body and of its dense top.
@@ -311,6 +314,10 @@ pub struct PrintSettings {
     /// idle nozzles from oozing; and how long before its turn it is heated
     /// again, in seconds.
     pub standby_temperature_delta: Option<f64>,
+    /// The filament's own temperature for its tool while it waits, in
+    /// place of the delta, when the profile keeps idle nozzles from oozing
+    /// (`idle_temperature`; 0, the default, for none).
+    pub idle_temperature: Option<f64>,
     pub preheat_time: f64,
     /// Whether the tool's temperature is waited for after a change.
     pub tool_change_temperature_wait: bool,
@@ -509,6 +516,7 @@ impl Default for PrintSettings {
             dont_slow_down_outer_wall: false,
             circle_compensation_speed: 200.0,
             auxiliary_fan: false,
+            fan_timing: None,
             additional_cooling_fan_speed: 0.0,
             skirt_speed: 50.0,
             support_speed: 80.0,
@@ -543,6 +551,7 @@ impl Default for PrintSettings {
             change_filament_gcode: None,
             retract_length_toolchange: 10.0,
             standby_temperature_delta: None,
+            idle_temperature: None,
             preheat_time: 30.0,
             tool_change_temperature_wait: true,
             single_nozzle: true,
@@ -782,13 +791,19 @@ impl PrintSettings {
             extent
         });
 
-        // The bed temperature lives under a key named after the plate in use.
+        // The bed temperature lives under a key named after the plate in use
+        // (PrintConfig.hpp `get_bed_temp_key`, `get_bed_temp_1st_layer_key`).
+        // The reference falls back to the High Temp Plate's keys for a plate
+        // without its own ("Default Plate"), to avoid a null pointer
+        // (GCode.cpp `_do_export`, `get_bed_temperature`); not followed: such
+        // a plate is listed below and gets no bed temperature.
         let bed_key = match settings.text("curr_bed_type") {
             Some("Cool Plate") => Some("cool_plate_temp"),
             Some("Engineering Plate") => Some("eng_plate_temp"),
             Some("High Temp Plate") => Some("hot_plate_temp"),
             Some("Textured PEI Plate") => Some("textured_plate_temp"),
             Some("Textured Cool Plate") => Some("textured_cool_plate_temp"),
+            Some("Graphic Effect Plate") => Some("graphic_effect_plate_temp"),
             Some("Supertack Plate") => Some("supertack_plate_temp"),
             Some(other) => {
                 unsupported.push(format!(
@@ -1046,6 +1061,11 @@ impl PrintSettings {
             .max(0.0),
             auxiliary_fan: flag("auxiliary_fan", false)?,
             additional_cooling_fan_speed: number("additional_cooling_fan_speed", 0.0)?,
+            fan_timing: FanTiming::of(
+                number("fan_speedup_time", 0.0)?,
+                flag("fan_speedup_overhangs", true)?,
+                number("fan_kickstart", 0.0)?,
+            ),
             skirt_speed: number("skirt_speed", defaults.skirt_speed)?,
             support_speed: number("support_speed", defaults.support_speed)?,
             support_interface_speed: number(
@@ -1129,6 +1149,10 @@ impl PrintSettings {
             standby_temperature_delta: match settings.flag("ooze_prevention")? {
                 Some(true) => Some(settings.float("standby_temperature_delta")?.unwrap_or(-5.0))
                     .filter(|delta| *delta != 0.0),
+                _ => None,
+            },
+            idle_temperature: match settings.flag("ooze_prevention")? {
+                Some(true) => first("idle_temperature")?.filter(|idle| *idle > 0.0),
                 _ => None,
             },
             preheat_time: settings
@@ -2177,6 +2201,20 @@ mod tests {
             ),
             (Some(35.0), Some(40.0))
         );
+        // A Snapmaker U1's Graphic Effect Plate has keys of its own.
+        let graphic = read(
+            r#"{"curr_bed_type": "Graphic Effect Plate", "graphic_effect_plate_temp": ["65", "70"],
+                "graphic_effect_plate_temp_initial_layer": ["68"], "hot_plate_temp": ["55"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                graphic.bed_temperature,
+                graphic.bed_temperature_initial_layer
+            ),
+            (Some(65.0), Some(68.0))
+        );
+        assert!(graphic.unsupported.is_empty());
         assert_eq!(
             (settings.wall_order, settings.infill_first),
             (WallOrder::OuterInner, true)
