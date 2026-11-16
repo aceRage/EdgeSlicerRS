@@ -374,12 +374,12 @@ impl TextConfiguration {
         if let Some(gap) = self.line_gap {
             let _ = write!(s, "line_gap=\"{gap}\" ");
         }
-        let _ = write!(s, "line_height=\"{}\" ", g6(f64::from(self.size_in_mm)));
+        let _ = write!(s, "line_height=\"{}\" ", g17(f64::from(self.size_in_mm)));
         if let Some(boldness) = self.boldness {
-            let _ = write!(s, "boldness=\"{}\" ", g6(f64::from(boldness)));
+            let _ = write!(s, "boldness=\"{}\" ", g17(f64::from(boldness)));
         }
         if let Some(skew) = self.skew {
-            let _ = write!(s, "skew=\"{}\" ", g6(f64::from(skew)));
+            let _ = write!(s, "skew=\"{}\" ", g17(f64::from(skew)));
         }
         if self.per_glyph {
             s.push_str("per_glyph=\"1\" ");
@@ -482,21 +482,21 @@ impl EmbossShape {
             }
             let _ = write!(s, "filepath3mf=\"{}\" ", escape(in_3mf));
         }
-        let _ = write!(s, "scale=\"{}\" ", g6(self.scale));
+        let _ = write!(s, "scale=\"{}\" ", g17(self.scale));
         if self.unhealed {
             s.push_str("unhealed=\"1\" ");
         }
-        let _ = write!(s, "depth=\"{}\" ", g6(self.depth));
+        let _ = write!(s, "depth=\"{}\" ", g17(self.depth));
         if self.use_surface {
             s.push_str("use_surface=\"1\" ");
         }
         if let Some(bend) = &self.bend {
             match (bend.radius, bend.angle) {
                 (Some(radius), _) => {
-                    let _ = write!(s, "bend_radius=\"{}\" ", g6(f64::from(radius)));
+                    let _ = write!(s, "bend_radius=\"{}\" ", g17(f64::from(radius)));
                 }
                 (None, Some(angle)) => {
-                    let _ = write!(s, "bend_angle=\"{}\" ", g6(f64::from(angle)));
+                    let _ = write!(s, "bend_angle=\"{}\" ", g17(f64::from(angle)));
                 }
                 (None, None) => {}
             }
@@ -514,7 +514,7 @@ impl EmbossShape {
             Some(prev) => fix.then(&prev),
             None => fix,
         };
-        let numbers: Vec<String> = fix.rows.iter().flatten().map(|value| g6(*value)).collect();
+        let numbers: Vec<String> = fix.rows.iter().flatten().map(|value| g17(*value)).collect();
         let _ = write!(s, "transform=\"{}\" ", numbers.join(" "));
         s.push_str("/>");
         s
@@ -538,12 +538,14 @@ fn fix_of(text: &str) -> Option<Transform> {
     Some(Transform { rows })
 }
 
-/// A number as a C++ stream writes it by default: six significant
-/// digits, trailing zeros dropped, in exponent form below 1e-4 and from
-/// 1e6.
-pub fn g6(value: f64) -> String {
+/// A number as the reference writes these (bbs_3mf.cpp sets its stream to
+/// `max_digits10` of a double): C's `%.17g`, seventeen significant digits,
+/// trailing zeros dropped, in exponent form below 1e-4 and from 1e17. A
+/// float is written as the double it widens to.
+pub fn g17(value: f64) -> String {
+    const PRECISION: i32 = 17;
     if value == 0.0 {
-        return "0".into();
+        return if value.is_sign_negative() { "-0" } else { "0" }.into();
     }
     if !value.is_finite() {
         return if value.is_nan() {
@@ -554,7 +556,7 @@ pub fn g6(value: f64) -> String {
             "-inf".into()
         };
     }
-    let exponent = format!("{value:.5e}");
+    let exponent = format!("{value:.*e}", (PRECISION - 1) as usize);
     let (mantissa, power) = exponent.split_once('e').unwrap_or((&exponent, "0"));
     let power: i32 = power.parse().unwrap_or(0);
     let trim = |text: String| -> String {
@@ -564,12 +566,12 @@ pub fn g6(value: f64) -> String {
             text
         }
     };
-    if !(-4..6).contains(&power) {
+    if !(-4..PRECISION).contains(&power) {
         let mantissa = trim(mantissa.to_owned());
         let sign = if power < 0 { '-' } else { '+' };
         format!("{mantissa}e{sign}{:02}", power.abs())
     } else {
-        let decimals = (5 - power).max(0) as usize;
+        let decimals = (PRECISION - 1 - power).max(0) as usize;
         trim(format!("{value:.decimals$}"))
     }
 }
@@ -579,17 +581,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn numbers_are_written_as_a_cpp_stream_writes_them() {
-        assert_eq!(g6(10.0), "10");
-        assert_eq!(g6(0.1), "0.1");
-        assert_eq!(g6(1e-6), "1e-06");
-        assert_eq!(g6(0.0001), "0.0001");
-        assert_eq!(g6(0.00001234), "1.234e-05");
-        assert_eq!(g6(123456.7), "123457");
-        assert_eq!(g6(1234567.0), "1.23457e+06");
-        assert_eq!(g6(-2.5), "-2.5");
-        assert_eq!(g6(0.015), "0.015");
-        assert_eq!(g6(4.4999999), "4.5");
+    fn numbers_are_written_as_the_reference_writes_them() {
+        // As the reference wrote them back (`--export-3mf` of a project
+        // saved here).
+        assert_eq!(g17(10.0), "10");
+        assert_eq!(g17(3.4179699923697626e-06), "3.4179699923697626e-06");
+        assert_eq!(g17(-0.0518386), "-0.051838599999999999");
+        assert_eq!(g17(-0.485), "-0.48499999999999999");
+        assert_eq!(g17(0.0001), "0.0001");
+        assert_eq!(g17(f64::from(0.1_f32)), "0.10000000149011612");
+        assert_eq!(g17(-2.5), "-2.5");
+        assert_eq!(g17(1e17), "1e+17");
     }
 
     #[test]

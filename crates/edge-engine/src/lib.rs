@@ -53,6 +53,7 @@ pub use edge_3mf::{
     LayerRange, Layout, MeshStat, PaintKind, PartKind, Pictures, RecipeDrawn, RecipeGroove,
     RecipeKind, RecipeSheet, TextConfiguration, TextVolume, gcode_md5,
 };
+pub use edge_3mf::{DescriptorType, EmbossShape, HorizontalAlign, VerticalAlign, g17};
 pub use edge_mesh::Transform;
 /// Stops a mesh boolean under way (a curved cut's preview).
 pub use edge_mesh::boolean::Cancel as BooleanCancel;

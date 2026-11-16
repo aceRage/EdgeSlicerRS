@@ -55,7 +55,7 @@ pub use sliced::{
 };
 pub use text::{
     DescriptorType, EmbossBend, EmbossShape, HorizontalAlign, TextConfiguration, TextVolume,
-    VerticalAlign, g6,
+    VerticalAlign, g17,
 };
 pub use write::{
     Layout, REFERENCE_VERSION, SECRETS, Save, Written, identify_numbers, losses, own_settings_text,

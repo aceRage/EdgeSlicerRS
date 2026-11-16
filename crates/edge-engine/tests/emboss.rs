@@ -379,3 +379,63 @@ fn a_text_the_reference_centred_is_made_again_in_its_frame() {
         assert!((a - b).abs() < 1e-5, "{found:?}");
     }
 }
+
+/// "From surface" measures the text's distance off the face along its own
+/// Z, and "Set text to face camera" turns its Z to the eye.
+#[test]
+fn the_distance_from_the_surface_and_facing_the_camera() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut model = cube_model(dir.path());
+    let object = model.objects()[0].id();
+    let copy = model.objects()[0].copies()[0].id();
+    let font = nanum();
+    let fonts = TextFonts {
+        font: &font,
+        fallback: None,
+    };
+    let (_, reach) = model.in_scene(Some(&BED), copy).unwrap();
+    let [low, high] = reach.unwrap();
+    let point = [(low[0] + high[0]) / 2.0, low[1], (low[2] + high[2]) / 2.0];
+    let made = emboss::emboss(fonts, &config("D"), 1.0, PartKind::Normal).unwrap();
+    let part = model
+        .add_text(
+            Some(&BED),
+            object,
+            copy,
+            Some((point, [0.0, -1.0, 0.0])),
+            None,
+            Some(1.5),
+            PartKind::Normal,
+            made,
+        )
+        .unwrap();
+    let distance = model
+        .text_distance(Some(&BED), object, part, copy)
+        .unwrap()
+        .unwrap();
+    assert!((distance - 1.5).abs() < 1e-6, "{distance}");
+    // Seen from the right (+X), facing the camera turns its Z to +X.
+    let frame = model.text_frame(object, part).unwrap();
+    let eye = [high[0] + 100.0, point[1] - 1.5, point[2]];
+    let turned = model
+        .text_facing(
+            Some(&BED),
+            object,
+            copy,
+            &frame,
+            Some(eye),
+            [-1.0, 0.0, 0.0],
+            true,
+        )
+        .unwrap();
+    let z = turned.rows[2];
+    assert!(
+        (z[0] - 1.0).abs() < 1e-6 && z[1].abs() < 1e-6 && z[2].abs() < 1e-6,
+        "{z:?}"
+    );
+    // Its up stays the world's Z, and it stays where it was.
+    assert!((turned.rows[1][2] - 1.0).abs() < 1e-6, "{:?}", turned.rows);
+    for i in 0..3 {
+        assert!((turned.rows[3][i] - frame.rows[3][i]).abs() < 1e-6);
+    }
+}

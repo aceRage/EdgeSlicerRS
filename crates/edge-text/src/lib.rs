@@ -39,8 +39,10 @@ use edge_geom::{Coord, ExPolygon, Point2, Polygon};
 
 mod flatten;
 mod heal;
+mod scan;
 
 pub use heal::heal;
+pub use scan::{ScannedFace, scan_file};
 
 /// A thousandth of a font unit: what glyph points are kept in (Emboss.cpp
 /// `SHAPE_SCALE`).
@@ -608,10 +610,14 @@ pub struct FaceInfo {
     pub italic: bool,
     /// Whether its outlines are cubic (CFF), not TrueType's quadratic.
     pub cff: bool,
+    /// The `hhea` ascent and the em, in font units: what the panel's
+    /// sliders in "points" are bounded by (`draw_advanced`).
+    pub ascent: i32,
+    pub units_per_em: i32,
 }
 
 impl FaceInfo {
-    fn of(face: &ttf_parser::Face<'_>) -> FaceInfo {
+    pub(crate) fn of(face: &ttf_parser::Face<'_>) -> FaceInfo {
         let name = |ids: &[u16]| -> String {
             ids.iter()
                 .find_map(|id| english_name(face, *id))
@@ -633,6 +639,8 @@ impl FaceInfo {
             weight: face.weight().to_number(),
             italic: face.is_italic() || face.is_oblique(),
             cff: face.tables().cff.is_some(),
+            ascent: i32::from(face.tables().hhea.ascender),
+            units_per_em: i32::from(face.units_per_em()),
         }
     }
 }

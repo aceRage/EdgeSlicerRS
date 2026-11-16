@@ -555,6 +555,171 @@ impl Model {
     }
 }
 
+/// The turn that takes direction `from` to `to` by the shortest way
+/// (Eigen's `Quaternion::FromTwoVectors`), as a [`Transform`].
+fn from_two_vectors(from: Vec3, to: Vec3) -> Transform {
+    let (a, b) = (normalized(from), normalized(to));
+    let cos = dot(a, b).clamp(-1.0, 1.0);
+    let axis = cross(a, b);
+    if dot(axis, axis) > 1e-24 {
+        return transform_of(turn(cos.acos(), normalized(axis)));
+    }
+    if cos > 0.0 {
+        return Transform::IDENTITY;
+    }
+    // Opposite: half a turn about any line square to them.
+    let other = if a[0].abs() < 0.9 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    transform_of(turn(std::f64::consts::PI, normalized(cross(a, other))))
+}
+
+/// The linear part of a transform as its columns, and back.
+fn columns(t: &Transform) -> [Vec3; 3] {
+    [t.rows[0], t.rows[1], t.rows[2]]
+}
+
+impl Model {
+    /// How far a text part's origin is from the surface of its object's
+    /// other printed parts, along its own Z (SurfaceDrag.cpp
+    /// `calc_distance`): a line of sight both ways along the text's Z, the
+    /// nearest surface, positive when the text stands off it. None when
+    /// no surface is met, when it is nearer than 0.01 mm, or further than
+    /// twice the text's depth or √10 mm, whichever is more.
+    pub fn text_distance(
+        &self,
+        bed: Option<&Bed>,
+        object: u64,
+        part: u64,
+        copy: u64,
+    ) -> Result<Option<f64>, Failure> {
+        let at = self.object_at(object)?;
+        let index = self.part_at(at, part)?;
+        if self.copy_at(copy)?.0 != at {
+            return Err(refused(format!("copy {copy} is not of object {object}")));
+        }
+        let Some((scene, _)) = self.in_scene(bed, copy) else {
+            return Ok(None);
+        };
+        let shape = &self.objects[at].shape;
+        let held = &shape.parts[index];
+        let world = self.text_frame(object, part)?.then(&scene);
+        let point = world.apply([0.0; 3]);
+        let dir = normalized(world.rows[2]).map(|c| -c);
+        let trees = shape.trees.get_or_init(|| {
+            shape
+                .parts
+                .iter()
+                .map(|part| {
+                    (part.kind == PartKind::Normal)
+                        .then(|| edge_mesh::raycast::Tree::new(&part.mesh))
+                })
+                .collect()
+        });
+        let mut nearest: Option<Vec3> = None;
+        for (other, (part, tree)) in shape.parts.iter().zip(trees).enumerate() {
+            let Some(tree) = tree else { continue };
+            if other == index {
+                continue;
+            }
+            let placed = part.transform.then(&scene);
+            let Some(back) = placed.inverse() else {
+                continue;
+            };
+            let origin = back.apply(point);
+            for sign in [1.0, -1.0] {
+                let ahead = back.apply(std::array::from_fn(|i| point[i] + sign * dir[i]));
+                let direction: Vec3 = std::array::from_fn(|i| ahead[i] - origin[i]);
+                if let Some(hit) = tree.hit(origin, direction, (0.0, f64::INFINITY), &|_| true) {
+                    let hit = placed.apply(hit.point);
+                    let far = |p: Vec3| (0..3).map(|i| (p[i] - point[i]).powi(2)).sum::<f64>();
+                    if nearest.is_none_or(|was| far(hit) < far(was)) {
+                        nearest = Some(hit);
+                    }
+                }
+            }
+        }
+        let Some(hit) = nearest else { return Ok(None) };
+        let to_hit: Vec3 = std::array::from_fn(|i| hit[i] - point[i]);
+        let squared = dot(to_hit, to_hit);
+        if squared < 1e-4 {
+            return Ok(None);
+        }
+        let depth = held
+            .mesh
+            .bounds()
+            .map_or(0.0, |(low, high)| f64::from(high[2] - low[2]));
+        if squared > (2.0 * depth).powi(2).max(10.0) {
+            return Ok(None);
+        }
+        let sign = if dot(to_hit, dir) > 0.0 { 1.0 } else { -1.0 };
+        Ok(Some(sign * squared.sqrt()))
+    }
+
+    /// A text part's frame turned to face the camera ("Set text to face
+    /// camera": SurfaceDrag.cpp `face_selected_volume_to_camera` with
+    /// `get_volume_transformation`): its Z turned towards the eye at
+    /// `eye` (a perspective view) or against `forward` (a parallel one),
+    /// and with `keep_up` its up put back as its face suggests and its
+    /// turn about Z kept. `frame` is its frame in its object.
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_facing(
+        &self,
+        bed: Option<&Bed>,
+        object: u64,
+        copy: u64,
+        frame: &Transform,
+        eye: Option<Vec3>,
+        forward: Vec3,
+        keep_up: bool,
+    ) -> Result<Transform, Failure> {
+        let at = self.object_at(object)?;
+        if self.copy_at(copy)?.0 != at {
+            return Err(refused(format!("copy {copy} is not of object {object}")));
+        }
+        let (scene, _) = self
+            .in_scene(bed, copy)
+            .ok_or_else(|| refused(format!("there is no copy {copy}")))?;
+        let back = scene
+            .inverse()
+            .ok_or_else(|| refused("the object is squashed flat"))?;
+        let world = frame.then(&scene);
+        let current_angle = if keep_up {
+            calc_up(&world, UP_LIMIT)
+        } else {
+            None
+        };
+        let position = world.apply([0.0; 3]);
+        let wanted = match eye {
+            Some(eye) => std::array::from_fn(|i| eye[i] - position[i]),
+            None => forward.map(|c| -c),
+        };
+        // The text's Z made square to its X and Y, its length kept along
+        // the old one.
+        let [x, y, old_z] = columns(&world);
+        let new_z = cross(x, y);
+        let z = new_z.map(|c| c * dot(old_z, new_z) / dot(new_z, new_z));
+        let mut linear = transform_of([x, y, z]).then(&from_two_vectors(z, wanted));
+        if keep_up {
+            let z_world = normalized(linear.rows[2]);
+            let up = suggest_up(z_world, UP_LIMIT);
+            linear = linear.then(&from_two_vectors(linear.rows[1], up));
+        }
+        // Into the object: the position and the turn taken back through
+        // the copy.
+        let mut unturn = back;
+        unturn.rows[3] = [0.0; 3];
+        let mut out = linear.then(&unturn);
+        out.rows[3] = back.apply(position);
+        if out.rows.iter().flatten().any(|v| !v.is_finite()) {
+            return Ok(*frame);
+        }
+        Ok(apply_angle_distance(&out, current_angle, None))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

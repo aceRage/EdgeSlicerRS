@@ -326,7 +326,13 @@ impl PartKept {
                 Entry::Meta { key, .. } => {
                     !(key.starts_with("source_") || key == "matrix" || key == "name")
                 }
-                Entry::Raw(raw) => !(raw.starts_with("<mesh_stat") || is_text(raw)),
+                // Its text and its shape (`text_configuration` and
+                // `emboss_shape` are reset).
+                Entry::Raw(raw) => {
+                    !(raw.starts_with("<mesh_stat")
+                        || is_text(raw)
+                        || raw.starts_with("<slic3rpe:shape"))
+                }
             })
             .cloned()
             .collect();

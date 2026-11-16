@@ -132,3 +132,17 @@ fn a_font_says_what_it_is_called() {
     // What is not a font is refused, not read.
     assert!(Font::from_bytes(b"not a font at all".to_vec(), "x").is_err());
 }
+
+#[test]
+fn a_file_is_scanned_for_its_fonts_without_reading_it_whole() {
+    let mut skipped = Vec::new();
+    let faces =
+        edge_text::scan_file(&fonts().join("NanumGothic-Regular.ttf"), &mut skipped).unwrap();
+    assert!(skipped.is_empty());
+    assert_eq!(faces.len(), 1);
+    let whole = Font::open(&fonts().join("NanumGothic-Regular.ttf")).unwrap();
+    assert_eq!(faces[0].info, whole.info().unwrap());
+    // A text file is no font.
+    let readme = fonts().join("NotoSansSymbols2-Subset.README.txt");
+    assert!(edge_text::scan_file(&readme, &mut skipped).is_err());
+}

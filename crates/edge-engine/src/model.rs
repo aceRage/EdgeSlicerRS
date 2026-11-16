@@ -1751,6 +1751,9 @@ impl Model {
                 // Its kind and settings go with each piece, not what the
                 // part's triangles carried or where it came from.
                 kept: held.kept.as_deref().map(|kept| Arc::new(kept.piece())),
+                // A piece of a text is no text (`text_configuration` reset).
+                text: None,
+                decoration: false,
                 ..held.clone()
             })
             .collect();
