@@ -1325,8 +1325,20 @@ feature filaments (`wall_filament`, `sparse_infill_filament`,
     which `chain_and_reorder_extrusion_entities` orders with). Where
     that chain would turn round a line that may not be turned, a swept
     surface or a tree branch's wall, the lines are taken nearest first
-    instead, as there. Gap fill and supports are chained the same way,
-    each kind by itself. The reference finds near points with a k-d
+    instead, as there. The gap fill of a top or bottom surface whose
+    lines may be reordered is one more of its lines, chained with them
+    (FillBase.cpp `_create_gap_fill` adds it to the surface's
+    collection); that of a surface laid in turn (monotonic) is a part of
+    its own, where the reference slips each gap line in among the
+    surface's lines (`insert_gap_fill`, not followed yet). Gap fill
+    between walls and supports are chained the same way, each kind by
+    itself. Islands are taken nearest first from the nozzle, on purpose:
+    the reference takes an object's islands in the order of its layer's
+    `lslices` (GCode.cpp `process_layer`, "FIXME order islands?"), a
+    chain of their outlines' first points that does not start from the
+    nozzle (Layer.cpp `make_slices`); on the U1's stringing grid that
+    order travels 113.4 m where nearest first travels 93.3 m, with the
+    same retractions. The reference finds near points with a k-d
     tree; here every point is looked at and of two equally near the
     earlier wins, so equal hops can be taken in a different order.
   - Travel: retraction with wipe, and straight, ramped or spiral lifts

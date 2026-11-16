@@ -1970,7 +1970,14 @@ sliced by the pin as a plain vase (`edge-parity`): 426 layer changes in
 both at the same heights (the vase's last layer twice in both), extruded
 path 246.88 m in both, outer wall 241.75 m in both, wall length per layer
 within 0.00% on average; gap fill 0.07 m here and 0.05 m there and
-retractions 118 here and 86 there, all on the first, solid layer. That
+retractions 118 here and 86 there, all on the first, solid layer: most
+of them the pin's own error, fixed on the fork's main (EdgeSlicer #968):
+its monotonic bottom joins line to line round the hole's edge however
+far that is (`link_max_length` worked out while the spacing is still
+zero), where this engine joins no further than three spacings, so here
+the lines end apart and more slivers are left for gap fill; with the
+joins unlimited here as there (tried, not kept) it is 91 against 86 and
+travel 0.93 against 0.92 m. That
 comparison found a difference in the walls of every print with no sparse
 fill, a vase's always: the reference does not look for gaps inside the
 innermost wall when `sparse_infill_density` is 0 (PerimeterGenerator.cpp,
@@ -2099,8 +2106,10 @@ session's (the check, the settings shown changed, slice, undo). The
 project (SCV-V2 on a U1) saved and sliced by the pin as a plain vase
 (`edge-parity`): 501 layers in both, extruded path 205.93 m there and
 205.92 here, outer wall 196.31 and 196.30 m, wall length per layer within
-0.00%; the first layer's bottom is laid with 121 retractions here and 63
-there (its fill's order). Not picked up, waiting for the pin bump: Orca
+0.00%; the first layer's bottom was laid with 121 retractions here and 63
+there, its gap fill ordered apart from its lines; with the gap lines
+chained among the bottom's own, as there, it is 52 against 63 (the whole
+print 53 against 64, travel 0.65 against 0.66 m). Not picked up, waiting for the pin bump: Orca
 #13253's maximum of 0.3 (from 1.0) and warning from 0.25 (from 0.3) for
 junction deviation, the models as `.drc`, `precise_z_height` off, and
 input shaping turned off on Klipper too.

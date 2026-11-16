@@ -699,7 +699,7 @@ fn temperatures_change_after_the_first_layer() {
             // The fan for the second layer is set just ahead of it.
             "M106 S255",
             "M104 S210",
-            "M140 S55",
+            "M140 S55 ; set bed temperature",
             "M106 S0",
             "M104 S0",
             "M140 S0",
@@ -712,6 +712,27 @@ fn temperatures_change_after_the_first_layer() {
     // With no bed type known, the bed is left alone.
     let (text, _) = print(&[layer(0.2)], &basic());
     assert!(!text.contains("M190") && text.contains("M104 S200"));
+
+    // The same bed above the first layer: nothing more is written, but
+    // for Klipper, where the start macro heats the bed and the writer has
+    // none on record, the line is (GCode.cpp `_do_export`).
+    let same = PrintSettings {
+        bed_temperature: Some(60.0),
+        ..settings.clone()
+    };
+    let beds = |settings: &PrintSettings| -> Vec<String> {
+        let (text, _) = print(&[layer(0.2), layer(0.4)], settings);
+        text.lines()
+            .filter(|line| line.starts_with("M140 S60 ;"))
+            .map(str::to_owned)
+            .collect()
+    };
+    assert!(beds(&same).is_empty());
+    let klipper = PrintSettings {
+        klipper: true,
+        ..same.clone()
+    };
+    assert_eq!(beds(&klipper), ["M140 S60 ; set bed temperature"]);
 }
 
 #[test]
@@ -939,6 +960,40 @@ fn lines_laid_in_turn_keep_their_order_and_direction() {
     fill[2].in_turn = false;
     let layer = one_layer(&loops, &[0..1, 1..2], &fill);
     assert_eq!(homes(&layer[0]), [0, 0, 1]);
+}
+
+#[test]
+fn an_areas_own_gap_fill_is_chained_with_its_lines() {
+    // Two bottom lines far apart and, given after them, a gap line of the
+    // same area beside the first: it is laid between the two, where it
+    // lies, not after both (FillBase.cpp `_create_gap_fill` puts it in the
+    // area's collection, which is chained whole).
+    let area = [1.0, 30.0].map(|x| ExtrusionPath {
+        part: 1,
+        ..line((x, 1.0), (x, 9.0), Role::BottomSurface)
+    });
+    let gap = ExtrusionPath {
+        part: 1,
+        ..line((2.0, 9.5), (2.0, 1.5), Role::GapFill)
+    };
+    let fill = [area[0].clone(), area[1].clone(), gap.clone()];
+    let (text, _) = print(&one_layer(&[], &[], &fill), &basic());
+    assert_eq!(
+        features(&text),
+        ["Bottom surface", "Gap infill", "Bottom surface"]
+    );
+    // Of another area (laid in turn, and so a part of its own) it is
+    // ordered as an area by itself: after the two lines it is given after.
+    let apart = [
+        area[0].clone(),
+        ExtrusionPath {
+            in_turn: true,
+            ..area[1].clone()
+        },
+        ExtrusionPath { part: 2, ..gap },
+    ];
+    let (text, _) = print(&one_layer(&[], &[], &apart), &basic());
+    assert_eq!(features(&text), ["Bottom surface", "Gap infill"]);
 }
 
 #[test]
@@ -4125,4 +4180,31 @@ fn copies_printed_object_by_object_are_each_finished_before_the_next() {
     let first_a = xs.iter().position(|x| *x < 20.0).unwrap();
     assert!(xs[..first_a].iter().all(|x| *x > 20.0));
     assert!(xs[first_a..].iter().all(|x| *x < 20.0));
+
+    // The bed goes by what was last set (GCodeWriter.cpp
+    // `m_last_bed_temperature`): down at each copy's second layer and
+    // back up before the next copy.
+    let beds = |settings: &PrintSettings| -> Vec<String> {
+        let (text, _) = print(&layers, settings);
+        text.lines()
+            .filter(|line| line.ends_with("; set bed temperature"))
+            .map(str::to_owned)
+            .collect()
+    };
+    settings.bed_temperature_initial_layer = Some(60.0);
+    settings.bed_temperature = Some(55.0);
+    assert_eq!(
+        beds(&settings),
+        [
+            "M140 S55 ; set bed temperature",
+            "M140 S60 ; set bed temperature",
+            "M140 S55 ; set bed temperature",
+        ]
+    );
+    // One temperature throughout, for Klipper: written at the first
+    // copy's second layer, where the writer has none on record, and not
+    // again.
+    settings.bed_temperature = Some(60.0);
+    settings.klipper = true;
+    assert_eq!(beds(&settings), ["M140 S60 ; set bed temperature"]);
 }
