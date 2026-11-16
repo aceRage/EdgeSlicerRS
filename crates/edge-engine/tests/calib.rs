@@ -1318,3 +1318,217 @@ fn the_stringing_grid_dialog_defaults_and_checks_are_the_references() {
         ""
     );
 }
+
+#[test]
+fn the_ironing_flow_dialog_checks_and_labels_are_the_references() {
+    use edge_engine::calib::ironing_flow::{check, label, mark_step};
+    // Marks at 1, 2, 5, 10 or 20 %, at least 10 mm apart.
+    assert_eq!(mark_step(0.0, 70.0, 140.0), 5.0);
+    assert_eq!(mark_step(0.0, 10.0, 140.0), 1.0);
+    assert_eq!(mark_step(0.0, 100.0, 50.0), 20.0);
+    assert_eq!(mark_step(0.0, 100.0, 40.0), 0.0);
+    assert_eq!(label(35.0), "35%");
+    assert_eq!(label(12.5), "12.5%");
+    assert_eq!(label(12.345), "12.35%");
+    assert_eq!(label(0.0), "0%");
+    let bed = [0.0, 0.0, 270.0, 270.0];
+    assert_eq!(check(0.0, 70.0, 140.0, 0.4, bed), Ok(()));
+    for (start, end, length) in [
+        (-1.0, 70.0, 140.0),
+        (30.0, 30.0, 140.0),
+        (0.0, 101.0, 140.0),
+        (0.0, 70.0, 9.0),
+    ] {
+        assert!(
+            check(start, end, length, 0.4, bed)
+                .unwrap_err()
+                .message
+                .starts_with("Please input valid values")
+        );
+    }
+    let error = check(0.0, 100.0, 40.0, 0.4, bed).unwrap_err();
+    assert_eq!(error.values, vec![50]);
+    let error = check(0.0, 70.0, 300.0, 0.4, bed).unwrap_err();
+    assert_eq!(error.values, vec![300, 310, 250]);
+    assert!(
+        check(0.0, 70.0, 140.0, 0.4, [0.0, 0.0, 270.0, 60.0])
+            .unwrap_err()
+            .message
+            .contains("in Y")
+    );
+    assert_eq!(
+        edge_engine::calib::ironing_flow::filament_name("Snapmaker PLA @U1"),
+        "Snapmaker PLA"
+    );
+}
+
+/// The ironing moves of the last layer: each extruding move's start, end
+/// and filament fed.
+fn ironing_moves(gcode: &str) -> Vec<([f64; 2], [f64; 2], f64)> {
+    let last = layers(gcode).last().copied().unwrap();
+    let mut at = [0.0, 0.0];
+    // Where the nozzle is at the layer's start: the last move before it.
+    let pieces: Vec<&str> = gcode.split(";LAYER_CHANGE\n").collect();
+    for line in pieces[pieces.len() - 2].lines() {
+        for word in line.split_whitespace() {
+            if let Some(x) = word.strip_prefix('X') {
+                at[0] = x.parse().unwrap();
+            } else if let Some(y) = word.strip_prefix('Y') {
+                at[1] = y.parse().unwrap();
+            }
+        }
+    }
+    let mut ironing = false;
+    let mut moves = Vec::new();
+    for line in last.lines() {
+        if let Some(kind) = line.strip_prefix(";TYPE:") {
+            ironing = kind == "Ironing";
+            continue;
+        }
+        if !(line.starts_with("G1 ") || line.starts_with("G0 ")) {
+            continue;
+        }
+        let mut to = at;
+        let mut fed = 0.0;
+        for word in line.split(';').next().unwrap().split_whitespace() {
+            if let Some(x) = word.strip_prefix('X') {
+                to[0] = x.parse().unwrap();
+            } else if let Some(y) = word.strip_prefix('Y') {
+                to[1] = y.parse().unwrap();
+            } else if let Some(e) = word.strip_prefix('E') {
+                fed = e.parse().unwrap();
+            }
+        }
+        if ironing && to != at {
+            moves.push((at, to, fed));
+        }
+        at = to;
+    }
+    moves
+}
+
+#[test]
+fn the_ironing_flow_test_ramps_its_ironing_along_both_bands() {
+    use edge_engine::calib::ironing_flow;
+    let fonts = reference("resources/fonts");
+    for (label, vendor, machine) in [
+        ("klipper", "Snapmaker", "Snapmaker U1 (0.4 nozzle)"),
+        ("marlin", "Creality", "Creality Ender-3 V3 SE 0.4 nozzle"),
+    ] {
+        let chosen = presets(vendor, machine);
+        let params = CalibParams::new(CalibMode::IroningFlow, 0.0, 70.0, 140.0);
+        let (mut made, _) = made_and_sliced(&chosen, &Settings::default(), |settings, bed| {
+            ironing_flow::ironing_flow(&params, settings, &fonts, Some(bed))
+        })
+        .unwrap();
+        assert_eq!(made.name, "Ironing flow test");
+        let object = &made.model.objects()[0];
+        assert_eq!(object.name(), "Ironing flow test");
+        let over: Vec<(&str, &str)> = made
+            .process
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(
+            over,
+            vec![
+                ("ironing_type", "topmost"),
+                ("ironing_pattern", "rectilinear"),
+                ("ironing_angle_fixed", "1"),
+                ("ironing_angle", "90")
+            ]
+        );
+        // Named at the slice after the filament, the test stays where it was.
+        let settings = edge_engine::settled(&chosen, &overrides(&made), None).unwrap();
+        let bed = bed(&settings);
+        let copy = made.model.objects()[0].copies()[0].id();
+        let before = made.model.in_scene(Some(&bed), copy).unwrap().1.unwrap();
+        let names = vec![chosen.filaments[0].0.clone()];
+        let changed = ironing_flow::name_for_slice(
+            &mut made.model,
+            Some(&bed),
+            made.params.as_ref().unwrap(),
+            &settings,
+            &names,
+            &fonts,
+        )
+        .unwrap();
+        assert!(changed, "{label}");
+        let again = ironing_flow::name_for_slice(
+            &mut made.model,
+            Some(&bed),
+            made.params.as_ref().unwrap(),
+            &settings,
+            &names,
+            &fonts,
+        )
+        .unwrap();
+        assert!(!again);
+        let [low, high] = made.model.in_scene(Some(&bed), copy).unwrap().1.unwrap();
+        for axis in 0..3 {
+            assert!(
+                (low[axis] - before[0][axis]).abs() < 1e-4
+                    && (high[axis] - before[1][axis]).abs() < 1e-4,
+                "{label} {low:?} {before:?}"
+            );
+        }
+        // 140 mm and 5 mm at each end; ten layers of 0.12 over the first.
+        let first: f64 = settings
+            .float("initial_layer_print_height")
+            .unwrap()
+            .unwrap();
+        assert!((high[0] - low[0] - 150.0).abs() < 1e-3, "{label}");
+        assert!(
+            (high[2] - low[2] - (first + 9.0 * 0.12)).abs() < 1e-4,
+            "{label}"
+        );
+        let (gcode, notes) = slice_made(&chosen, &made);
+        assert!(notes.is_empty(), "{label}: {notes:?}");
+        if let Ok(dir) = std::env::var("EDGE_CALIB_DUMP") {
+            std::fs::write(
+                std::path::Path::new(&dir).join(format!("ironing_flow_{label}.gcode")),
+                &gcode,
+            )
+            .unwrap();
+        }
+        assert_eq!(layers(&gcode).len(), 10, "{label}");
+        // Every long ironing line feeds the ramp's flow at its X: the
+        // percent of a line 0.12 high spread over the spacing, from 0 % at
+        // 5 mm in from the left to 70 % at 5 mm in from the right on the
+        // front band, the other way on the band behind.
+        let spacing = settings.float("ironing_spacing").unwrap().unwrap();
+        let diameter = settings.floats("filament_diameter").unwrap().unwrap()[0].unwrap();
+        let ratio = settings.floats("filament_flow_ratio").unwrap().unwrap()[0].unwrap()
+            * settings.float("print_flow_ratio").unwrap().unwrap_or(1.0);
+        let per_percent =
+            0.12 * 0.01 * spacing * ratio / (std::f64::consts::PI * diameter * diameter / 4.0);
+        let (x0, x1) = (low[0] + 5.0, high[0] - 5.0);
+        let moves = ironing_moves(&gcode);
+        let (mut front, mut rear) = (0, 0);
+        let mut least = f64::MAX;
+        let mut most: f64 = 0.0;
+        for (a, b, fed) in &moves {
+            let length = (b[0] - a[0]).hypot(b[1] - a[1]);
+            if length < 5.0 || (b[0] - a[0]).abs() > 1e-3 {
+                continue;
+            }
+            let t = ((a[0] - x0) / (x1 - x0)).clamp(0.0, 1.0);
+            let rear_band = a[1].max(b[1]) > high[1] - 15.5;
+            let percent = 70.0 * if rear_band { 1.0 - t } else { t };
+            if rear_band {
+                rear += 1
+            } else {
+                front += 1
+            }
+            let expected = per_percent * percent * length;
+            assert!(
+                (fed - expected).abs() <= 1e-5 + 1e-3 * expected,
+                "{label} {a:?}->{b:?}: {fed} for {expected}"
+            );
+            least = least.min(percent);
+            most = most.max(percent);
+        }
+        assert!(front > 100 && rear > 100, "{label}: {front} {rear}");
+        assert!(least == 0.0 && most == 70.0, "{label}");
+    }
+}

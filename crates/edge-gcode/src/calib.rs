@@ -77,6 +77,9 @@ pub enum CalibrationKind {
     /// nozzle's temperature by band of height from the second layer on,
     /// and each column's retraction length as its copy starts.
     StringingGrid(Box<StringingGrid>),
+    /// `Calib_Ironing_Flow`: nothing at the layers; the ironing lines
+    /// carry the flows (the infill's `FlowRamp`).
+    IroningFlow,
 }
 
 /// The stringing grid as the writer follows it (GCode.cpp
@@ -593,7 +596,8 @@ fn at_layer_plain(
         | CalibrationKind::InputShapingDamping { .. }
         | CalibrationKind::Cornering { .. }
         // Written by the writer, which keeps the band last set.
-        | CalibrationKind::StringingGrid(_) => String::new(),
+        | CalibrationKind::StringingGrid(_)
+        | CalibrationKind::IroningFlow => String::new(),
     }
 }
 

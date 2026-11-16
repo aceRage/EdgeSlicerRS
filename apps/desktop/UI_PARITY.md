@@ -2097,13 +2097,89 @@ is left is the order of a column's two pillars (the reference takes the
 back one first in every column, here the nearer) and where the aligned
 seam stands on them.
 
+Ironing flow (`Calib_Ironing_Flow`, the dialog `IroningFlow_Test_Dlg`;
+Plater.cpp `calib_ironing_flow`, calib.cpp `ironing_flow_calib_mesh`,
+Fill.cpp `extrusion_entities_append_calib_ironing_paths`): "Ironing flow
+test" with "Settings" ("Minimum ironing flow: " 0 %, "Maximum ironing
+flow: " 70 %, "Length: " 140 mm) and its note ("The front band irons from
+the minimum flow on the left …"); its checks on OK, in the reference's
+words: "Please input valid values:\n0 <= minimum < maximum <= 100\nlength
+>= 10 mm", "Marks every 20% would be less than 10 mm apart: use a length
+of at least %1% mm." (half the range, rounded up), "A band %1% mm long
+makes a test %2% mm long, which does not fit on the bed. Use at most %3%
+mm." (the bed's width less 10, and less 20) and "The two-band ironing flow
+test does not fit on the bed in Y. …" (the reference's own sum of the
+test's depth against the bed's depth less 10). These are newer than the
+pin's catalog, so English in every language (`wording.txt`, `[newer]`).
+The project "Ironing flow test": one object of that name, the mesh
+`ironing_flow_calib_mesh` makes for the values, the printer's first nozzle
+and the process's first layer, centred on the bed: a plate on the first
+layer and six of 0.12 mm, the ruler and the text two layers more, the two
+15 mm bands 4 mm apart one layer more; the ruler's marks every 1, 2, 5, 10
+or 20 % (the first at least 10 mm apart), nozzle wide (at least 0.5 mm),
+each with its flow ("35%", to two places, its zeros left off) reading down
+the plate, but where it would meet the least or most, which stand under
+the side strips; a line, and the name strip. Over the process
+`ironing_type` topmost, `ironing_pattern` rectilinear, `ironing_angle_fixed`
+on and `ironing_angle` 90 (lines along Y, so the flow changes line by
+line); on the object `layer_height` 0.12. The text is cut from the
+reference's own font (`resources/fonts/HarmonyOS_Sans_SC_Bold.ttf`, read
+where the profiles are, as the calibration models are; not copied here)
+by `edge-text`: the outlines flattened as the pin's stb_truetype flattens
+them (checked point for point on 18 glyphs against the pin's own
+stb_truetype), laid by advance widths without kerning, united, grown and
+shrunk by a font unit and healed as Emboss.cpp does, and raised into
+prisms (`polygons2model`; caps cut by ear cutting where the reference uses
+a Delaunay triangulation: the same solid). A character the font lacks is
+taken from the reference's fallback symbol font
+(`NotoSansSymbols2-Subset.ttf`) when it is a symbol, else left out without
+a word and taking no room, as in the reference. The name strip reads
+"Ironing flow calibration test" until a slice; each slice names the test
+after its filament's preset, up to its "@" (`update_ironing_flow_names`),
+the mesh set in the project, as the reference sets the volume's mesh (no
+step to undo), the test staying where it stands. The slice: the topmost
+layer's two bands ironed by the ramp, each line laid left to right and
+the lines from the left, cut into pieces at most 0.5 mm long in X, each
+at the flow of its middle's X: from the least flow 5 mm inside the
+object's left to the most 5 mm inside its right, the band behind the
+other way; the flow a percent of a line of the object's layer height
+spread over the ironing spacing by the nozzle (`iron_ramped`). A piece of
+0 % moves without E (GCodeWriter.cpp `extrude_to_xy`, now the writer's
+for any move that feeds nothing). **differs**: the reference shows the
+placeholder again whenever the model is updated and the named mesh is no
+longer the one for the values (a filament changed); here the name is set
+only at the slice. A font that cannot be read is an error here; the
+reference logs it and makes the test without its text. Checked by the
+engine's test on a U1 (Klipper) and an Ender-3 V3 SE (Marlin): the
+checks, the labels, the settings, the name set at the slice and the test
+left in place, ten layers, and every ironing line longer than 5 mm on
+both bands feeding its ramp's flow (0 to 70 %, within 0.1%); and by the
+session's (the checks in the reference's words, the settings shown
+changed, the mesh renamed by the slice, undo). The projects saved after a
+slice and sliced by the pin as plain prints (`edge-parity`; its command
+line cannot make the test, so its ironing is at the process's flow): on
+the U1 10 layers in both, filament 3980.5 mm there and 3975.7 here,
+extruded path 214.93 and 214.68 m, ironing 29.08 m in both and every one
+of the 1992 ironing lines at the same place, time 38m 36s there and 39m
+21s here as the reference plans; what differs is the first layer of the
+text, the plate's top round it (top surface 2.6% shorter here, gap fill
+46 and 77 mm, inner walls 1.3% shorter), with more travel and
+retractions (497 and 412); on the Ender 10 layers, filament 3712.2 and
+3711.8 mm, every feature within 0.0%, the 2990 ironing lines at the same
+places, time 1h 13m 27s and 1h 13m 11s.
+The dialog was driven in the browser (800 wide, dark, English) on a U1
+with Generic ASA: its fields and note, a length of 300 mm refused in the
+reference's words ("A band 300 mm long makes a test 310 mm long, … Use at
+most 250 mm."), and 140 mm making the project "Ironing flow test", the
+test in the middle of the plate. Not seen: the text close up, the slice in
+the page (the session's test slices it), light mode, another language.
+
 The dialogs of Max flowrate, VFA, the two input shaping tests and
 Cornering were seen in the browser at 1280 dark, English (the pane drew
 them at 800 wide), and at 900 light, German, opened from the menu, which
 shows the four on and Stringing and Ironing flow off; VFA's check said its
 lowered layer height for the U1's PLA (12 mm³/s: 0.12 mm) and made the
-project. Ironing flow is not built yet: the menu keeps it off with "not
-yet: calibration models are not built".
+project. (Ironing flow was not built then; it is now, below.)
 
 Checked: the engine's test slices "Pass 1" on a U1 and reads back that
 each tile's top surface feeds its own flow (+10%, -20%, +5% against
@@ -4347,7 +4423,7 @@ its tooltip "not yet: …" saying what it waits for.
 | | "Input Shaping" ▸ "Input Shaping Frequency", "Input Shaping Damping/zeta factor" | | built: on in Prepare; the dialogs "Input shaping Frequency test" and "Input shaping Damp test" |
 | | "Cornering" | | built: on in Prepare; the dialog "Cornering test" |
 | | "Stringing (temp × retraction)" | | built: on in Prepare; the dialog "Stringing (temp × retraction)" |
-| | "Ironing flow" | | off: "not yet: calibration models are not built" (its model is text cut from a TrueType font, the filament's name among it, which this app cannot make yet) |
+| | "Ironing flow" | | built: on in Prepare; the dialog "Ironing flow test" |
 | Account (macOS) | sign-in for Snapmaker, Bambu Lab, Flashforge | | not shown: the cloud is not this task |
 | Window (macOS) | "Minimize" [Cmd+M], "Zoom" | | the system's own, in the window; off in a browser |
 | | "Next Project", "Previous Project" | Cmd+Shift+] / [ | wired (`project_cycle`); on with two projects |

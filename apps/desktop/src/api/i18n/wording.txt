@@ -593,6 +593,15 @@ Retraction step must be > 0	libslic3r/calib.cpp:1282
 Fillet radius must be between 0.5 and %1% mm	libslic3r/calib.cpp:1287
 Column count must be at least 2	libslic3r/calib.cpp:1292
 Grid does not fit the bed (max %1% columns at 12 mm pitch)	libslic3r/calib.cpp:1295
+Ironing flow test	GUI/calib_dlg.cpp:1872
+Minimum ironing flow: 	GUI/calib_dlg.cpp:1881
+Maximum ironing flow: 	GUI/calib_dlg.cpp:1882
+Length: 	GUI/calib_dlg.cpp:1883
+The front band irons from the minimum flow on the left to the maximum on the right. A second band behind it ramps the other way so you can tell ironing flow from bed tilt: if the best-looking region is at the same flow % on both bands, trust that value. If they disagree, level the bed and reprint.\n\nThe plate sits on extra solid layers so small bed height errors are less likely to show on the ironed surface. Run this after flow-ratio calibration. Check the result in reflected light: the optimum hides the surface lines without roughness from overextrusion. Lower values look matte; higher ones look glossier.	GUI/calib_dlg.cpp:1921
+Please input valid values:\n0 <= minimum < maximum <= 100\nlength >= 10 mm	GUI/calib_dlg.cpp:1959
+Marks every 20%% would be less than 10 mm apart: use a length of at least %1% mm.	GUI/calib_dlg.cpp:1965
+A band %1% mm long makes a test %2% mm long, which does not fit on the bed. Use at most %3% mm.	GUI/calib_dlg.cpp:1980
+The two-band ironing flow test does not fit on the bed in Y. Use a printer with a deeper bed.	GUI/calib_dlg.cpp:1987
 
 [own]
 # This app's own words on the static page, with no counterpart in the
@@ -805,7 +814,6 @@ In use in this project
 not yet: 3D mice are not read
 not yet: Bambu Lab printers are not sent to
 not yet: STEP needs a CAD kernel, which the engine has not
-not yet: calibration models are not built
 not yet: centres of mass are not worked out
 not yet: folders are not shown in the system's file manager
 not yet: models are not read from a ZIP archive

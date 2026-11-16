@@ -18,6 +18,7 @@ use edge_gcode::{AdvanceFirmware, Calibration, CalibrationKind};
 
 use crate::{Bed, CutOptions, Failure, Model, Reach, Transform};
 
+pub mod ironing_flow;
 pub mod stringing;
 pub use stringing::GridParams;
 
@@ -46,6 +47,10 @@ pub enum CalibMode {
     Cornering,
     /// `Calib_Temp_Retract_Grid`: "Stringing (temp × retraction)".
     StringingGrid,
+    /// `Calib_Ironing_Flow`: "Ironing flow"; `start` and `end` are the
+    /// least and most flow in percent, `step` the ironed band's length
+    /// in mm, as the reference keeps them.
+    IroningFlow,
 }
 
 /// What the calibration's dialog asked for (calib.hpp `Calib_Params`).
@@ -233,6 +238,9 @@ impl CalibParams {
             CalibMode::StringingGrid => {
                 CalibrationKind::StringingGrid(Box::new(stringing::for_writer(self, settings)))
             }
+            // The ramp is the ironing's (`Self::ironing_ramp`); the writer
+            // adds nothing at the layers.
+            CalibMode::IroningFlow => CalibrationKind::IroningFlow,
             CalibMode::InputShapingDamping => {
                 let firmware = edge_gcode::ShaperFirmware::of(settings.text("gcode_flavor"))?;
                 CalibrationKind::InputShapingDamping {
@@ -510,6 +518,7 @@ pub fn pressure_advance(
         | CalibMode::VfaTower
         | CalibMode::InputShapingFrequency
         | CalibMode::InputShapingDamping
+        | CalibMode::IroningFlow
         | CalibMode::Cornering
         | CalibMode::StringingGrid => {
             return Err("that test is not a pressure advance test".into());

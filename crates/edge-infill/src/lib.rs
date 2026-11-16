@@ -28,8 +28,8 @@ pub use internal_bridges::{
     second_internal_bridges,
 };
 pub use ironing::{
-    IronedLayer, Ironing, IroningPattern, IroningSettings, IroningType, exposed, iron,
-    ironing_areas,
+    FlowRamp, IronedLayer, Ironing, IroningPattern, IroningSettings, IroningType, exposed, iron,
+    iron_ramped, ironing_areas,
 };
 pub use narrow::NarrowFill;
 pub use settings::{ExtraBridgeLayer, InfillSettings, Pattern, steady_direction};

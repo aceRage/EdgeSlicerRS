@@ -569,6 +569,33 @@ const Calib = (() => {
 
   // "Flow rate" (MainFrame.cpp, Plater.cpp `calib_flowrate`): no dialog;
   // the menu item makes the test's project at once.
+  // "Ironing flow test" (calib_dlg.cpp `IroningFlow_Test_Dlg`): the least
+  // and most flow and the band's length; the session checks them against
+  // the printer (`ironing_check`).
+  function ironingFlow() {
+    const start = field('Minimum ironing flow: ', '%');
+    const end = field('Maximum ironing flow: ', '%');
+    const length = field('Length: ', 'mm');
+    start.input.value = '0';
+    end.input.value = '70';
+    length.input.value = '140';
+    const note = el('p', { className: 'quiet calib-note', textContent: t('The front band irons from the minimum flow on the left to the maximum on the right. A second band behind it ramps the other way so you can tell ironing flow from bed tilt: if the best-looking region is at the same flow % on both bands, trust that value. If they disagree, level the bed and reprint.\n\nThe plate sits on extra solid layers so small bed height errors are less likely to show on the ironed surface. Run this after flow-ratio calibration. Check the result in reflected light: the optimum hides the surface lines without roughness from overextrusion. Lower values look matte; higher ones look glossier.') });
+    const dialog = el('dialog', { className: 'calib-dialog' }, el('form', { method: 'dialog' },
+      el('h2', { textContent: t('Ironing flow test') }),
+      group('Settings', start.row, end.row, length.row, note),
+      el('div', { className: 'row end' },
+        el('button', { type: 'submit', value: 'ok', className: 'primary', textContent: t('OK') }),
+        el('button', { type: 'submit', value: 'cancel', formNoValidate: true, textContent: t('Cancel') }))));
+    return run(dialog, async () => {
+      try {
+        await make({ test: 'ironing_flow', start: readNumber(start), end: readNumber(end), length: readNumber(length) });
+      } catch (error) {
+        return error.message;
+      }
+      return null;
+    });
+  }
+
   function flowRate(test) {
     return make({ test });
   }
@@ -580,5 +607,5 @@ const Calib = (() => {
     return openGuide('https://github.com/SoftFever/OrcaSlicer/wiki/Calibration');
   }
 
-  return { pressureAdvance, temperature, retraction, maxFlowrate, vfa, inputShaping, cornering, stringing, flowRate, tutorial, parseList };
+  return { pressureAdvance, temperature, retraction, maxFlowrate, vfa, inputShaping, cornering, stringing, ironingFlow, flowRate, tutorial, parseList };
 })();

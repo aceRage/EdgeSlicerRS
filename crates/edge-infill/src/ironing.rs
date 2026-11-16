@@ -13,8 +13,9 @@
 //!   share of the layer stands for the region;
 //! - `solid_infill_rotate_template` and `align_infill_direction_to_model`
 //!   are not followed, and say so in a note;
-//! - the reference's flow calibration and its dithering of ironing
-//!   through an image are not here.
+//! - its dithering of ironing through an image is not here.
+//!
+//! The ironing flow calibration's ramp is [`iron_ramped`].
 
 use std::f64::consts::FRAC_PI_2;
 
@@ -614,6 +615,132 @@ pub fn iron(
                 in_turn: index > 0,
                 part,
             });
+        }
+    }
+    Ok(paths)
+}
+
+/// The ironing flow calibration's ramp (Fill.cpp `make_ironing` with
+/// `Calib_Ironing_Flow`, `extrusion_entities_append_calib_ironing_paths`):
+/// the flow, in percent of a line of the object's layer height, grows
+/// straight from `start` at `x_start` to `end` at `x_end` and stays put
+/// before and after.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FlowRamp {
+    pub start: f64,
+    pub end: f64,
+    pub x_start: Coord,
+    pub x_end: Coord,
+    /// The object's layer height (its `layer_height`), in mm.
+    pub layer_height: f64,
+}
+
+/// [`iron`] for the ironing flow calibration: each line laid left to
+/// right, the lines taken from the left, and cut into pieces at most
+/// 0.5 mm long in X, each at the flow of the ramp at its middle, a piece
+/// running on while the flow stays the same. With two areas or more (the
+/// test's two bands) those behind the frontmost, by the middle of their
+/// boxes, ramp the other way, so that a tilted bed can be told from the
+/// flow. The flow is the ramp's percentage of the layer's height spread
+/// over the spacing by the nozzle, not of `ironing_flow`: the labels are
+/// absolute.
+pub fn iron_ramped(
+    areas: &[ExPolygon],
+    layer_index: usize,
+    ironing: &Ironing,
+    origin_of: &dyn Fn(&ExPolygon) -> Point2,
+    first_part: u32,
+    ramp: &FlowRamp,
+) -> Result<Vec<ExtrusionPath>, ClipError> {
+    let centre_y = |area: &ExPolygon| {
+        let (low, high) = area
+            .contour
+            .points
+            .iter()
+            .fold((Coord::MAX, Coord::MIN), |(low, high), p| {
+                (low.min(p.y), high.max(p.y))
+            });
+        (low + high) / 2
+    };
+    let mirrored = areas.len() >= 2;
+    let front_y = areas.iter().map(centre_y).min().unwrap_or(0);
+    let nozzle = ironing.flow.nozzle_diameter;
+    let height_per_percent = ramp.layer_height * 0.01 * ironing.spacing / nozzle;
+    let max_piece_x = scaled(0.5) as f64;
+    let mut paths = Vec::new();
+    for (number, area) in areas.iter().enumerate() {
+        let part = first_part + number as u32;
+        let reverse = mirrored && centre_y(area) > front_y;
+        let origin = origin_of(area);
+        let mut lines = match ironing.pattern {
+            IroningPattern::Rectilinear => rectilinear(
+                area,
+                ironing.spacing,
+                ironing.direction(layer_index),
+                origin,
+            )?,
+            IroningPattern::Concentric => concentric(area, ironing.spacing, origin)?,
+        };
+        // "Iron from left to right."
+        for line in &mut lines {
+            if let (Some(first), Some(last)) = (line.first(), line.last())
+                && first.x > last.x
+            {
+                line.reverse();
+            }
+        }
+        lines.sort_by_key(|line| line.iter().map(|p| p.x).min().unwrap_or(0));
+        let push = |points: Vec<Point2>, percent: f64, paths: &mut Vec<ExtrusionPath>| {
+            let height = height_per_percent * percent;
+            // The area's pieces laid one after another, as given.
+            let in_turn = paths.last().is_some_and(|p: &ExtrusionPath| p.part == part);
+            paths.push(ExtrusionPath {
+                points,
+                role: Role::Ironing,
+                flow: Flow {
+                    width: nozzle + height * (1.0 - 0.25 * std::f64::consts::PI),
+                    height,
+                    spacing: nozzle,
+                    nozzle_diameter: nozzle,
+                },
+                in_turn,
+                part,
+            });
+        };
+        for line in lines {
+            if line.len() < 2 {
+                continue;
+            }
+            let mut piece: Vec<Point2> = Vec::new();
+            let mut piece_percent = 0.0;
+            for pair in line.windows(2) {
+                let (a, b) = (pair[0], pair[1]);
+                let n = (((b.x - a.x).abs() as f64 / max_piece_x).ceil() as i64).max(1);
+                let at = |k: i64| {
+                    let f = k as f64 / n as f64;
+                    Point2 {
+                        x: (a.x as f64 + (b.x - a.x) as f64 * f).round() as Coord,
+                        y: (a.y as f64 + (b.y - a.y) as f64 * f).round() as Coord,
+                    }
+                };
+                for k in 0..n {
+                    let (p0, p1) = (at(k), at(k + 1));
+                    let t = ((0.5 * (p0.x + p1.x) as f64 - ramp.x_start as f64)
+                        / (ramp.x_end - ramp.x_start) as f64)
+                        .clamp(0.0, 1.0);
+                    let percent =
+                        ramp.start + (ramp.end - ramp.start) * if reverse { 1.0 - t } else { t };
+                    if piece.is_empty() || percent != piece_percent {
+                        if !piece.is_empty() {
+                            push(std::mem::take(&mut piece), piece_percent, &mut paths);
+                        }
+                        piece.push(p0);
+                        piece_percent = percent;
+                    }
+                    piece.push(p1);
+                }
+            }
+            push(piece, piece_percent, &mut paths);
         }
     }
     Ok(paths)
