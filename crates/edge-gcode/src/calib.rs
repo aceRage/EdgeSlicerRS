@@ -73,6 +73,120 @@ pub enum CalibrationKind {
         end: f64,
         shaper: String,
     },
+    /// `Calib_Temp_Retract_Grid`, "Stringing (temp × retraction)": the
+    /// nozzle's temperature by band of height from the second layer on,
+    /// and each column's retraction length as its copy starts.
+    StringingGrid(Box<StringingGrid>),
+}
+
+/// The stringing grid as the writer follows it (GCode.cpp
+/// `apply_temp_retract_grid_layer`, `apply_temp_retract_grid_object`;
+/// calib.cpp `temp_retract_band_index`, `temp_for_z`,
+/// `retract_for_column`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct StringingGrid {
+    /// The temperature of the lowest band and of the highest.
+    pub start: f64,
+    pub end: f64,
+    /// How many bands, each `band_height` mm, over a base plate of
+    /// `base_height` mm.
+    pub bands: usize,
+    pub band_height: f64,
+    pub base_height: f64,
+    /// Each column's retraction length, by the number in its object's
+    /// name ([`stringing_column`]).
+    pub retractions: Vec<f64>,
+    /// `M109` (wait) at each band, else `M104`.
+    pub wait: bool,
+    /// The printer's `gcode_flavor`, which the temperature is written for
+    /// ([`temperature_command`]).
+    pub flavor: String,
+}
+
+impl StringingGrid {
+    /// The band at `z` mm above the first layer's bottom (calib.cpp
+    /// `temp_retract_band_index`): 0 up to the base's top, then one a
+    /// band's height, the last holding all above.
+    pub fn band(&self, z: f64) -> usize {
+        if self.bands <= 1 || z <= self.base_height {
+            return 0;
+        }
+        let band = ((z - self.base_height) / self.band_height).floor();
+        (band.max(0.0) as usize).min(self.bands - 1)
+    }
+
+    /// The temperature of `band` (calib.cpp `temp_for_z`), from `start`
+    /// at the lowest to `end` at the highest, in equal steps.
+    pub fn temperature(&self, band: usize) -> f64 {
+        if self.bands <= 1 {
+            return self.start;
+        }
+        self.start + (self.end - self.start) * (band as f64 / (self.bands - 1) as f64)
+    }
+
+    /// The retraction of column `column` (calib.cpp
+    /// `retract_for_column`): past the last, the last's.
+    pub fn retraction(&self, column: usize) -> f64 {
+        match self.retractions.get(column) {
+            Some(length) => *length,
+            None => self.retractions.last().copied().unwrap_or(0.0),
+        }
+    }
+}
+
+/// The column an object named `name` is of the stringing grid (calib.cpp
+/// `stringing_grid_column_from_name`): `SG_col_` and one to four digits
+/// to the end; none for any other name.
+pub fn stringing_column(name: &str) -> Option<usize> {
+    let digits = name.strip_prefix("SG_col_")?;
+    if digits.is_empty() || digits.len() > 4 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// The line that sets the nozzle's temperature, waiting for it or not
+/// (GCodeWriter.cpp `set_temperature`), as the printer's `gcode_flavor`
+/// says it: nothing for a wait on MakerWare or Sailfish; `M109` to wait
+/// but on Teacup and RepRapFirmware, which set it and then wait with
+/// `M116`; `G10` in place of `M104` on RepRapFirmware; `P` for the
+/// temperature on Mach3 and Machinekit; the tool named when the print
+/// names its tools (`tool`), `P` on RepRapFirmware.
+pub fn temperature_command(
+    temperature: u32,
+    wait: bool,
+    tool: Option<usize>,
+    flavor: &str,
+) -> String {
+    let waits_apart = matches!(flavor, "teacup" | "reprapfirmware");
+    if wait && matches!(flavor, "makerware" | "sailfish") {
+        return String::new();
+    }
+    let (code, comment) = if wait && !waits_apart {
+        (
+            "M109",
+            "set nozzle temperature and wait for it to be reached",
+        )
+    } else if flavor == "reprapfirmware" {
+        ("G10", "set nozzle temperature")
+    } else {
+        ("M104", "set nozzle temperature")
+    };
+    let letter = if matches!(flavor, "mach3" | "machinekit") {
+        'P'
+    } else {
+        'S'
+    };
+    let tool = match tool {
+        Some(tool) if flavor == "reprapfirmware" => format!(" P{tool}"),
+        Some(tool) => format!(" T{tool}"),
+        None => String::new(),
+    };
+    let mut line = format!("{code} {letter}{temperature}{tool} ; {comment}\n");
+    if waits_apart && wait {
+        line.push_str("M116 ; wait for temperature to be reached\n");
+    }
+    line
 }
 
 /// How the cornering test tells the printer its corner speed at each
@@ -477,7 +591,9 @@ fn at_layer_plain(
         | CalibrationKind::VfaTower { .. }
         | CalibrationKind::InputShapingFrequency { .. }
         | CalibrationKind::InputShapingDamping { .. }
-        | CalibrationKind::Cornering { .. } => String::new(),
+        | CalibrationKind::Cornering { .. }
+        // Written by the writer, which keeps the band last set.
+        | CalibrationKind::StringingGrid(_) => String::new(),
     }
 }
 

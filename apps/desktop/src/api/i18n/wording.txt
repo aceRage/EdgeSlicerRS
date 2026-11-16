@@ -562,6 +562,37 @@ Even at the smallest layer height used by this printer's profiles (%.2f mm) the 
 Continue anyway?	GUI/calib_dlg.cpp:855
 Enable "Auto-adjust" to fix this automatically, or continue anyway?	GUI/calib_dlg.cpp:861
 Enable "Auto-scale for nozzle" and "Auto-adjust" to fix this automatically, or continue anyway?	GUI/calib_dlg.cpp:862
+Band height: 	GUI/calib_dlg.cpp:1008
+Retraction min: 	GUI/calib_dlg.cpp:1009
+Retraction max: 	GUI/calib_dlg.cpp:1010
+Retraction step: 	GUI/calib_dlg.cpp:1011
+Fillet radius: 	GUI/calib_dlg.cpp:1012
+Raised labels	GUI/calib_dlg.cpp:1045
+Emboss retraction values on each base and temperatures on a label tower. Off by default: the values are in the G-code comments.	GUI/calib_dlg.cpp:1046
+Wait for temperature at each band (M109)	GUI/calib_dlg.cpp:1055
+Use M109 (wait) at each temperature band. Off writes M104 and keeps printing while the hotend settles.	GUI/calib_dlg.cpp:1056
+Disable z-hop for this test	GUI/calib_dlg.cpp:1067
+Off (default): keep your z-hop and lift settings. On: z-hop 0 for this test only.	GUI/calib_dlg.cpp:1068
+Fillet tower base	GUI/calib_dlg.cpp:1078
+Add a concave fillet where each tower meets its base plate, so tall towers do not snap off at the joint.	GUI/calib_dlg.cpp:1079
+0.5 to %.1f mm: the largest radius keeps the fillet on the base plate.	GUI/calib_dlg.cpp:1085
+The filament's temperature range fits only one band. Set a start and end temperature range to test.	GUI/calib_dlg.cpp:1094
+Single toolhead. Layer 1 keeps the first-layer temperature; band 0 starts at layer 2. Raft is disabled.	GUI/calib_dlg.cpp:1105
+Please input valid numbers.	GUI/calib_dlg.cpp:1227
+%d columns × %d bands of %.0f mm  (max %d columns on this bed)	GUI/calib_dlg.cpp:1256
+Temperature must be between 150 and 350 C	libslic3r/calib.cpp:1257
+Start temperature must be >= end temperature	libslic3r/calib.cpp:1259
+Temperature step must be between 1 and 20 C	libslic3r/calib.cpp:1261
+The temperature range must be a multiple of the temperature step	libslic3r/calib.cpp:1266
+Band count must be between 2 and 10	libslic3r/calib.cpp:1270
+Band height must be between 5 and 20 mm	libslic3r/calib.cpp:1273
+Total height must be <= 150 mm	libslic3r/calib.cpp:1275
+Retraction must be between 0 and 10 mm	libslic3r/calib.cpp:1278
+Retraction end must be >= start	libslic3r/calib.cpp:1280
+Retraction step must be > 0	libslic3r/calib.cpp:1282
+Fillet radius must be between 0.5 and %1% mm	libslic3r/calib.cpp:1287
+Column count must be at least 2	libslic3r/calib.cpp:1292
+Grid does not fit the bed (max %1% columns at 12 mm pitch)	libslic3r/calib.cpp:1295
 
 [own]
 # This app's own words on the static page, with no counterpart in the

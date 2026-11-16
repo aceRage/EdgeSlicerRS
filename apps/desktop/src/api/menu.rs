@@ -756,9 +756,8 @@ static CALIBRATION: &[Node] = &[
         "calibration.stringing",
         "Stringing (temp × retraction)",
         "Combined temperature and retraction stringing grid",
-        When::Always,
-    )
-    .waits(NO_CALIBRATION)),
+        When::Prepare,
+    )),
     I(item(
         "calibration.max_flowrate",
         "Max flowrate",

@@ -18,6 +18,9 @@ use edge_gcode::{AdvanceFirmware, Calibration, CalibrationKind};
 
 use crate::{Bed, CutOptions, Failure, Model, Reach, Transform};
 
+pub mod stringing;
+pub use stringing::GridParams;
+
 /// Which calibration (calib.hpp `CalibMode`), of those built.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CalibMode {
@@ -41,6 +44,8 @@ pub enum CalibMode {
     InputShapingDamping,
     /// `Calib_Cornering`: "Cornering".
     Cornering,
+    /// `Calib_Temp_Retract_Grid`: "Stringing (temp × retraction)".
+    StringingGrid,
 }
 
 /// What the calibration's dialog asked for (calib.hpp `Calib_Params`).
@@ -72,6 +77,9 @@ pub struct CalibParams {
     /// Input shaping: the shaper's type as the printer's
     /// `input_shaping_type` writes it ("Default", "MZV", …).
     pub shaper_type: String,
+    /// "Stringing (temp × retraction)": its retractions, bands and
+    /// choices; `start`, `end` and `step` are its temperatures.
+    pub grid: GridParams,
 }
 
 /// A "PA Pattern" handle cube on the plate being sliced: its box across
@@ -101,6 +109,7 @@ impl CalibParams {
             freq_y: (0.0, 1.0),
             test_model: 0,
             shaper_type: String::new(),
+            grid: GridParams::default(),
         }
     }
 
@@ -221,6 +230,9 @@ impl CalibParams {
                 end: self.end,
                 corner: corner(settings, bambu)?,
             },
+            CalibMode::StringingGrid => {
+                CalibrationKind::StringingGrid(Box::new(stringing::for_writer(self, settings)))
+            }
             CalibMode::InputShapingDamping => {
                 let firmware = edge_gcode::ShaperFirmware::of(settings.text("gcode_flavor"))?;
                 CalibrationKind::InputShapingDamping {
@@ -498,7 +510,8 @@ pub fn pressure_advance(
         | CalibMode::VfaTower
         | CalibMode::InputShapingFrequency
         | CalibMode::InputShapingDamping
-        | CalibMode::Cornering => {
+        | CalibMode::Cornering
+        | CalibMode::StringingGrid => {
             return Err("that test is not a pressure advance test".into());
         }
         CalibMode::PressureAdvanceLine => {

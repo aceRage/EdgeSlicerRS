@@ -246,15 +246,20 @@ flowrate (the outer wall's speed rising with the height), VFA (its speed
 stepped block by block), Input Shaping (frequency and damping: Klipper
 `SET_INPUT_SHAPER`, RepRapFirmware and Marlin 2 `M593`) and Cornering
 (`M205 J`, or the jerk: `SET_VELOCITY_LIMIT SQUARE_CORNER_VELOCITY`,
-`M205 X Y`). The reference's command line cannot make them, so each is
+`M205 X Y`), and EdgeSlicer's own Stringing (temp × retraction): a row
+of two-pillar columns, each retracting its own length, printed in bands
+of falling temperature (`M109` at each band, the column's length set as
+its copy starts, printed copy by copy). The reference's command line cannot make them, so each is
 checked by reading its G-code back against the reference's formulas,
 layer by layer, on a Klipper and a Marlin printer (and a Bambu Lab one
 where its form differs); the flow rate tiles and the vase-mode projects,
 saved here, were also sliced by the reference as plain prints, with the
 same layers and extruded lengths. Max flowrate's model is the
 reference's STEP file as the pin's own reader tessellates it (this engine
-reads no STEP), kept in `crates/edge-engine/calib`. Stringing (temp ×
-retraction) and Ironing flow are not built yet.
+reads no STEP), kept in `crates/edge-engine/calib`. The stringing grid is
+made of boxes as the reference makes it. Ironing flow is not built yet:
+its model is text cut from a TrueType font (the filament's name and the
+flows), which this engine cannot make.
 
 ## Status
 
