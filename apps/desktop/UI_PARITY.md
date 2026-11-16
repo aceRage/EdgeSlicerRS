@@ -2167,6 +2167,12 @@ text, the plate's top round it (top surface 2.6% shorter here, gap fill
 retractions (497 and 412); on the Ender 10 layers, filament 3712.2 and
 3711.8 mm, every feature within 0.0%, the 2990 ironing lines at the same
 places, time 1h 13m 27s and 1h 13m 11s.
+The dialog was driven in the browser (800 wide, dark, English) on a U1
+with Generic ASA: its fields and note, a length of 300 mm refused in the
+reference's words ("A band 300 mm long makes a test 310 mm long, … Use at
+most 250 mm."), and 140 mm making the project "Ironing flow test", the
+test in the middle of the plate. Not seen: the text close up, the slice in
+the page (the session's test slices it), light mode, another language.
 
 The dialogs of Max flowrate, VFA, the two input shaping tests and
 Cornering were seen in the browser at 1280 dark, English (the pane drew
