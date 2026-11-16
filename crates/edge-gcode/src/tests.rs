@@ -699,7 +699,7 @@ fn temperatures_change_after_the_first_layer() {
             // The fan for the second layer is set just ahead of it.
             "M106 S255",
             "M104 S210",
-            "M140 S55",
+            "M140 S55 ; set bed temperature",
             "M106 S0",
             "M104 S0",
             "M140 S0",
@@ -712,6 +712,27 @@ fn temperatures_change_after_the_first_layer() {
     // With no bed type known, the bed is left alone.
     let (text, _) = print(&[layer(0.2)], &basic());
     assert!(!text.contains("M190") && text.contains("M104 S200"));
+
+    // The same bed above the first layer: nothing more is written, but
+    // for Klipper, where the start macro heats the bed and the writer has
+    // none on record, the line is (GCode.cpp `_do_export`).
+    let same = PrintSettings {
+        bed_temperature: Some(60.0),
+        ..settings.clone()
+    };
+    let beds = |settings: &PrintSettings| -> Vec<String> {
+        let (text, _) = print(&[layer(0.2), layer(0.4)], settings);
+        text.lines()
+            .filter(|line| line.starts_with("M140 S60 ;"))
+            .map(str::to_owned)
+            .collect()
+    };
+    assert!(beds(&same).is_empty());
+    let klipper = PrintSettings {
+        klipper: true,
+        ..same.clone()
+    };
+    assert_eq!(beds(&klipper), ["M140 S60 ; set bed temperature"]);
 }
 
 #[test]

@@ -550,6 +550,11 @@ pub fn write_timed(
                 .take_while(|layer| layer.z == layers[0].z)
                 .filter_map(|layer| settings[layer.filament].bed_temperature_initial_layer)
                 .reduce(f64::max),
+            other_layers_bed: layers
+                .iter()
+                .take_while(|layer| layer.z == layers[0].z)
+                .filter_map(|layer| settings[layer.filament].bed_temperature)
+                .reduce(f64::max),
             widths: {
                 // Above the first layer, the first line of each kind;
                 // and whatever the first layer starts with.
@@ -1234,6 +1239,8 @@ struct FileInfo {
     estimate_at: Option<usize>,
     /// The hottest bed any filament of the first layer asks for.
     first_layer_bed: Option<f64>,
+    /// The hottest bed the same filaments ask for above the first layer.
+    other_layers_bed: Option<f64>,
     /// How long the copies' definitions are that follow the start of
     /// the executable block, which the first progress line comes after.
     defines: usize,
@@ -2423,11 +2430,24 @@ impl Writer<'_> {
                     writeln!(self.out, "M104 S{:.0}", s.nozzle_temperature)?;
                 }
             }
-            if let Some(bed) = s
-                .bed_temperature
-                .filter(|bed| Some(*bed) != s.bed_temperature_initial_layer)
-            {
-                writeln!(self.out, "M140 S{bed:.0}")?;
+            // The bed for the rest of the print: the hottest any filament
+            // of the first layer asks for on this plate, written unless it
+            // is what the bed was last set to (GCode.cpp `process_layer`,
+            // `get_bed_temperature_max`; GCodeWriter.cpp
+            // `set_bed_temperature`). For Klipper the reference sets no
+            // bed before the start G-code and so has none on record: the
+            // line is always written there, the printer's own start macro
+            // having heated the bed (`_do_export` skips
+            // `_print_first_layer_bed_temperature` for Klipper). A plate
+            // type the filament has no temperature for counts as 0, as
+            // there.
+            let other = self.file.other_layers_bed.unwrap_or(0.0);
+            let on_record = match s.klipper {
+                true => 0.0,
+                false => self.file.first_layer_bed.unwrap_or(0.0),
+            };
+            if other != on_record {
+                writeln!(self.out, "M140 S{other:.0} ; set bed temperature")?;
             }
         }
         // What the person set at this layer, after the layer change and
