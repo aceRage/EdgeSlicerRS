@@ -2086,7 +2086,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     order_notes.extend(tower_moved);
     order_notes.extend(quality_notes);
     order_notes.extend(ironing_notes);
-    order_notes.extend(crate::unfollowed::notes(&settings));
+    order_notes.extend(crate::unfollowed::notes(&settings, tools.len()));
     order_notes.extend(crate::spiral::object_notes(
         &settings,
         own.iter().map(|object| {

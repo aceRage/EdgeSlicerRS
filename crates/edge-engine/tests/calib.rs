@@ -99,7 +99,20 @@ fn slice_made(chosen: &Chosen, made: &CalibProject) -> (String, Vec<String>) {
     });
     let job = edge_engine::prepare(loaded, chosen, &set).unwrap();
     let sliced = edge_engine::slice(job, &Unwatched).unwrap();
-    let notes = sliced.gaps();
+    // A setting of the printer's own profile that nothing reads (the
+    // Ender-3 V3 SE's file_start_gcode, disable_m73) is said all the
+    // same, and is no concern of the calibration's unless it sets it.
+    let set_here = |note: &String| {
+        !note.contains(": not followed; the print is made as if it were")
+            || (made.process.iter())
+                .chain(&made.filament)
+                .chain(&made.printer)
+                .any(|(key, _)| {
+                    note.strip_prefix(key.as_str())
+                        .is_some_and(|rest| rest.starts_with([' ', ':']))
+                })
+    };
+    let notes = sliced.gaps().into_iter().filter(set_here).collect();
     let text = sliced.gcode("1970-01-01 at 00:00:01 UTC").unwrap().text;
     (String::from_utf8(text).unwrap(), notes)
 }

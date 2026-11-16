@@ -794,6 +794,14 @@ pub(crate) fn note_set(
     what: &str,
 ) {
     for (key, value) in pairs.iter().filter(|(key, _)| applies(key)) {
+        // Set where nothing reads it to the value that does nothing: the
+        // print there is the reference's (the plate's, if not, is said).
+        // Not so a feature's filament, whose 1 names a filament.
+        if !FEATURE_FILAMENTS.contains(&key.as_str())
+            && crate::unfollowed::off_where_set(key, value)
+        {
+            continue;
+        }
         if !plate_text(plate, key).is_some_and(|own| same_value(&own, value)) {
             set.entry(key.clone()).or_default().insert(what.to_owned());
         }
@@ -857,9 +865,13 @@ pub(crate) fn unfollowed(set: &BTreeMap<String, BTreeSet<String>>) -> Vec<String
                 // reference's either; set on an object it is followed.
                 Scope::Object if OBJECT_FOLLOWED.contains(&key.as_str()) => None,
                 Scope::Object if LAYERING_FOLLOWED.contains(&key.as_str()) => None,
-                _ => Some(format!(
-                    "{key}: set on {on}, not followed there; the plate's value is used"
-                )),
+                // One nothing reads, the plate's value no more than this,
+                // is said as the plate's would be.
+                _ => Some(
+                    crate::unfollowed::note_where_set(key, &on).unwrap_or_else(|| {
+                        format!("{key}: set on {on}, not followed there; the plate's value is used")
+                    }),
+                ),
             }
         })
         .collect()
