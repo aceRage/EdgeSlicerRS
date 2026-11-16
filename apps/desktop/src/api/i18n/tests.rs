@@ -270,6 +270,36 @@ fn literals_of(source: &str, call: &str, rust: bool) -> Vec<(usize, String)> {
     found
 }
 
+/// What `tc(context, msgid)` is given as its message id wherever it is
+/// called with two literals, by line; a context is a plain word.
+fn contexts_of(source: &str) -> Vec<(usize, String)> {
+    let mut found = Vec::new();
+    let mut from = 0;
+    while let Some(at) = source[from..].find("tc(") {
+        let start = from + at;
+        from = start + 3;
+        let before = source[..start].chars().next_back();
+        if before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '$') {
+            continue;
+        }
+        let rest = source[from..].trim_start();
+        let Some(quote) = rest.chars().next().filter(|c| ['\'', '"'].contains(c)) else {
+            continue;
+        };
+        let Some(end) = rest[1..].find(quote) else {
+            continue;
+        };
+        let after = rest[end + 2..].trim_start();
+        let Some(second) = after.strip_prefix(',').map(str::trim_start) else {
+            continue;
+        };
+        if let Some(text) = js_literal(second) {
+            found.push((source[..start].lines().count(), text));
+        }
+    }
+    found
+}
+
 /// The words of a static page: the text between its tags (not in a
 /// script, a style or a drawing) and its titles, labels and placeholders,
 /// spaces made one.
@@ -395,16 +425,15 @@ fn every_word_shown_is_a_message_id_or_listed() {
     let mut shown: Vec<(String, usize, String)> = Vec::new();
     for (name, source) in &sources {
         if name.ends_with(".js") {
-            for call in ["t", "tc", "tn"] {
+            for call in ["t", "tn"] {
                 for (line, text) in literals_of(source, call, false) {
                     shown.push((name.clone(), line, text));
                 }
             }
-            // tc's message id is its second: none is used yet.
-            assert!(
-                literals_of(source, "tc", false).is_empty(),
-                "{name}: tc is read as t here"
-            );
+            // tc's message id is its second (its first the context).
+            for (line, text) in contexts_of(source) {
+                shown.push((name.clone(), line, text));
+            }
         } else if name.ends_with(".html") {
             for (line, text) in html_words(source) {
                 shown.push((name.clone(), line, text));
