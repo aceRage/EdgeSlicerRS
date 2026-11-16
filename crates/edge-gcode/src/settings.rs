@@ -403,6 +403,15 @@ pub struct PrintSettings {
     /// with it off.
     pub spiral: Option<crate::spiral_vase::Spiral>,
 
+    /// What this filament asks of the printer's exhaust fan
+    /// (`activate_air_filtration`), in percent: during the print
+    /// (`during_print_exhaust_fan_speed`, where
+    /// `activate_air_filtration_during_print`) and once it is done
+    /// (`complete_print_exhaust_fan_speed`, where
+    /// `activate_air_filtration_on_completion`); none where it asks
+    /// nothing ([`exhaust_fan`]).
+    pub exhaust_fan: [Option<i64>; 2],
+
     /// Settings present in the input that export does not honour yet, each
     /// with what is done instead.
     pub unsupported: Vec<String>,
@@ -560,6 +569,7 @@ impl Default for PrintSettings {
             own_heights: false,
             calibration: None,
             spiral: None,
+            exhaust_fan: [None, None],
             unsupported: Vec::new(),
         }
     }
@@ -1252,6 +1262,7 @@ impl PrintSettings {
             produced_at: None,
             own_heights: false,
             calibration: None,
+            exhaust_fan: exhaust_fan(settings, index)?,
             unsupported,
         })
     }
@@ -1384,6 +1395,76 @@ fn machine_envelope(settings: &Settings) -> Result<Option<String>, ConfigError> 
     }
     out += &input_shaping_override(settings, flavor)?;
     Ok(Some(out))
+}
+
+/// What filament `index` asks of the exhaust fan, during the print and
+/// once it is done, in percent (GCode.cpp `_do_export`, l.4621-4634 and
+/// 4949-4959 at the pin): nothing unless `activate_air_filtration`, then
+/// each of `during_print_exhaust_fan_speed` and
+/// `complete_print_exhaust_fan_speed` where its own switch
+/// (`activate_air_filtration_during_print`, `_on_completion`) is on. Each
+/// a per-filament list, read at the filament's place or else at the first
+/// (`ConfigOptionVector::get_at`); the reference's defaults where absent:
+/// off, on, on, 60 and 80. The printer's `support_air_filtration` is not
+/// asked, as the reference does not ask it there.
+fn exhaust_fan(settings: &Settings, index: usize) -> Result<[Option<i64>; 2], ConfigError> {
+    let at = |key: &str| {
+        settings
+            .texts(key)
+            .and_then(|values| values.get(index).or(values.first()))
+            .map(|text| text.trim().to_owned())
+    };
+    let flag = |key: &'static str, default: bool| -> Result<bool, ConfigError> {
+        match at(key).as_deref() {
+            None => Ok(default),
+            Some("1" | "true") => Ok(true),
+            Some("0" | "false") => Ok(false),
+            Some(other) => Err(ConfigError::BadValue {
+                key: key.into(),
+                found: other.to_owned(),
+                expected: "1 or 0",
+            }),
+        }
+    };
+    let speed = |key: &'static str, default: i64| -> Result<i64, ConfigError> {
+        match at(key) {
+            None => Ok(default),
+            Some(text) => text.parse().map_err(|_| ConfigError::BadValue {
+                key: key.into(),
+                found: text,
+                expected: "a whole number",
+            }),
+        }
+    };
+    if !flag("activate_air_filtration", false)? {
+        return Ok([None, None]);
+    }
+    Ok([
+        flag("activate_air_filtration_during_print", true)?
+            .then(|| speed("during_print_exhaust_fan_speed", 60))
+            .transpose()?,
+        flag("activate_air_filtration_on_completion", true)?
+            .then(|| speed("complete_print_exhaust_fan_speed", 80))
+            .transpose()?,
+    ])
+}
+
+/// GCodeWriter.cpp `set_exhaust_fan`: the exhaust fan (fan 3) at the
+/// highest speed, in percent, the print's filaments ask for at `when` (0
+/// during the print, 1 once done); nothing where none asks.
+pub(crate) fn exhaust_fan_command(
+    filaments: impl IntoIterator<Item = [Option<i64>; 2]>,
+    when: usize,
+) -> Option<String> {
+    let speed = filaments
+        .into_iter()
+        .filter_map(|asked| asked[when])
+        .max()?;
+    // `(int)(speed / 100.0 * 255)`: towards zero.
+    Some(format!(
+        "M106 P3 S{}\n",
+        (speed as f64 / 100.0 * 255.0) as i64
+    ))
 }
 
 /// How the firmware is told an acceleration (GCodeWriter.cpp
@@ -1789,6 +1870,21 @@ fn variables(
     if let Some(nozzles) = settings.texts("nozzle_diameter") {
         variables.set("num_extruders", Value::Int(nozzles.len() as i64));
     }
+    // Each filament's exhaust fan speed during the print as the fan takes
+    // it, 0 to 255, cut towards zero (GCode.cpp, where the start
+    // G-code's variables are set); the reference's 60 % where unset.
+    let exhaust = settings
+        .floats("during_print_exhaust_fan_speed")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| vec![Some(60.0)]);
+    variables.set_list(
+        "during_print_exhaust_fan_speed_num",
+        exhaust
+            .iter()
+            .map(|speed| Value::Int((speed.unwrap_or(0.0) / 100.0 * 255.0) as i64))
+            .collect(),
+    );
     if let Some(lengths) = settings.texts("retraction_length") {
         variables.set_list("retract_length", lengths.iter().map(Value::text).collect());
     }

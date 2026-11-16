@@ -1447,6 +1447,56 @@ fn acceleration_forms_and_limits_follow_the_flavor() {
 }
 
 #[test]
+fn the_exhaust_fan_runs_as_the_filaments_ask() {
+    use edge_config::Settings;
+    let read = |json: &str, index: usize| {
+        PrintSettings::for_filament(&Settings::from_json(json).unwrap(), index)
+            .unwrap()
+            .exhaust_fan
+    };
+    // Off unless asked; asked, at the reference's 60 % and 80 %.
+    assert_eq!(read("{}", 0), [None, None]);
+    assert_eq!(
+        read(r#"{"activate_air_filtration": ["1"]}"#, 0),
+        [Some(60), Some(80)]
+    );
+    // Each filament its own; either half switched off on its own.
+    let two = r#"{"activate_air_filtration": ["0", "1"],
+        "activate_air_filtration_during_print": ["1", "1"],
+        "activate_air_filtration_on_completion": ["1", "0"],
+        "during_print_exhaust_fan_speed": ["90", "70"],
+        "complete_print_exhaust_fan_speed": ["100", "50"]}"#;
+    assert_eq!(read(two, 0), [None, None]);
+    assert_eq!(read(two, 1), [Some(70), None]);
+    // The highest any filament asks; 70 % is 178.5, cut to 178.
+    assert_eq!(
+        settings::exhaust_fan_command([[Some(70), None], [Some(40), Some(30)]], 0).as_deref(),
+        Some("M106 P3 S178\n")
+    );
+    assert_eq!(
+        settings::exhaust_fan_command([[Some(70), None], [Some(40), Some(30)]], 1).as_deref(),
+        Some("M106 P3 S76\n")
+    );
+    assert_eq!(settings::exhaust_fan_command([[None, None]], 0), None);
+    // In the file: after the start G-code, before the moves are set up,
+    // and after the end G-code (GCode.cpp `_do_export`).
+    let settings = PrintSettings {
+        machine_start_gcode: Some("; start".into()),
+        machine_end_gcode: Some("; end".into()),
+        exhaust_fan: [Some(70), Some(70)],
+        ..basic()
+    };
+    let text = printed(1, &settings);
+    assert_eq!(text.matches("M106 P3 S178\n").count(), 2, "{text}");
+    assert!(text.contains("; start\nM106 P3 S178\nG90\nG21\n"), "{text}");
+    assert!(
+        text.contains("; end\nM106 P3 S178\nM73 P100 R0\n"),
+        "{text}"
+    );
+    assert!(!printed(1, &basic()).contains("M106 P3"));
+}
+
+#[test]
 fn acceleration_follows_the_feature_and_the_first_layer() {
     let limits = |settings: &PrintSettings| -> Vec<String> {
         let text = printed(2, settings);

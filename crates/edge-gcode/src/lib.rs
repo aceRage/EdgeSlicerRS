@@ -1521,6 +1521,16 @@ impl Writer<'_> {
             .and_then(|first| first.labels.filter(|_| !first.plate.labels.is_empty()))
     }
 
+    /// What each filament the print uses asks of the exhaust fan
+    /// (GCode.cpp `_do_export`, over `m_writer.extruders()`, the
+    /// filaments used).
+    fn exhaust_fans(&self) -> Vec<[Option<i64>; 2]> {
+        (self.file.filaments.iter())
+            .filter_map(|filament| self.all.get(filament - 1))
+            .map(|settings| settings.exhaust_fan)
+            .collect()
+    }
+
     /// The copies, as labelled.
     fn copies(&self) -> &[ObjectLabel] {
         self.all.first().map_or(&[], |first| &first.plate.labels)
@@ -1772,6 +1782,11 @@ impl Writer<'_> {
                 }
                 writeln!(self.out, "M109 S{:.0}", s.nozzle_temperature_initial_layer)?;
             }
+        }
+        // The exhaust fan as the print's filaments ask, after the start
+        // G-code (GCode.cpp `_do_export`).
+        if let Some(line) = settings::exhaust_fan_command(self.exhaust_fans(), 0) {
+            self.out.extend_from_slice(line.as_bytes());
         }
         // Absolute positions, millimetres, relative extrusion: what every
         // move below assumes, whatever the start G-code left set. Written
@@ -5667,6 +5682,11 @@ impl Writer<'_> {
                 self.custom("machine_end_gcode", template)?;
             }
             None => writeln!(self.out, "M104 S0\nM140 S0\nM84")?,
+        }
+        // The exhaust fan as the print's filaments ask once it is done,
+        // after the end G-code (GCode.cpp `_do_export`).
+        if let Some(line) = settings::exhaust_fan_command(self.exhaust_fans(), 1) {
+            self.out.extend_from_slice(line.as_bytes());
         }
         let summary = self.state.summary;
         if s.machine_start_gcode.is_some() {

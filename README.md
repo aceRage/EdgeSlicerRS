@@ -2000,7 +2000,14 @@ Klipper's `SET_VELOCITY_LIMIT ACCEL=`; on Marlin 2 and RepRapFirmware
 held to `machine_max_acceleration_extruding` on Marlin, Marlin 2,
 RepRapFirmware and Klipper (on Klipper also to the x and y limits), travel
 to `machine_max_acceleration_travel` on Marlin 2 and RepRapFirmware and to
-the printing limit on Klipper. And every file has the reference's
+the printing limit on Klipper. The exhaust fan (`M106 P3`) is run as the
+print's filaments ask (`activate_air_filtration`, with
+`activate_air_filtration_during_print` / `_on_completion`): at the highest
+`during_print_exhaust_fan_speed` they ask after the start G-code, at the
+highest `complete_print_exhaust_fan_speed` after the end G-code, as the
+reference does (GCode.cpp `_do_export`; 2026-11-16); like the reference it
+does not ask the printer's `support_air_filtration` there, which the
+printer's own templates read. And every file has the reference's
 `;_SET_FAN_SPEED_CHANGING_LAYER` marker after each layer change. Positions
 are taken back by `extruder_offset` (0x2 on the P1 and X1). The
 timelapse G-code (`time_lapse_gcode`, dropped before) goes where the
