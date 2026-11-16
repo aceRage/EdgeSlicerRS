@@ -2086,6 +2086,26 @@ refused the A2L (`hold_chamber_temp_for_flat_print`, then
 `curr_y_acceleration_limit`), and now its 268 lines of start G-code are
 the reference's.
 
+`farthest_point_timelapse` (Bambu Studio 2.8, set on the H2S, P2S and
+the two-nozzle Bambu printers) is followed on a Bambu Lab printer of one
+nozzle that is not a bed-slinger, in the traditional timelapse
+(GCode.cpp `compute_farthest_point`, `check_and_insert_inline_timelapse`):
+each layer's picture is taken the moment an extruding move ends within
+0.5 mm of where the layer reaches farthest from the bed's origin (an
+outer wall's point, or with none the sparse, solid and top fill's or the
+support's), with nothing pulled back and the template told
+`timelapse_inline_photo` and `farthest_point_timelapse_enabled`; on a
+layer with nothing to measure from, before anything is laid; and where
+no move gets there, at the layer's end. The two-nozzle half (the picture
+from a safe spot with the other nozzle when the farthest point is not
+the photo nozzle's) goes with those printers, refused here, and nothing
+of it needs the prime tower. On the H2S and P2S PLA cubes all 100
+pictures now come after the same move as the reference's (none did:
+they were taken as each layer started), and the template lines that
+differ fell from 2615 to 514 (H2S) and from 2520 to 513 (P2S), what is
+left being the objects' labels, `G17` and the order of a feature's tag
+and its `M204`.
+
 Projects made with `tools/make_project.py` from the BBL profiles, the
 part centred where the reference's command line moves it and the
 flushing volumes set to those it works out; lines of template G-code

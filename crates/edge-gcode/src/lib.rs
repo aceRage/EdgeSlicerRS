@@ -1406,6 +1406,10 @@ struct State {
     framing: bool,
     /// Whether the layer being written has had its timelapse picture.
     pictured: bool,
+    /// With a farthest-point timelapse, where the layer reaches farthest
+    /// from the camera, while its picture is still to be taken there
+    /// ([`Writer::farthest_timelapse`]).
+    farthest: Option<Point2>,
     /// How many times a tool has been taken up, the first included.
     swaps: usize,
     /// Which layer of the print is being written, and how its next
@@ -2655,7 +2659,11 @@ impl Writer<'_> {
         self.variables.set("layer_num", Value::Int(index as i64));
         self.state.pictured = false;
         if let Some((_, Timelapse::LayerStart { .. })) = &s.time_lapse {
-            self.timelapse(layer.z)?;
+            // A farthest-point picture waits until the layer's farthest
+            // point is known ([`Self::body`]).
+            if !self.farthest_timelapse() {
+                self.timelapse(layer.z)?;
+            }
         }
         if let Some(template) = &s.layer_change_gcode {
             self.mass_so_far();
@@ -2904,6 +2912,17 @@ impl Writer<'_> {
             .iter()
             .any(|part| !part.tower.is_empty() || part.wipe.is_some());
         let traditional = matches!(&self.settings.time_lapse, Some((_, Timelapse::Traditional)));
+        // A farthest-point picture is taken the moment the nozzle gets
+        // there ([`Self::lay`]); on a layer with nothing to measure from,
+        // before anything is laid (GCode.cpp `process_layer`).
+        if self.farthest_timelapse() && !self.state.pictured && !parts.is_empty() {
+            self.variables
+                .set("farthest_point_timelapse_enabled", Value::Bool(true));
+            self.state.farthest = bambu_vars::farthest_point(parts);
+            if self.state.farthest.is_none() {
+                self.timelapse(parts[0].z)?;
+            }
+        }
         for (offset, layer) in parts.iter().enumerate() {
             if traditional
                 && !self.state.pictured
@@ -3093,6 +3112,11 @@ impl Writer<'_> {
         if traditional && !towered_layer && !self.state.pictured {
             self.timelapse(parts[0].z)?;
         }
+        // The farthest point missed (nothing laid ended within 0.5 mm of
+        // it): the picture at the layer's end, as there.
+        if self.state.farthest.take().is_some() && !self.state.pictured {
+            self.timelapse(parts[0].z)?;
+        }
         self.fan_over_air(false)?;
         Ok(())
     }
@@ -3165,6 +3189,63 @@ impl Writer<'_> {
         self.flush_labels()?;
         self.variables.set("layer_z", Value::Float(z));
         let text = self.custom("time_lapse_gcode", template)?;
+        self.after_timelapse(&text, z, bambu)?;
+        // The template moves the head, so where it is after is not known.
+        if bambu {
+            self.state.position = None;
+        }
+        Ok(())
+    }
+
+    /// Whether the printer takes its timelapse picture where each layer
+    /// reaches farthest from the camera (`farthest_point_timelapse`,
+    /// Bambu Studio 2.8; GCode.cpp `process_layer`): a Bambu Lab printer
+    /// of one nozzle that is not a bed-slinger, in the traditional
+    /// timelapse (`timelapse_type` 0). Two-nozzle printers, the only
+    /// others the reference does it on, are refused here; a smooth
+    /// timelapse's tower is not done.
+    fn farthest_timelapse(&self) -> bool {
+        let on = |name: &str| {
+            self.variables
+                .value(name)
+                .is_some_and(|value| matches!(value.to_string().trim(), "1" | "true"))
+        };
+        let traditional = self
+            .variables
+            .value("timelapse_type")
+            .is_none_or(|kind| matches!(kind.to_string().trim(), "0" | "traditional"));
+        matches!(
+            &self.settings.time_lapse,
+            Some((_, Timelapse::LayerStart { bambu: true }))
+        ) && on("farthest_point_timelapse")
+            && traditional
+    }
+
+    /// The timelapse picture taken in passing, where the nozzle has just
+    /// reached the layer's farthest point (GCode.cpp
+    /// `check_and_insert_inline_timelapse`, `generate_timelapse_gcode`
+    /// with the spot not picked): nothing pulled back, the template told
+    /// `timelapse_inline_photo`, the head left where it is.
+    fn inline_timelapse(&mut self) -> Result<(), GcodeError> {
+        let s = self.settings;
+        let Some((template, _)) = &s.time_lapse else {
+            return Ok(());
+        };
+        self.state.farthest = None;
+        self.state.pictured = true;
+        let z = self.state.z;
+        self.variables.set("layer_z", Value::Float(z));
+        self.variables
+            .set("timelapse_inline_photo", Value::Bool(true));
+        let text = self.custom("time_lapse_gcode", template);
+        self.variables
+            .set("timelapse_inline_photo", Value::Bool(false));
+        self.after_timelapse(&text?, z, true)
+    }
+
+    /// What follows the timelapse G-code: its time, and the nozzle put
+    /// back at its height where the template leaves it elsewhere.
+    fn after_timelapse(&mut self, text: &str, z: f64, bambu: bool) -> Result<(), GcodeError> {
         // Its moves count towards the layer's time for cooling, as the
         // reference's cooling counts every move of the layer after its
         // first line (CoolingBuffer.cpp `parse`).
@@ -3173,7 +3254,7 @@ impl Writer<'_> {
             .position
             .map_or([0.0, 0.0], |at| [unscaled(at.x), unscaled(at.y)]);
         let seconds = template_seconds(
-            &text,
+            text,
             from,
             self.state.height.unwrap_or(z),
             self.state.feedrate,
@@ -3198,7 +3279,6 @@ impl Writer<'_> {
                 self.state.height = Some(last_z);
             }
         }
-        self.state.position = None;
         Ok(())
     }
 
@@ -5445,6 +5525,14 @@ impl Writer<'_> {
         }
         self.state.summary.seconds += moved / speed;
         self.state.position = Some(to);
+        if self
+            .state
+            .farthest
+            .is_some_and(|farthest| distance(to, farthest) < 0.5)
+        {
+            self.inline_timelapse()
+                .map_err(|error| io::Error::other(error.to_string()))?;
+        }
         Ok(())
     }
 

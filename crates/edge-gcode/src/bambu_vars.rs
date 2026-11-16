@@ -392,3 +392,47 @@ mod mass_tests {
         assert_eq!(y_acceleration_limit(29.0, 0.0, 1300.0, 8000.0), 8000.0);
     }
 }
+
+/// Where a layer reaches farthest from the camera, at the bed's origin
+/// (GCode.cpp `compute_farthest_point`, Bambu Studio 2.8's): the point of
+/// an outer wall farthest from it, or, with no outer wall on the layer,
+/// of the sparse, solid and top fill and the support. None on a layer
+/// with none of these. The first of equally far points.
+pub(crate) fn farthest_point(parts: &[crate::Layer<'_>]) -> Option<edge_geom::Point2> {
+    use edge_extrusion::Role;
+    fn farther(best: &mut Option<(i128, edge_geom::Point2)>, point: edge_geom::Point2) {
+        let squared = i128::from(point.x).pow(2) + i128::from(point.y).pow(2);
+        if squared > 0 && best.is_none_or(|(most, _)| squared > most) {
+            *best = Some((squared, point));
+        }
+    }
+    let mut walls = None;
+    let mut rest = None;
+    for part in parts {
+        for wall in part
+            .loops
+            .iter()
+            .filter(|wall| wall.role == Role::ExternalPerimeter)
+        {
+            for point in &wall.polygon.points {
+                farther(&mut walls, *point);
+            }
+        }
+        let fill = part.paths.iter().filter(|path| {
+            matches!(
+                path.role,
+                Role::SparseInfill | Role::SolidInfill | Role::TopSolidInfill
+            )
+        });
+        let support = part
+            .support
+            .iter()
+            .filter(|path| matches!(path.role, Role::Support | Role::SupportInterface));
+        for path in fill.chain(support) {
+            for point in &path.points {
+                farther(&mut rest, *point);
+            }
+        }
+    }
+    walls.or(rest).map(|(_, point)| point)
+}
