@@ -74,16 +74,6 @@ pub(crate) fn refuse(settings: &Settings, copies: usize, materials: usize) -> Re
                 .into(),
         );
     }
-    // Printed one after another, each is a vase of its own; this engine
-    // prints every object together, a layer at a time, which would be
-    // no spiral at all.
-    if copies > 1 {
-        return Err(
-            "several objects in spiral vase mode are printed one after another \
-             (print_sequence \"by object\"), which is not done yet; no G-code was written"
-                .into(),
-        );
-    }
     if !matches!(
         settings.text("stabilizer_supports"),
         None | Some("off" | "0")
@@ -91,6 +81,16 @@ pub(crate) fn refuse(settings: &Settings, copies: usize, materials: usize) -> Re
         return Err("Spiral vase mode can't be used with side stabilizers. Turn the stabilizers off or spiral vase mode off.".into());
     }
     // "Orca #17143": refused for the filaments the object prints in.
+    // Printed object by object, each copy is a vase of its own and may
+    // print in a filament of its own; the filaments are counted here for
+    // the plate as a whole, not copy by copy.
+    if materials > 1 && copies > 1 {
+        return Err(
+            "spiral vase mode with copies printed object by object in more than one filament: \
+             the filaments are not yet told apart copy by copy; no G-code was written"
+                .into(),
+        );
+    }
     if materials > 1 {
         return Err(
             "The spiral vase mode does not work when an object contains more than one materials."
@@ -275,14 +275,23 @@ mod tests {
             .unwrap(),
             "Please select \"By object\" print sequence to print multiple objects in spiral vase mode."
         );
-        assert!(
+        // Printed object by object, several copies are each a vase.
+        assert_eq!(
             said(
                 r#"{"spiral_mode": "1", "print_sequence": "by object"}"#,
                 2,
                 1
+            ),
+            None
+        );
+        assert!(
+            said(
+                r#"{"spiral_mode": "1", "print_sequence": "by object"}"#,
+                2,
+                2
             )
             .unwrap()
-            .contains("not done yet")
+            .contains("not yet told apart")
         );
         assert_eq!(
             said(r#"{"spiral_mode": "1"}"#, 1, 2).unwrap(),

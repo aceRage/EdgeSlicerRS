@@ -11,6 +11,7 @@
 //! here prints or touches a window; a [`Watcher`] is told how far the
 //! work has got and may stop it.
 
+mod by_object;
 pub mod calib;
 mod clock;
 mod contour;
@@ -38,6 +39,7 @@ mod printable;
 pub mod pushfit;
 mod regions;
 mod scene;
+mod sequential;
 pub mod sliced_file;
 mod spiral;
 pub mod tac;

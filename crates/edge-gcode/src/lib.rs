@@ -60,8 +60,8 @@ pub use scarf::{Scarf, ScarfSeam};
 pub use seam::Seam;
 pub use seam_plan::{SeamMeasures, SeamMesh, SeamObject, SeamPart, SeamScene, measure_seams};
 pub use settings::{
-    Labelling, Lift, ObjectLabel, OverhangFan, Plate, PrintSettings, Timelapse, WallDirection,
-    WallOrder, gcode_template,
+    Labelling, Lift, ObjectLabel, ObjectRun, OverhangFan, Plate, PrintSettings, Timelapse,
+    WallDirection, WallOrder, gcode_template,
 };
 pub use spiral_vase::Spiral;
 
@@ -438,27 +438,69 @@ pub fn write_timed(
     let walls = simplify::Thinned::walls(layers, settings, profiles);
     let layers = &walls.layers(layers, 0)[..];
     timings.thin = started.elapsed();
-    // One physical layer is every entry at the same height.
+    // Printing object by object, each copy's layers in turn
+    // (`Plate::by_object`); checked to cover the layers, one after another.
+    let runs = &settings[first].plate.by_object;
+    if !runs.is_empty() {
+        let copies = settings[first].plate.labels.len();
+        let mut next = 0;
+        for run in runs {
+            if run.entries.start != next
+                || run.entries.end < run.entries.start
+                || run.copy >= copies
+            {
+                return Err(GcodeError::Unsupported(
+                    "printing object by object: the copies' layers do not follow one another"
+                        .into(),
+                ));
+            }
+            next = run.entries.end;
+        }
+        if next != layers.len() {
+            return Err(GcodeError::Unsupported(
+                "printing object by object: the copies' layers do not cover the print".into(),
+            ));
+        }
+    }
+    // One physical layer is every entry at the same height; printing
+    // object by object, one copy's (`own`: for each layer, the run it is
+    // of and its number among that copy's layers).
     let mut groups: Vec<Range<usize>> = Vec::new();
+    let mut own: Vec<(usize, usize)> = Vec::new();
+    let run_of = |index: usize| runs.iter().position(|run| run.entries.contains(&index));
     for (index, layer) in layers.iter().enumerate() {
+        let run = run_of(index).unwrap_or(0);
         match groups.last_mut() {
-            Some(group) if layers[group.start].z == layer.z => group.end = index + 1,
-            _ => groups.push(index..index + 1),
+            Some(group)
+                if layers[group.start].z == layer.z && own.last().map(|(r, _)| *r) == Some(run) =>
+            {
+                group.end = index + 1
+            }
+            _ => {
+                let number = match own.last() {
+                    Some((r, n)) if *r == run => n + 1,
+                    _ => 0,
+                };
+                groups.push(index..index + 1);
+                own.push((run, number));
+            }
         }
     }
     // Where each filament is used for the last time, after which its tool
-    // can be switched off.
+    // can be switched off. Object by object, never: another copy may need
+    // it again, and the reference keeps every tool at its standby
+    // temperature there (GCode.cpp `is_last_use`, `PrintSequence::ByLayer`).
     let mut last_use = vec![0; settings.len()];
     for (index, layer) in layers.iter().enumerate() {
-        last_use[layer.filament] = index;
+        last_use[layer.filament] = if runs.is_empty() { index } else { usize::MAX };
     }
+    // The top of the print: printing object by object the last layer is
+    // the last copy's, not the highest.
+    let top = layers.iter().map(|layer| layer.z).fold(0.0, f64::max);
 
     let mut variables = settings[first].variables.clone();
     variables.set("total_layer_count", Value::Int(groups.len() as i64));
-    variables.set(
-        "max_layer_z",
-        Value::Float(layers.last().map_or(0.0, |layer| layer.z)),
-    );
+    variables.set("max_layer_z", Value::Float(top));
     variables.set("layer_num", Value::Int(0));
     variables.set("layer_z", Value::Float(0.0));
     for name in [
@@ -534,7 +576,7 @@ pub fn write_timed(
         last_use,
         file: FileInfo {
             layers: groups.len(),
-            top: layers.last().map_or(0.0, |layer| layer.z),
+            top,
             first_layer_height: layers.first().map_or(0.0, |layer| layer.height),
             filaments: {
                 let mut used: Vec<usize> = layers.iter().map(|layer| layer.filament + 1).collect();
@@ -608,6 +650,7 @@ pub fn write_timed(
         codes,
         layer_count: groups.len(),
         spiral_layer: false,
+        object_layer: None,
     };
     let several = layers.iter().any(|layer| layer.filament > 0);
     writer.preamble(several)?;
@@ -654,8 +697,27 @@ pub fn write_timed(
         .settings
         .spiral
         .map(|spiral| spiral_vase::SpiralVase::new(spiral, writer.settings.resolution));
+    // How many layers each copy has, printing object by object.
+    let mut run_layers = vec![0; runs.len()];
+    for (run, _) in &own {
+        if let Some(count) = run_layers.get_mut(*run) {
+            *count += 1;
+        }
+    }
     for (index, group) in laid.iter().enumerate() {
         writer.out.clear();
+        if !runs.is_empty() {
+            let (run, number) = own[index];
+            // Between two copies: up and over to the next, its first
+            // layer's temperatures and the printer's own G-code for it
+            // (GCode.cpp `_do_export`, `finished_objects > 0`).
+            if number == 0 && index > 0 {
+                writer.next_object(run, &layers[group.start])?;
+                drain(&writer.out, &mut whole, &mut changes);
+                writer.out.clear();
+            }
+            writer.object_layer = Some((number, run_layers[run]));
+        }
         reached.push((whole.len(), writer.state.summary.seconds));
         if index == 1 {
             second_layer = Some(whole.len());
@@ -690,7 +752,12 @@ pub fn write_timed(
         if let Some(vase) = &mut vase {
             vase.enable(writer.spiral_layer);
             let text = String::from_utf8_lossy(&writer.out).into_owned();
-            let (text, more) = vase.process_layer(&text, index + 1 == laid.len());
+            // The last layer of the print, or of its copy object by object.
+            let last = match writer.object_layer {
+                Some((number, count)) => number + 1 == count,
+                None => index + 1 == laid.len(),
+            };
+            let (text, more) = vase.process_layer(&text, last);
             writer.out = text.into_bytes();
             writer.fed(more);
         }
@@ -702,22 +769,7 @@ pub fn write_timed(
         if index == 0 {
             writer.file.first_layer_seconds = writer.state.summary.seconds;
         }
-        // The layer's text, less the notes of where a tool was changed.
-        for line in writer.out.split_inclusive(|byte| *byte == b'\n') {
-            match line.strip_prefix(CHANGE_MARK) {
-                Some(noted) => {
-                    let noted = String::from_utf8_lossy(noted);
-                    let mut words = noted.split_whitespace();
-                    let number = |word: Option<&str>| word.and_then(|word| word[1..].parse().ok());
-                    let tool: Option<f64> = number(words.next());
-                    let temperature: Option<f64> = number(words.next());
-                    if let (Some(tool), Some(temperature)) = (tool, temperature) {
-                        changes.push((whole.len(), tool as usize, temperature));
-                    }
-                }
-                None => whole.extend_from_slice(line),
-            }
-        }
+        drain(&writer.out, &mut whole, &mut changes);
     }
     timings.layers = started.elapsed();
     let started = Instant::now();
@@ -923,6 +975,26 @@ pub fn write_timed(
     )?;
     timings.estimate = started.elapsed();
     Ok((summary, timings))
+}
+
+/// Adds a layer's text to the file, less the notes of where a tool was
+/// changed, which go to `changes` with where in the file they were.
+fn drain(out: &[u8], whole: &mut Vec<u8>, changes: &mut Vec<(usize, usize, f64)>) {
+    for line in out.split_inclusive(|byte| *byte == b'\n') {
+        match line.strip_prefix(CHANGE_MARK) {
+            Some(noted) => {
+                let noted = String::from_utf8_lossy(noted);
+                let mut words = noted.split_whitespace();
+                let number = |word: Option<&str>| word.and_then(|word| word[1..].parse().ok());
+                let tool: Option<f64> = number(words.next());
+                let temperature: Option<f64> = number(words.next());
+                if let (Some(tool), Some(temperature)) = (tool, temperature) {
+                    changes.push((whole.len(), tool as usize, temperature));
+                }
+            }
+            None => whole.extend_from_slice(line),
+        }
+    }
 }
 
 /// How long a template's moves take as the reference's cooling reckons a
@@ -1213,6 +1285,12 @@ struct Writer<'a> {
     /// (`spiral_mode`, GCode.cpp `spiral_vase_enable`): its loop is then
     /// not clipped short of its seam (`m_enable_loop_clipping`).
     spiral_layer: bool,
+    /// Printing object by object: the layer being written's number among
+    /// its copy's layers, and how many that copy has. What goes by the
+    /// first layers (speeds, fans, temperatures) goes by it; the layer's
+    /// number in the file goes on counting (GCode.cpp `m_layer_index`,
+    /// `layer.id()`). None for a print laid layer by layer.
+    object_layer: Option<(usize, usize)>,
 }
 
 /// What the file says about the print outside its G-code.
@@ -1414,6 +1492,12 @@ struct State {
     /// or line, and the stop of the one finished, with the next travel.
     label_start: Option<String>,
     label_end: Option<String>,
+    /// Printing object by object: whether the copy being printed has had
+    /// its second layer's things (power-loss recovery opened), and
+    /// whether the bed has been set from its first layer's temperature
+    /// since (GCode.cpp `m_second_layer_things_done`).
+    second_layer_done: bool,
+    bed_changed: bool,
 }
 
 impl Writer<'_> {
@@ -2287,6 +2371,179 @@ impl Writer<'_> {
         Ok(in_place)
     }
 
+    /// From one copy, finished, to the next, printing object by object
+    /// (GCode.cpp `_do_export`, `finished_objects > 0`): `run` is the next
+    /// copy's run and `first` its first layer's first entry. The filament
+    /// is pulled back, and the tool changed here, over the copy just
+    /// finished, when the next starts with another; the nozzle goes up to
+    /// the highest layer printed so far, and across to the middle of the
+    /// next copy's box at that height; then the printer's
+    /// `printing_by_object_gcode`, and the first layer's temperatures,
+    /// without waiting, where that G-code does not set them.
+    ///
+    /// Not as the reference in two places, on purpose. Where the tool is
+    /// changed here, the height is written again after the change G-code,
+    /// which may leave the nozzle anywhere: the reference sends its
+    /// `travel_to_z` to the height it last knew, which writes nothing when
+    /// that is already the highest layer's. And the stop of the copy just
+    /// finished comes before the change's retraction, as it does before a
+    /// change within a layer here (`body`), where the reference writes it
+    /// after (`add_object_change_labels`).
+    fn next_object(&mut self, run: usize, first: &Layer<'_>) -> Result<(), GcodeError> {
+        // Power-loss recovery opened on the copy's second layer is closed
+        // as the copy ends (Orca #11582 / #11616).
+        if std::mem::take(&mut self.state.second_layer_done)
+            && let Some((_, off)) = self.settings.power_loss_recovery
+        {
+            self.out.extend_from_slice(off.as_bytes());
+        }
+        let copy = self.all[0].plate.by_object[run].copy;
+        let centre = {
+            let [x, y] = self.copies()[copy].centre;
+            Point2::from_mm(x, y)
+        };
+        let s = self.settings;
+        if s.default_acceleration > 0.0 {
+            self.accelerate(s.travel_acceleration)?;
+        }
+        if first.filament != self.state.tool {
+            self.flush_labels()?;
+            self.change_tool(first.filament, 0, first.z, 0, None, &[], None, None, true)?;
+            // The fans the change G-code may have touched, set back to
+            // what they were.
+            let mut resume = String::new();
+            if let Some(speed) = self.state.auxiliary_fan {
+                resume.push_str(&format!("M106 P2 S{speed}\n"));
+            }
+            if let Some(speed) = self.state.fan {
+                resume.push_str(&format!("M106 S{speed}\n"));
+            }
+            let text = String::from_utf8_lossy(&self.out).replace(
+                std::str::from_utf8(RESUME_FAN_MARK).unwrap_or_default(),
+                &resume,
+            );
+            self.out = text.into_bytes();
+        } else {
+            self.retract(false)?;
+            self.flush_labels()?;
+        }
+        let s = self.settings;
+        // Up: the lift the retraction asked for, and never below the
+        // highest layer printed so far.
+        let lifted = match (self.state.pending_lift.take(), self.state.height) {
+            (Some(_), _) | (None, None) => self.state.z + s.z_hop,
+            (None, Some(height)) => height,
+        };
+        let up = lifted.max(self.state.max_z);
+        if self.state.height.is_none_or(|height| height < up - 1e-9) {
+            self.feed(s.z_speed);
+            let feed_word = self.feed_word();
+            writeln!(self.out, "G1 Z{up:.3}{feed_word}")?;
+            if let Some(height) = self.state.height {
+                self.spend((up - height) / s.z_speed);
+            }
+            self.state.height = Some(up);
+        }
+        let length = self
+            .state
+            .position
+            .map_or(f64::INFINITY, |from| distance(from, centre));
+        self.go(centre, None, s.travel_speed, length)?;
+        self.state.wipe_path.clear();
+        self.state.z = up;
+        // The next layer's travel goes straight from here.
+        self.state.routing.kind = Kind::Outside;
+        self.state.routing.outside_once = true;
+        // The printer's G-code between objects, told how many are done;
+        // the first layer's temperatures where it does not set them
+        // (GCode.cpp `_print_first_layer_bed_temperature`,
+        // `_print_first_layer_extruder_temperatures`, not waiting).
+        self.variables
+            .set("current_object_idx", Value::Int(run as i64));
+        let between = match &s.printing_by_object_gcode {
+            Some(template) => {
+                edge_template::expand(template, &self.variables).map_err(|source| {
+                    GcodeError::Template {
+                        name: "printing_by_object_gcode",
+                        source,
+                    }
+                })?
+            }
+            None => String::new(),
+        };
+        let sets = |codes: &[&str]| {
+            between.lines().any(|line| {
+                let code = line.split(';').next().unwrap_or_default();
+                code.split_whitespace()
+                    .next()
+                    .is_some_and(|word| codes.iter().any(|c| word.eq_ignore_ascii_case(c)))
+            })
+        };
+        if let Some(bed) = self.file.first_layer_bed
+            && self.state.bed_changed
+            && !sets(&["M140", "M190"])
+        {
+            writeln!(self.out, "M140 S{bed:.0} ; set bed temperature")?;
+            self.state.bed_changed = false;
+        }
+        let nozzle_codes: &[&str] = if s.reprap {
+            &["M104", "M109", "G10"]
+        } else {
+            &["M104", "M109"]
+        };
+        if !sets(nozzle_codes) {
+            let named = self.all.len() > 1 && !s.single_nozzle;
+            let word = if s.reprap { "G10" } else { "M104" };
+            let tool_word = |tool: usize| match (named, s.reprap) {
+                (false, _) => String::new(),
+                (true, true) => format!(" P{tool}"),
+                (true, false) => format!(" T{tool}"),
+            };
+            let active = self.state.tool;
+            // Every filament the print uses, the one about to print
+            // last; a waiting one at its standby temperature where idle
+            // nozzles are kept cooler; with one nozzle, only the one
+            // about to print. Not as the reference, on purpose: without
+            // idle nozzles kept cooler it means to set every one
+            // ("Set temperatures of all the printing extruders") but
+            // writes only the highest-numbered, which need not be the one
+            // about to print.
+            let used: Vec<usize> = (self.file.filaments.iter())
+                .map(|filament| filament - 1)
+                .filter(|tool| *tool < self.all.len() && !s.single_nozzle)
+                .collect();
+            for tool in used.iter().copied().filter(|tool| *tool != active) {
+                let mut temperature = self.all[tool].nozzle_temperature_initial_layer;
+                if let Some(delta) = self.all[tool].standby_temperature_delta {
+                    temperature += delta;
+                }
+                if temperature > 0.0 {
+                    writeln!(
+                        self.out,
+                        "{word} S{temperature:.0}{} ; set nozzle temperature",
+                        tool_word(tool)
+                    )?;
+                }
+            }
+            let temperature = self.all[active].nozzle_temperature_initial_layer;
+            if temperature > 0.0 {
+                writeln!(
+                    self.out,
+                    "{word} S{temperature:.0}{} ; set nozzle temperature",
+                    tool_word(active)
+                )?;
+            }
+        }
+        if !between.is_empty() {
+            self.state.flushed.read(&between, self.all);
+            self.out.extend_from_slice(between.as_bytes());
+            if !between.ends_with('\n') {
+                writeln!(self.out)?;
+            }
+        }
+        Ok(())
+    }
+
     /// One physical layer: `parts` is what each filament prints on it, in
     /// order, and `cursor` where the first of them comes in the whole print.
     fn layer(
@@ -2297,6 +2554,10 @@ impl Writer<'_> {
     ) -> Result<(), GcodeError> {
         let s = self.settings;
         let layer = &parts[0];
+        // The layer's number among its object's, printing object by
+        // object, for everything that goes by the first layers; the
+        // print's own count otherwise.
+        let own = self.object_layer.map_or(index, |(number, _)| number);
         if s.bambu {
             // GCode.cpp `process_layer`: "; Z_HEIGHT: %g" and the height
             // as `%g`, in Bambu Studio's tags.
@@ -2385,7 +2646,8 @@ impl Writer<'_> {
                 self.stringing_layer(grid, index, layer.z - layer.height / 2.0, tool)?;
             }
         }
-        if index == 1 {
+        if own == 1 {
+            self.state.second_layer_done = true;
             // GCode.cpp `process_layer`, the second layer's things: power
             // loss recovery as the printer asks, and a Bambu Lab printer's
             // scan of the first layer, the filament pulled back for it.
@@ -2408,7 +2670,7 @@ impl Writer<'_> {
             s.calibration.as_ref().map(|calibration| &calibration.kind),
             Some(CalibrationKind::StringingGrid(_))
         );
-        if index == 1 {
+        if own == 1 {
             if s.nozzle_temperature != s.nozzle_temperature_initial_layer && !grid {
                 // With several tools the one in use is named; the others
                 // get their temperature when their turn comes. One nozzle
@@ -2428,6 +2690,7 @@ impl Writer<'_> {
                 .filter(|bed| Some(*bed) != s.bed_temperature_initial_layer)
             {
                 writeln!(self.out, "M140 S{bed:.0}")?;
+                self.state.bed_changed = true;
             }
         }
         // What the person set at this layer, after the layer change and
@@ -2450,14 +2713,14 @@ impl Writer<'_> {
         } else if let Some(code) = self.codes.iter().find(|code| code.z == layer.z) {
             self.layer_code(&code.code)?;
         }
-        self.state.first_layer = index == 0;
+        self.state.first_layer = own == 0;
         self.state.layer = index;
         self.ways.clear();
         self.shelters.clear();
         // The nozzle itself moves up with the layer's first travel.
         self.state.z = layer.z;
         self.state.max_z = self.state.max_z.max(layer.z);
-        self.below = if index == 0 {
+        self.below = if own == 0 {
             None
         } else {
             // What is asked of it most often is within a wall's width
@@ -2479,10 +2742,14 @@ impl Writer<'_> {
         self.slowdown = Slowdown::None;
         self.measured.clear();
         self.measured_used = 0;
-        self.body(index, parts, cursor)?;
+        self.body(own, parts, cursor)?;
         // The last spiral layer is laid again after itself, flat, and
         // the reference's cooling sees it twice (`spiral_vase.rs`).
-        let doubled = self.spiral_layer && index + 1 == self.layer_count;
+        let doubled = self.spiral_layer
+            && match self.object_layer {
+                Some((number, count)) => number + 1 == count,
+                None => index + 1 == self.layer_count,
+            };
         if doubled {
             self.timing.lines.extend_from_within(..);
         }
@@ -2497,7 +2764,7 @@ impl Writer<'_> {
                 self.filament_area = PI * (self.settings.filament_diameter / 2.0).powi(2);
                 self.slowdown = slowdown;
                 self.measured_used = 0;
-                self.body(index, parts, cursor)?;
+                self.body(own, parts, cursor)?;
                 if doubled {
                     self.timing.lines.extend_from_within(..);
                 }
@@ -2517,12 +2784,12 @@ impl Writer<'_> {
             keep_running: s.reduce_fan_stop_start_freq,
         };
         let mut fans = String::new();
-        let speed = cooling::pwm(fan.percent(index, seconds));
+        let speed = cooling::pwm(fan.percent(own, seconds));
         // Bridges and overhangs get their own fan speed where that is
         // more than the layer's (CoolingBuffer.cpp `overhang_fan_control`).
         let over_air = s
             .overhang_fan
-            .and_then(|wanted| fan.overhang_percent(index, wanted.speed))
+            .and_then(|wanted| fan.overhang_percent(own, wanted.speed))
             .map(cooling::pwm)
             .filter(|over_air| *over_air > speed);
         self.settle_fan(speed, over_air);
@@ -2532,7 +2799,7 @@ impl Writer<'_> {
             self.state.fan = Some(speed);
         }
         if s.auxiliary_fan {
-            let speed = if index >= s.close_fan_the_first_x_layers {
+            let speed = if own >= s.close_fan_the_first_x_layers {
                 cooling::auxiliary_pwm(s.additional_cooling_fan_speed)
             } else {
                 0
@@ -2720,36 +2987,12 @@ impl Writer<'_> {
             // loop over `instances_to_print`). The skirt, and a brim
             // several copies share, come first, belonging to none.
             let copies = self.copies().to_vec();
-            let brims: Vec<Option<usize>> = (layer.around.iter())
-                .map(|around| match around.role {
-                    Role::Skirt => None,
-                    _ => labels::brim_owner(&copies, around),
-                })
-                .collect();
-            let support_of: Vec<usize> = (layer.support.iter())
-                .map(|line| {
-                    line.points
-                        .first()
-                        .map_or(0, |at| labels::owner(&copies, *at))
-                })
-                .collect();
-            let island_of: Vec<usize> = (layer.islands.iter())
-                .map(|range| {
-                    let first = (layer.loops[range.clone()].iter())
-                        .find_map(|wall| wall.polygon.points.first().copied());
-                    first.map_or(0, |at| labels::owner(&copies, at))
-                })
-                .collect();
-            // Fill with no island of its own goes to the copy it lies on.
-            let loose_of: Vec<usize> = (layer.paths.iter().zip(&homes))
-                .map(|(path, home)| match *home == layer.islands.len() {
-                    true => path
-                        .points
-                        .first()
-                        .map_or(0, |at| labels::owner(&copies, *at)),
-                    false => island_of[*home],
-                })
-                .collect();
+            let CopyShares {
+                around: brims,
+                support: support_of,
+                islands: island_of,
+                paths: loose_of,
+            } = CopyShares::with_homes(layer, &homes, &copies);
             let shared: Vec<&ExtrusionLoop> = (layer.around.iter().zip(&brims))
                 .filter(|(_, owner)| owner.is_none())
                 .map(|(around, _)| around)
@@ -5305,9 +5548,12 @@ impl Writer<'_> {
         let s = self.settings;
         // Power-loss recovery closed where it was opened, on the second
         // layer (GCode.cpp `_do_export`).
-        if self.file.layers > 1
-            && let Some((_, off)) = s.power_loss_recovery
-        {
+        // Object by object, where the last copy opened it.
+        let opened = match self.object_layer {
+            Some(_) => self.state.second_layer_done,
+            None => self.file.layers > 1,
+        };
+        if opened && let Some((_, off)) = s.power_loss_recovery {
             self.out.extend_from_slice(off.as_bytes());
         }
         // The stringing grid gives back the filament's retraction for the
@@ -5593,6 +5839,70 @@ fn nested(walls: &[ExtrusionLoop]) -> Vec<usize> {
 /// bounds, and the smallest island that has it wins, so one standing in
 /// another's hole is found before the one around it (GCode.cpp
 /// `process_layer`).
+/// What of a layer each copy on the plate owns, as the writer shares a
+/// layer out among the copies it labels (GCode.cpp `process_layer`, the
+/// loop over `instances_to_print`): each of the layer's skirt and brim
+/// loops, support lines, islands and fill lines, by its place in the
+/// layer, with the copy it belongs to.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CopyShares {
+    /// The copy each loop of [`Layer::around`] goes with: none for the
+    /// skirt and for a brim several copies share.
+    pub around: Vec<Option<usize>>,
+    pub support: Vec<usize>,
+    pub islands: Vec<usize>,
+    /// Each fill line's copy: its island's, or the one it lies on for a
+    /// line of no island.
+    pub paths: Vec<usize>,
+}
+
+impl CopyShares {
+    /// The layer's skirt and brim, support, islands and fill, each by
+    /// the copy it belongs to among `copies` (`labels.rs`).
+    pub fn of(layer: &Layer<'_>, copies: &[ObjectLabel]) -> Self {
+        Self::with_homes(layer, &homes(layer), copies)
+    }
+
+    fn with_homes(layer: &Layer<'_>, homes: &[usize], copies: &[ObjectLabel]) -> Self {
+        let around = (layer.around.iter())
+            .map(|around| match around.role {
+                Role::Skirt => None,
+                _ => labels::brim_owner(copies, around),
+            })
+            .collect();
+        let support = (layer.support.iter())
+            .map(|line| {
+                line.points
+                    .first()
+                    .map_or(0, |at| labels::owner(copies, *at))
+            })
+            .collect();
+        let islands: Vec<usize> = (layer.islands.iter())
+            .map(|range| {
+                let first = (layer.loops[range.clone()].iter())
+                    .find_map(|wall| wall.polygon.points.first().copied());
+                first.map_or(0, |at| labels::owner(copies, at))
+            })
+            .collect();
+        // Fill with no island of its own goes to the copy it lies on.
+        let paths = (layer.paths.iter().zip(homes))
+            .map(|(path, home)| match *home == layer.islands.len() {
+                true => path
+                    .points
+                    .first()
+                    .map_or(0, |at| labels::owner(copies, *at)),
+                false => islands[*home],
+            })
+            .collect();
+        Self {
+            around,
+            support,
+            islands,
+            paths,
+        }
+    }
+}
+
 fn homes(layer: &Layer<'_>) -> Vec<usize> {
     let outlines = |island: &Range<usize>| {
         layer.loops[island.clone()]

@@ -130,6 +130,10 @@ pub struct Sliced {
     pub bodies: Vec<Body>,
     /// The least and greatest corners of the model as loaded, in mm.
     pub bounds: ([f32; 3], [f32; 3]),
+    /// Printing object by object: the copies in the order they are
+    /// printed, by their place among the plate's labels
+    /// (`crate::sequential`); none for a plate printed layer by layer.
+    pub(crate) sequence: Option<Vec<usize>>,
     /// The settings sliced with, complete.
     pub settings: Settings,
     pub layer_height: f64,
@@ -423,7 +427,58 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         materials.sort_unstable();
         materials.dedup();
         crate::spiral::refuse(&settings, copies, materials.len())?;
+        // Several copies, printed object by object, are each a vase:
+        // each is cut to its own largest outline above its bottom, so
+        // each is a body of its own (in the one filament the refusal
+        // above leaves).
+        if copies > 1 && objects.len() == copies {
+            if !own.is_empty() {
+                return Err(
+                    "spiral vase mode with several copies printed object by object, one of them \
+                     setting something for itself: not done yet; no G-code was written"
+                        .into(),
+                );
+            }
+            let filament = materials.first().copied().unwrap_or(1);
+            bodies = objects
+                .iter()
+                .zip(negatives.iter().map(Some).chain(std::iter::repeat(None)))
+                .map(|(solid, negative)| Body {
+                    solid: solid.clone(),
+                    negative: negative.filter(|mesh| !mesh.triangles.is_empty()).cloned(),
+                    filament,
+                    part: None,
+                })
+                .collect();
+        }
     }
+    // Printing object by object: whether the copies clear one another and
+    // the order they are printed in (`crate::sequential`), by their place
+    // among the copies as the file labels them (object by object in the
+    // project's order, each one's copies in theirs).
+    let sequence = {
+        let mut at: Vec<usize> = (0..instance_labels.len().min(objects.len())).collect();
+        at.sort_by_key(|at| (instance_labels[*at].object, instance_labels[*at].copy));
+        let copies: Vec<crate::sequential::Copy<'_>> = at
+            .iter()
+            .map(|at| crate::sequential::Copy {
+                name: &instance_labels[*at].name,
+                mesh: &objects[*at],
+            })
+            .collect();
+        let mut filaments: Vec<usize> = bodies.iter().map(|body| body.filament).collect();
+        filaments.extend(
+            (painted.iter())
+                .flat_map(|object| &object.facets)
+                .map(|facet| usize::from(facet.filament))
+                .filter(|filament| *filament > 0),
+        );
+        filaments.sort_unstable();
+        filaments.dedup();
+        // One copy is printed the same either way.
+        crate::sequential::validate(&settings, &copies, filaments.len(), calibration.is_some())?
+            .filter(|order| order.len() > 1)
+    };
     // A bare model has no place on the bed of its own: it goes in the
     // middle, as the reference's arranger leaves a single part. One that
     // was put somewhere by hand stays there.
@@ -2367,6 +2422,19 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         &object_filaments,
     )?;
     code_notes.extend(assign_notes);
+    // Printing object by object the reference writes none of the G-code
+    // set at layers (GCode.cpp `process_layer`: only where
+    // `single_object_instance_idx` is none), and neither does this.
+    let codes = if sequence.is_some() && !codes.is_empty() {
+        code_notes.push(
+            "the G-code set at layers (pauses, custom G-code, filament changes) is not \
+             written when printing object by object, as the reference leaves it out"
+                .to_owned(),
+        );
+        Vec::new()
+    } else {
+        codes
+    };
 
     let around_time = started.elapsed();
     let waiting = Instant::now();
@@ -2379,6 +2447,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     Ok(Sliced {
         bodies,
         bounds: (min, max),
+        sequence,
         settings,
         layer_height,
         first_layer_height,
@@ -2622,6 +2691,7 @@ fn plate_facts(
     Ok(edge_gcode::Plate {
         labels: Vec::new(),
         tower_at: None,
+        by_object: Vec::new(),
         first_layer_box,
         first_layer_centre,
         in_head_wrap_detect_zone,
@@ -2952,7 +3022,7 @@ impl Sliced {
         let outlines = self.outlines();
         // Layer tops, measured from the bottom of the model as the bed.
         // Skirt, brim and supports go to whichever tool starts the layer.
-        let plan: Vec<edge_gcode::Layer<'_>> = self
+        let base: Vec<edge_gcode::Layer<'_>> = self
             .entries
             .iter()
             .enumerate()
@@ -2998,23 +3068,97 @@ impl Sliced {
                 }
             })
             .collect();
+        // Each entry's contoured lines, where there are any.
+        let none = edge_contour::LayerProfiles::default();
+        let base_profiles: Vec<&edge_contour::LayerProfiles> = (self.entries.iter())
+            .filter(|_| !self.contours.is_empty())
+            .map(|turn| {
+                (self.contours.get(turn.filament))
+                    .and_then(|layers| layers.get(turn.layer))
+                    .unwrap_or(&none)
+            })
+            .collect();
+        // Printing object by object, the plate's entries shared out copy
+        // by copy, each copy's in turn (`crate::by_object`).
+        let labels = &self.plate_facts.labels;
+        let split = match &self.sequence {
+            Some(_) if labels.is_empty() => {
+                return Err(
+                    "print_sequence \"by object\": the copies on the plate are not known apart; \
+                     no G-code was written"
+                        .into(),
+                );
+            }
+            Some(order) => {
+                let order: Vec<usize> = if order.len() == labels.len() {
+                    order.clone()
+                } else {
+                    (0..labels.len()).collect()
+                };
+                let layer_of: Vec<usize> = self.entries.iter().map(|turn| turn.layer).collect();
+                Some(crate::by_object::Split::new(
+                    &base,
+                    &layer_of,
+                    &order,
+                    labels,
+                    &base_profiles,
+                ))
+            }
+            None => None,
+        };
+        let from: Vec<usize> = match &split {
+            Some(split) => split.from().collect(),
+            None => (0..self.entries.len()).collect(),
+        };
+        let plan: Vec<edge_gcode::Layer<'_>> = match &split {
+            Some(split) => split.plan(&base),
+            None => base.clone(),
+        };
+        if let Some(split) = &split {
+            for print in &mut prints {
+                print.plate.by_object = split.runs.clone();
+            }
+        }
+        // Where each entry starts a copy, printing object by object.
+        let starts_run = |entry: usize| {
+            split
+                .as_ref()
+                .is_some_and(|split| split.runs.iter().any(|run| run.entries.start == entry))
+        };
+        // Each entry's layer among its copy's, object by object; the
+        // plate's otherwise.
+        let mut own_layer: Vec<usize> = Vec::with_capacity(plan.len());
+        for (entry, at) in from.iter().enumerate() {
+            let layer = self.entries[*at].layer;
+            own_layer.push(match split {
+                None => layer,
+                Some(_) if entry == 0 || starts_run(entry) => 0,
+                Some(_) if self.entries[from[entry - 1]].layer == layer => own_layer[entry - 1],
+                Some(_) => own_layer[entry - 1] + 1,
+            });
+        }
         // Which layers are laid as a spiral, in vase mode (`crate::spiral`).
         let spiral: Vec<bool> = if crate::spiral::on(&self.settings)? {
             let brim = (self.around.first())
                 .is_some_and(|loops| loops.iter().any(|lp| lp.role == Role::Brim));
             let qualify = crate::spiral::Qualify::read(&self.settings, brim)?;
-            (self.entries.iter())
+            (from.iter().enumerate())
                 .zip(&plan)
-                .map(|(turn, layer)| {
+                .map(|((entry, at), layer)| {
+                    let turn = &self.entries[*at];
                     let own = (self.regions.own(self.keys[turn.filament]))
                         .map_or(&self.settings, |region| &region.settings);
                     let (bottom, _) = crate::spiral::bottom(own)?;
+                    let support = match &split {
+                        Some(split) => split.support[entry],
+                        None => !self.supports[turn.layer].is_empty(),
+                    };
                     Ok(qualify.layer(
-                        turn.layer,
+                        own_layer[entry],
                         bottom,
                         layer.loops.len(),
                         layer.paths.len(),
-                        !self.supports[turn.layer].is_empty(),
+                        support,
                     ))
                 })
                 .collect::<Result<_, ConfigError>>()?
@@ -3089,7 +3233,7 @@ impl Sliced {
             })
             .collect();
         let mut slices = Vec::new();
-        for turn in self.entries.iter().filter(|_| routed) {
+        for turn in from.iter().map(|at| &self.entries[*at]).filter(|_| routed) {
             let index = turn.layer;
             let walls = self.walls.params(self.height_of(index), index == 0)?;
             slices.push(edge_gcode::Slices {
@@ -3105,21 +3249,17 @@ impl Sliced {
         // What seams are placed by beside the walls: each layer's
         // outline, as it is under the layer above, and the objects.
         let mut printed: Vec<&[ExPolygon]> = Vec::new();
-        for (entry, turn) in self.entries.iter().enumerate() {
-            if entry == 0 || self.entries[entry - 1].layer != turn.layer {
+        for (entry, at) in from.iter().enumerate() {
+            let turn = &self.entries[*at];
+            if entry == 0 || self.entries[from[entry - 1]].layer != turn.layer || starts_run(entry)
+            {
                 printed.push(outlines[turn.layer]);
             }
         }
-        // Each entry's contoured lines, where there are any.
-        let none = edge_contour::LayerProfiles::default();
-        let profiles: Vec<&edge_contour::LayerProfiles> = (self.entries.iter())
-            .filter(|_| !self.contours.is_empty())
-            .map(|turn| {
-                (self.contours.get(turn.filament))
-                    .and_then(|layers| layers.get(turn.layer))
-                    .unwrap_or(&none)
-            })
-            .collect();
+        let profiles: Vec<&edge_contour::LayerProfiles> = match &split {
+            Some(split) if !self.contours.is_empty() => split.profiles(),
+            _ => base_profiles,
+        };
         let contours = edge_gcode::Contours {
             layers: &profiles,
             speed_scaling: self.contour_speed,
