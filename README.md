@@ -1807,8 +1807,11 @@ first, belonging to none), support, walls and fill are printed between its
 start and stop, copy after copy; the skirt and the prime tower belong to
 none. The start is written with the copy's first travel, after the
 retraction; the stop with the next travel, at the layer change, or before
-a tool change. The `; printing object` comments (`gcode_label_objects`)
-go with the labels. Not as the reference, on purpose: where a tool is
+a tool change. The `; printing object` and `; stop printing object`
+comments (`gcode_label_objects`) are written whenever that setting is on,
+labels or not, as the reference writes them (GCode.cpp `process_layer`);
+with them on and labels off the copies are printed copy after copy all the
+same (2026-11-16). Not as the reference, on purpose: where a tool is
 changed in place (the U1) the reference writes the stop after the change
 G-code, so a printer skipping that copy skips the retraction, wipe and lift
 before the change too; here the stop comes before the change. And the
@@ -1816,9 +1819,8 @@ copies a tool prints on a layer with a prime tower are chained from the
 tower, as the reference means to, where it starts from the bed's corner
 (it makes its point from `wipe_tower_x` in millimetres taken as
 nanometres), so the copies come in another order there. With labels off
-(`exclude_object` off, not a Bambu Lab printer) nothing changes, and the
-`; printing object` comments are not written, where the reference writes
-them whenever `gcode_label_objects` is on.
+(`exclude_object` off, not a Bambu Lab printer) and `gcode_label_objects`
+off, nothing changes.
 
 **A prime tower without sparse layers** (`wipe_tower_no_sparse_layers`,
 2026-11-12). Both towers leave out the layers with no tool change and

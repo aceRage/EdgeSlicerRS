@@ -338,8 +338,9 @@ pub struct PrintSettings {
     /// always, elsewhere where `exclude_object` is on, in the commands of
     /// the printer's firmware. None where nothing is labelled.
     pub labels: Option<Labelling>,
-    /// Whether each copy is also named in comments where it starts and
-    /// stops (`gcode_label_objects`); only where copies are labelled.
+    /// Whether each copy is named in comments where it starts and stops
+    /// (`gcode_label_objects`), whether or not it is labelled for
+    /// cancelling (GCode.cpp `process_layer`).
     pub label_comments: bool,
     /// Where each tool's nozzle sits off the first's, in mm
     /// (`extruder_offset`): every position written is taken back by it

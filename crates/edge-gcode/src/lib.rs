@@ -1627,14 +1627,15 @@ impl Writer<'_> {
     /// A copy begins: its comment, and its start to be written with its
     /// first travel or line.
     fn begin_copy(&mut self, copy: usize) -> io::Result<()> {
+        // The comments go with `gcode_label_objects` alone, labelled for
+        // cancelling or not (GCode.cpp `process_layer`).
+        if self.all[0].label_comments {
+            let (named, _) = labels::comments(&self.copies()[copy]);
+            self.out.extend_from_slice(named.as_bytes());
+        }
         let Some(how) = self.labelling() else {
             return Ok(());
         };
-        let label = &self.copies()[copy];
-        if self.all[0].label_comments {
-            let (named, _) = labels::comments(label);
-            self.out.extend_from_slice(named.as_bytes());
-        }
         let (start, _) = labels::start_and_stop(how, self.copies(), copy);
         self.state.label_start = Some(start);
         Ok(())
@@ -1644,14 +1645,13 @@ impl Writer<'_> {
     /// next travel; none where its start never was, nothing having been
     /// printed of it.
     fn end_copy(&mut self, copy: usize) -> io::Result<()> {
+        if self.all[0].label_comments {
+            let (_, stopped) = labels::comments(&self.copies()[copy]);
+            self.out.extend_from_slice(stopped.as_bytes());
+        }
         let Some(how) = self.labelling() else {
             return Ok(());
         };
-        let label = &self.copies()[copy];
-        if self.all[0].label_comments {
-            let (_, stopped) = labels::comments(label);
-            self.out.extend_from_slice(stopped.as_bytes());
-        }
         if self.state.label_start.take().is_none() {
             let (_, stop) = labels::start_and_stop(how, self.copies(), copy);
             self.state.label_end = Some(stop);
@@ -2990,10 +2990,13 @@ impl Writer<'_> {
             let picture = traditional && !towered_layer;
             let homes = homes(layer);
             // The stringing grid sets each column's retraction as its copy
-            // starts, so it prints copy by copy, labelled or not, as the
-            // reference prints every plate (GCode.cpp `process_layer`, the
+            // starts, and `gcode_label_objects` names each copy where it
+            // starts and stops, labelled for cancelling or not (GCode.cpp
+            // `process_layer`, l.9779 and 9911 at the pin), so either
+            // prints copy by copy, as the reference prints every plate (the
             // loop over `instances_to_print`).
-            let by_copy = self.stringing_grid().is_some() && !self.copies().is_empty();
+            let by_copy = (self.stringing_grid().is_some() || self.all[0].label_comments)
+                && !self.copies().is_empty();
             if self.labelling().is_none() && !by_copy {
                 let around: Vec<&ExtrusionLoop> = layer.around.iter().collect();
                 self.around(&around)?;

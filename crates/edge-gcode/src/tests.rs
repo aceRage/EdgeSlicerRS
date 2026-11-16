@@ -4067,8 +4067,8 @@ fn each_copy_is_labelled_round_its_own_islands() {
         print(&layers, &settings).0
     };
     let plain = print(&layers, &basic()).0;
-    // Nothing labelled: nothing written of it.
-    assert_eq!(labelled(None, true), plain);
+    // Nothing labelled and no comments: nothing written of it.
+    assert_eq!(labelled(None, false), plain);
     let klipper = labelled(Some(Labelling::Klipper), false);
     assert!(klipper.contains(
         "EXCLUDE_OBJECT_DEFINE NAME=a_b_id_0_copy_0 CENTER=5,5 POLYGON=[[0,0],[10,0],[10,10],[0,10],[0,0]]\n"
@@ -4123,6 +4123,53 @@ fn each_copy_is_labelled_round_its_own_islands() {
     let marlin = labelled(Some(Labelling::Marlin), false);
     assert!(marlin.contains("M486 S0\nM486 Aa_b_id_0_copy_0\nM486 S-1\n"));
     assert_eq!(marlin.matches("M486 S-1\n").count(), 4);
+}
+
+#[test]
+fn copies_are_named_in_comments_without_being_labelled_for_cancelling() {
+    // `gcode_label_objects` on and `exclude_object` off, as on most
+    // printers but Bambu Lab's: the reference names each copy where it
+    // starts and stops all the same (GCode.cpp `process_layer`), copy by
+    // copy, and writes nothing to cancel one by.
+    let loops = [wall(30.0, 0.0, 10.0, 0), wall(0.0, 0.0, 10.0, 0)];
+    let fill = [
+        line((2.0, 5.0), (8.0, 5.0), Role::SolidInfill),
+        line((32.0, 5.0), (38.0, 5.0), Role::SolidInfill),
+    ];
+    let layers = one_layer(&loops, &[0..1, 1..2], &fill);
+    let mut settings = basic();
+    settings.labels = None;
+    settings.label_comments = true;
+    settings.plate.labels = vec![copy_at("a b", 0, 7, 0.0), copy_at("c", 1, 3, 30.0)];
+    let text = print(&layers, &settings).0;
+    let marks: Vec<&str> = (text.lines())
+        .filter(|line| line.contains("printing object"))
+        .collect();
+    assert_eq!(
+        marks,
+        [
+            "; printing object a b id:0 copy 0",
+            "; stop printing object a b id:0 copy 0",
+            "; printing object c id:1 copy 0",
+            "; stop printing object c id:1 copy 0",
+        ]
+    );
+    for none in ["EXCLUDE_OBJECT", "M486", "M624", "M625", "unique label id"] {
+        assert!(!text.contains(none), "{none}");
+    }
+    // Each copy's lines between its own two comments.
+    let start = text.find("; printing object c").unwrap();
+    let end = text.find("; stop printing object c").unwrap();
+    let xs: Vec<f64> = moves(&text[start..end])
+        .filter_map(|line| word(line, 'X'))
+        .collect();
+    assert!(
+        !xs.is_empty() && xs.iter().all(|x| (29.0..=41.0).contains(x)),
+        "{xs:?}"
+    );
+    // With the setting off, no comments.
+    settings.label_comments = false;
+    assert!(!print(&layers, &settings).0.contains("printing object"));
 }
 
 #[test]
