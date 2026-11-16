@@ -371,6 +371,237 @@ fn every_bambu_command_is_asked_first_and_sent_as_the_reference_sends_it() {
     probe.never_said(CODE);
 }
 
+/// What the page was answered and the bridge was asked, searched for the
+/// methods and commands of section 15.
+fn section_15_asked(mock: &Mock) -> Vec<String> {
+    let mut asked: Vec<String> = mock
+        .seen
+        .lock()
+        .unwrap()
+        .requests
+        .iter()
+        .map(|(method, _)| method.clone())
+        .filter(|m| {
+            crate::ultranet::client::CAMERA.contains(&m.as_str())
+                || crate::ultranet::client::FILES.contains(&m.as_str())
+                || crate::ultranet::client::UPDATE.contains(&m.as_str())
+        })
+        .collect();
+    asked.dedup();
+    asked
+}
+
+#[test]
+fn a_bridge_of_protocol_1_0_shows_bambu_s_camera_storage_and_update_unavailable_with_why() {
+    let mock = Mock::new(Setup::default());
+    let probe = bambu_connected(&mock);
+    let caps = probe.ask("device_read", json!({ "refresh": true }))["caps"].clone();
+    assert_eq!(
+        (
+            caps["camera_frames"].clone(),
+            caps["storage"].clone(),
+            caps["update"].clone()
+        ),
+        (json!(false), json!(false), json!(false))
+    );
+    for (part, method) in [
+        ("camera", "camera_start"),
+        ("storage", "files_list"),
+        ("update", "firmware_upgrade"),
+    ] {
+        let why = caps["unavailable"][part].as_str().unwrap();
+        assert!(
+            why.contains("protocol 1.0") && why.contains(method),
+            "{why}"
+        );
+    }
+    let why = caps["unavailable"]["camera"].as_str().unwrap().to_owned();
+    assert_eq!(
+        probe.refused("device_camera", json!({ "action": "start" })),
+        why
+    );
+    assert!(
+        probe
+            .refused("device_files", json!({ "kind": "model" }))
+            .contains("files_list")
+    );
+    assert!(
+        probe
+            .refused(
+                "device_command",
+                json!({ "action": "update", "version": "01.09.00.00" })
+            )
+            .contains("firmware_upgrade")
+    );
+    // Nothing of section 15 was asked of the bridge, and no `upgrade`
+    // went through `send_message_to_printer`.
+    assert!(section_15_asked(&mock).is_empty());
+    assert!(
+        mock.seen
+            .lock()
+            .unwrap()
+            .messages
+            .iter()
+            .all(|m| m.get("upgrade").is_none())
+    );
+    probe.never_said(CODE);
+}
+
+#[test]
+fn a_bridge_of_the_later_minor_gives_bambu_s_camera_storage_and_firmware_update() {
+    let mock = Mock::new(Setup::later());
+    let probe = bambu_connected(&mock);
+    let caps = probe.ask("device_read", json!({ "refresh": true }))["caps"].clone();
+    assert_eq!(
+        (
+            caps["camera_frames"].clone(),
+            caps["storage"].clone(),
+            caps["update"].clone(),
+            caps["unavailable"].clone()
+        ),
+        (json!(true), json!(true), json!(true), json!({}))
+    );
+    // The camera: frames handed over as data, a frame that is not a JPEG
+    // never; stopped, none.
+    assert_eq!(
+        probe.ask("device_camera", json!({ "action": "start" }))["kind"],
+        "jpeg"
+    );
+    let frame = probe.until("a frame", || {
+        let f = probe.ask("device_camera", json!({ "action": "frame" }));
+        (f["seq"] == 2).then_some(f)
+    });
+    assert_eq!(
+        frame["picture"],
+        "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ=="
+    );
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        probe.ask("device_camera", json!({ "action": "frame" }))["seq"],
+        2
+    );
+    probe.ask("device_camera", json!({ "action": "stop" }));
+    assert_eq!(
+        probe.ask("device_camera", json!({ "action": "frame" }))["picture"],
+        Value::Null
+    );
+    // Storage: the card's models; Delete asked with the reference's words,
+    // sent only confirmed.
+    let files = probe.ask("device_files", json!({ "kind": "model" }))["files"].clone();
+    assert_eq!(ids(&files, "name"), ["cube.gcode.3mf", "boat.gcode.3mf"]);
+    assert_eq!(files[0]["size"], 300_000);
+    let asked = probe.ask("device_file_delete", json!({ "path": "/cube.gcode.3mf" }));
+    assert_eq!(
+        asked["confirm"]["lines"][0],
+        "Do you want to delete the file 'cube.gcode.3mf' from printer?"
+    );
+    assert!(mock.requests("files_delete").is_empty());
+    probe.ask(
+        "device_file_delete",
+        json!({ "path": "/cube.gcode.3mf", "confirmed": true }),
+    );
+    assert_eq!(
+        mock.requests("files_delete")[0]["paths"],
+        json!(["/cube.gcode.3mf"])
+    );
+    let files = probe.ask("device_files", json!({ "kind": "model" }))["files"].clone();
+    assert_eq!(ids(&files, "name"), ["boat.gcode.3mf"]);
+    // Update: nothing offered, nothing done.
+    assert_eq!(
+        probe.refused(
+            "device_command",
+            json!({ "action": "update", "version": "01.09.00.00" })
+        ),
+        "The printer has found no firmware update to install."
+    );
+    {
+        let mut seen = mock.seen.lock().unwrap();
+        seen.upgrade = 1;
+        seen.upgrade_version = "01.09.00.00".into();
+    }
+    mock.report(json!({ "upgrade_state": { "dis_state": 1, "new_version_state": 1, "status": "IDLE", "progress": "0",
+        "new_ver_list": [{ "name": "ota", "cur_ver": "01.08.02.00", "new_ver": "01.09.00.00" }] } }));
+    let update = probe.until("the update offered", || {
+        let r = probe.read()["reading"].clone();
+        (r["update"]["state"] == 1).then_some(r["update"].clone())
+    });
+    assert_eq!(update["version"], "01.09.00.00");
+    // Another version than the one shown: refused.
+    assert!(
+        probe
+            .refused(
+                "device_command",
+                json!({ "action": "update", "version": "01.10.00.00" })
+            )
+            .starts_with("The firmware the printer offers changed")
+    );
+    let asked = probe.ask(
+        "device_command",
+        json!({ "action": "update", "version": "01.09.00.00" }),
+    );
+    assert_eq!(asked["confirm"]["title"], "Update firmware");
+    assert_eq!(
+        asked["confirm"]["lines"],
+        json!([
+            "ota: 01.08.02.00 → 01.09.00.00",
+            "Are you sure you want to update? This will take about 10 minutes. Do not turn off the power while the printer is updating."
+        ])
+    );
+    assert!(
+        mock.requests("firmware_upgrade").is_empty(),
+        "never without the person"
+    );
+    // Printing: refused, whatever the printer offers.
+    mock.seen.lock().unwrap().state = "RUNNING".into();
+    mock.report(json!({ "gcode_state": "RUNNING" }));
+    probe.until("printing", || {
+        (probe.read()["reading"]["state"] == "printing").then_some(())
+    });
+    assert_eq!(
+        probe.refused(
+            "device_command",
+            json!({ "action": "update", "version": "01.09.00.00", "confirmed": true })
+        ),
+        "The printer is printing: its firmware cannot be updated now."
+    );
+    assert!(mock.requests("firmware_upgrade").is_empty());
+    mock.seen.lock().unwrap().state = "IDLE".into();
+    mock.report(json!({ "gcode_state": "IDLE" }));
+    probe.until("idle", || {
+        (probe.read()["reading"]["state"] == "idle").then_some(())
+    });
+    probe.confirmed(json!({ "action": "update", "version": "01.09.00.00" }));
+    assert_eq!(
+        mock.requests("firmware_upgrade"),
+        [json!({ "dev_id": "01P09C470100142", "module": "ota", "version": "01.09.00.00" })]
+    );
+    let update = probe.until("updating", || {
+        let r = probe.read()["reading"].clone();
+        (r["update"]["state"] == 2).then_some(r["update"].clone())
+    });
+    assert_eq!(
+        (update["status"].clone(), update["progress"].clone()),
+        (json!("DOWNLOADING"), json!("3"))
+    );
+    // Never through `send_message_to_printer`.
+    assert!(
+        mock.seen
+            .lock()
+            .unwrap()
+            .messages
+            .iter()
+            .filter(|m| m.get("upgrade").is_some())
+            .count()
+            == 1
+    );
+    assert!(
+        mock.requests("send_message_to_printer")
+            .iter()
+            .all(|p| !p["json"].as_str().unwrap().contains("upgrade"))
+    );
+    probe.never_said(CODE);
+}
+
 #[test]
 fn a_bambu_print_is_paused_resumed_and_stopped_only_when_it_can_be() {
     let mock = Mock::new(Setup::default());

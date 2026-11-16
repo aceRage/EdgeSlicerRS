@@ -20,6 +20,10 @@ const deviceState = {
   project: null,
   fresh: false,
   busy: false,
+  // Bambu's camera through the bridge: started, and the frame poll.
+  frames: false,
+  frameTimer: null,
+  frameSeq: null,
 };
 
 const heaterText = (h) => (h ? `${Math.round(h.now)} / ${Math.round(h.target)} °C` : t('N/A'));
@@ -60,9 +64,52 @@ function stopDevice() {
 
 // The stream is let go as soon as Device is not looked at.
 function stopCamera() {
+  stopFrames();
   if (!$('dv-camera').dataset.src) return;
   delete $('dv-camera').dataset.src;
   $('dv-camera').removeAttribute('src');
+}
+
+// Bambu's camera (section 15 of ULTRANET_BRIDGE.md): the bridge is told
+// to start it, the latest frame is asked for twice a second and shown as
+// data; told to stop when Status is not looked at.
+function startFrames() {
+  if (deviceState.frames) return;
+  deviceState.frames = true;
+  deviceState.frameSeq = null;
+  const project = activeId();
+  call('device_camera', { project, action: 'start' }).then(() => pollFrame(project), (error) => {
+    deviceState.frames = false;
+    $('dv-camera-note').hidden = false;
+    $('dv-camera-note').textContent = error.message;
+  });
+}
+
+function pollFrame(project) {
+  clearTimeout(deviceState.frameTimer);
+  if (!deviceState.frames) return;
+  deviceState.frameTimer = setTimeout(async () => {
+    let frame = null;
+    try {
+      frame = await call('device_camera', { project, action: 'frame' });
+    } catch {
+      frame = null;
+    }
+    if (!deviceState.frames) return;
+    if (frame && frame.picture && frame.seq !== deviceState.frameSeq) {
+      deviceState.frameSeq = frame.seq;
+      $('dv-camera-img').src = frame.picture;
+    }
+    pollFrame(project);
+  }, 500);
+}
+
+function stopFrames() {
+  clearTimeout(deviceState.frameTimer);
+  if (!deviceState.frames) return;
+  deviceState.frames = false;
+  $('dv-camera-img').removeAttribute('src');
+  call('device_camera', { project: deviceState.project, action: 'stop' }).catch(() => {});
 }
 
 // ---- drawing ----
@@ -93,6 +140,7 @@ function drawDevice(answer) {
   drawCamera(caps, r);
   drawHms(r);
   drawVersions(r);
+  drawUpdate(caps, r);
   for (const control of $('device-native').querySelectorAll('.dv-control')) control.disabled = !online || deviceState.busy;
 }
 
@@ -265,6 +313,21 @@ function drawSlots(caps, r) {
 // (no scripts: the sandbox allows its own origin only, which a browser
 // needs to show the stream), only where the page may frame its address.
 function drawCamera(caps, r) {
+  const unavailable = caps.unavailable && caps.unavailable.camera;
+  if (caps.camera_frames || unavailable) {
+    // Bambu: the frames, or why there are none.
+    $('dv-camera-card').hidden = false;
+    $('dv-camera').hidden = true;
+    $('dv-camera-img').hidden = !caps.camera_frames;
+    $('dv-camera-note').hidden = !unavailable;
+    $('dv-camera-note').textContent = unavailable || '';
+    if (caps.camera_frames && r && hostsState.deviceTab === 'status') startFrames();
+    else stopFrames();
+    return;
+  }
+  $('dv-camera').hidden = false;
+  $('dv-camera-img').hidden = true;
+  $('dv-camera-note').hidden = true;
   const url = caps.camera && r && r.camera && framable(r.camera) ? r.camera : null;
   $('dv-camera-card').hidden = !url;
   if (url && $('dv-camera').dataset.src !== url) {
@@ -290,6 +353,33 @@ function drawVersions(r) {
   }
   $('dv-versions').replaceChildren(...(rows.length ? rows : [el('dt', { textContent: t('N/A') })]));
 }
+
+// "Update firmware" (UpgradePanel.cpp `show_status`): offered when the
+// printer says it found a newer firmware, with the versions; the state of
+// an update under way; or why it cannot be had from here.
+function drawUpdate(caps, r) {
+  const up = r ? r.update : null;
+  const button = $('dv-update-btn');
+  const unavailable = caps.unavailable && caps.unavailable.update;
+  button.hidden = !caps.update;
+  let line = '';
+  if (unavailable) line = unavailable;
+  else if (!caps.update) line = '';
+  else if (!up || up.state === 0 || up.state === null) line = t('N/A');
+  else if (up.state === 1) {
+    line = up.versions.length
+      ? up.versions.map((v) => `${v.module}: ${v.now} → ${v.new}`).join('\n')
+      : `ota: → ${up.version}`;
+  } else if (up.state === 2) line = `${t('Updating')} ${up.progress ? `${up.progress}%` : ''}`.trim();
+  else if (up.state === 3) line = up.status === 'UPGRADE_FAIL' ? t('Update failed') : t('Update successful');
+  $('dv-update-line').textContent = line;
+  const running = r && ['printing', 'paused', 'preparing'].includes(r.state);
+  button.dataset.version = up && up.state === 1 ? up.version : '';
+  button.disabled = deviceState.busy || !r || running || !(up && up.state === 1 && up.version);
+  button.title = running ? t('The printer is printing: its firmware cannot be updated now.') : '';
+}
+
+$('dv-update-btn').addEventListener('click', () => attempt(() => deviceCommand({ action: 'update', version: $('dv-update-btn').dataset.version })));
 
 // ---- commands ----
 

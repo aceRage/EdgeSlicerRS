@@ -147,6 +147,7 @@ impl Device for Sdcp {
             camera: false,
             hms: false,
             versions: false,
+            ..Caps::default()
         })
     }
 
@@ -206,6 +207,7 @@ impl Device for Sdcp {
             camera: None,
             hms: Vec::new(),
             versions: Vec::new(),
+            ..Reading::default()
         })
     }
 

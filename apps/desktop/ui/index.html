@@ -349,6 +349,9 @@
             <section class="card dv-card" id="dv-camera-card" hidden>
               <h3 class="caps">Camera</h3>
               <iframe id="dv-camera" title="Camera" sandbox="allow-same-origin" referrerpolicy="no-referrer"></iframe>
+              <!-- Bambu: frames the session hands over as data (ULTRANET_BRIDGE.md section 15). -->
+              <img id="dv-camera-img" alt="Camera" hidden>
+              <p id="dv-camera-note" class="quiet" hidden></p>
             </section>
             <section class="card dv-card">
               <h3 class="caps">Printing Progress</h3>
@@ -390,12 +393,23 @@
       </div>
       <div id="device-update" class="dv-pane" hidden>
         <dl id="dv-versions" class="bambu-temps"></dl>
-        <p class="quiet">Updating the firmware from here is not built: the list of firmware comes from Bambu's cloud.</p>
+        <!-- "Update firmware" (UpgradePanel.cpp): the version the printer found, asked first, never
+             while printing; through the bridge's proposed `firmware_upgrade` (section 15). -->
+        <div id="dv-update" class="dv-update">
+          <p id="dv-update-line" class="quiet"></p>
+          <button type="button" id="dv-update-btn" class="dv-control" hidden>Update firmware</button>
+        </div>
       </div>
       <iframe id="device-frame" title="Printer page" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads" referrerpolicy="no-referrer"></iframe>
       <div id="device-storage" hidden>
         <div class="storage-head">
           <h2 id="storage-title">Files on the printer</h2>
+          <!-- Bambu (MediaFilePanel.cpp): the kind of file. -->
+          <select id="storage-kind" aria-label="Storage" hidden>
+            <option value="timelapse">Timelapse</option>
+            <option value="video">Video</option>
+            <option value="model">Model</option>
+          </select>
           <label for="storage-sort" class="colon">Sort by</label>
           <select id="storage-sort">
             <option value="newest">Newest first</option>

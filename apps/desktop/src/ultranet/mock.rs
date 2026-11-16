@@ -40,6 +40,28 @@ pub struct Setup {
     /// The bridge echoes the access code in its texts (a bad bridge).
     pub echo_code: bool,
     pub nozzle_diameter: f64,
+    /// `hello`'s minor: 1 offers section 15's proposed methods too (see
+    /// `Setup::later`).
+    pub minor: i64,
+}
+
+impl Setup {
+    /// A bridge of the proposed later minor (ULTRANET_BRIDGE.md section
+    /// 15): the camera, the files, the firmware update.
+    pub fn later() -> Self {
+        let mut setup = Setup {
+            minor: 1,
+            ..Setup::default()
+        };
+        setup.methods.extend([
+            "camera_start",
+            "camera_stop",
+            "files_list",
+            "files_delete",
+            "firmware_upgrade",
+        ]);
+        setup
+    }
 }
 
 impl Default for Setup {
@@ -74,6 +96,7 @@ impl Default for Setup {
             die_in_upload: false,
             echo_code: false,
             nozzle_diameter: 0.4,
+            minor: 0,
         }
     }
 }
@@ -101,6 +124,13 @@ pub struct Seen {
     pub hms: Vec<(u64, u64)>,
     /// Every G-code line it was sent (`gcode_line`).
     pub gcode: Vec<String>,
+    /// The card's files (section 15): (type, path, time, size).
+    pub files: Vec<(String, String, u64, u64)>,
+    /// `upgrade_state`'s `dis_state` and the version it offers.
+    pub upgrade: i64,
+    pub upgrade_version: String,
+    /// Every message it was sent, as JSON (to see what was never sent).
+    pub messages: Vec<Value>,
 }
 
 #[derive(Clone)]
@@ -122,6 +152,28 @@ impl Mock {
             bed_target: 55.0,
             speed: 2,
             home_flag: 0,
+            files: vec![
+                (
+                    "timelapse".into(),
+                    "/timelapse/video_2026-11-01.mp4".into(),
+                    1_761_998_400,
+                    2_000_000,
+                ),
+                (
+                    "model".into(),
+                    "/cube.gcode.3mf".into(),
+                    1_762_000_000,
+                    300_000,
+                ),
+                (
+                    "model".into(),
+                    "/boat.gcode.3mf".into(),
+                    1_762_100_000,
+                    900_000,
+                ),
+            ],
+            upgrade: 0,
+            upgrade_version: String::new(),
             ..Seen::default()
         };
         Mock {
@@ -292,7 +344,7 @@ impl Mock {
                         continue;
                     }
                     answer(json!({
-                        "protocol": setup.protocol, "minor": 0, "bridge": "ultranet-bridge", "bridge_version": "0.9.0-mock",
+                        "protocol": setup.protocol, "minor": setup.minor, "bridge": "ultranet-bridge", "bridge_version": "0.9.0-mock",
                         "plugin_loaded": setup.plugin_loaded,
                         "plugin_version": if setup.plugin_compatible { "02.01.01.52" } else { "01.10.01.01" },
                         "plugin_expected": "02.01.01.52",
@@ -331,6 +383,7 @@ impl Mock {
                 "send_message_to_printer" => {
                     let sent: Value = serde_json::from_str(p["json"].as_str().unwrap_or("{}"))
                         .unwrap_or_default();
+                    lock(&self.seen).messages.push(sent.clone());
                     // Taken before it is answered, so a test sees it once
                     // the app has its answer.
                     let changed = self.device_command(&sent);
@@ -394,6 +447,71 @@ impl Mock {
                     answer(json!({}));
                 }
                 "callback_return" => answer(json!({})),
+                // Section 15 (proposed): a camera of two frames, the card's
+                // files, the firmware update with the bridge's own check.
+                "camera_start" => {
+                    answer(json!({ "ret": 0, "kind": "jpeg" }));
+                    for seq in 1..=2u64 {
+                        send(
+                            &out,
+                            &event(
+                                "camera_frame",
+                                json!({ "dev_id": p["dev_id"], "seq": seq, "jpeg": "/9j/4AAQSkZJRgABAQ==" }),
+                            ),
+                        );
+                    }
+                    // Not a JPEG: never kept.
+                    send(
+                        &out,
+                        &event(
+                            "camera_frame",
+                            json!({ "dev_id": p["dev_id"], "seq": 3, "jpeg": "PGh0bWw+" }),
+                        ),
+                    );
+                }
+                "camera_stop" => answer(json!({ "ret": 0 })),
+                "files_list" => {
+                    let seen = lock(&self.seen);
+                    let files: Vec<Value> = seen
+                        .files
+                        .iter()
+                        .filter(|(kind, ..)| p["type"] == json!(kind))
+                        .map(|(_, path, time, size)| json!({ "name": path.rsplit('/').next().unwrap(), "path": path, "time": time, "size": size }))
+                        .collect();
+                    drop(seen);
+                    answer(json!({ "ret": 0, "files": files }));
+                }
+                "files_delete" => {
+                    let paths: Vec<String> = p["paths"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect();
+                    lock(&self.seen)
+                        .files
+                        .retain(|(_, path, ..)| !paths.contains(path));
+                    answer(json!({ "ret": 0 }));
+                }
+                "firmware_upgrade" => {
+                    let mut seen = lock(&self.seen);
+                    let printing = matches!(seen.state.as_str(), "RUNNING" | "PAUSE" | "PREPARE");
+                    if printing || seen.upgrade != 1 || p["version"] != json!(seen.upgrade_version)
+                    {
+                        drop(seen);
+                        answer(
+                            json!({ "ret": -1, "refused": "The printer is not offering that update now." }),
+                        );
+                    } else {
+                        seen.upgrade = 2;
+                        seen.messages.push(
+                            json!({ "upgrade": { "command": "upgrade_confirm", "src_id": 1 } }),
+                        );
+                        drop(seen);
+                        answer(json!({ "ret": 0 }));
+                        self.report(json!({ "upgrade_state": { "dis_state": 2, "status": "DOWNLOADING", "progress": "3" } }));
+                    }
+                }
                 _ => refuse(-32601, "no such method"),
             }
         }

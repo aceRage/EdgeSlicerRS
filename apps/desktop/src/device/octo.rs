@@ -136,6 +136,7 @@ impl Device for Octo {
             camera: self.camera().is_some(),
             hms: false,
             versions: false,
+            ..Caps::default()
         })
     }
 
@@ -205,6 +206,7 @@ impl Device for Octo {
             camera: if caps.camera { self.camera() } else { None },
             hms: Vec::new(),
             versions: Vec::new(),
+            ..Reading::default()
         })
     }
 
@@ -254,6 +256,7 @@ impl Device for Octo {
                 "api/printer/tool",
                 json!({ "command": "extrude", "amount": mm }),
             ),
+            Command::Update { .. } => Err(tr(super::NOT_HERE)),
         }
     }
 }

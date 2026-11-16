@@ -524,7 +524,7 @@ function showPrinterPage() {
   else if (typeof hideBambuDevice === 'function') hideBambuDevice();
   const url = !bambu && info && info.printer ? info.device_url : null;
   const native = bambu || Boolean(url && info.native);
-  const has = { status: native, storage: Boolean(url), hms: bambu, update: bambu, page: Boolean(url) };
+  const has = { status: native, storage: Boolean(url) || bambu, hms: bambu, update: bambu, page: Boolean(url) };
   const shown = bambu || Boolean(url);
   hostsState.native = native;
   $('device-bar').hidden = !shown;
@@ -638,6 +638,11 @@ async function showStorage() {
   const turn = ++storageTurn;
   const info = hostsState.info;
   $('storage-title').textContent = info ? fmt(t('Files on %s'), info.printer) : t('Files on the printer');
+  $('storage-kind').hidden = !isBambu();
+  if (isBambu()) {
+    showBambuStorage(turn);
+    return;
+  }
   if (info && !info.storage) {
     storageFiles = [];
     renderStorage();
@@ -663,6 +668,33 @@ async function showStorage() {
   renderStorage();
   loadStoragePictures();
 }
+
+// A Bambu Lab printer's card (MediaFilePanel.cpp), through the bridge's
+// proposed `files_list` (ULTRANET_BRIDGE.md section 15): its timelapses,
+// videos or models, listed and deleted; a bridge of protocol 1.0 says
+// why it cannot.
+async function showBambuStorage(turn) {
+  $('storage-title').textContent = t('Storage');
+  storageNote(t('Loading file list...'));
+  let files;
+  try {
+    ({ files } = await call('device_files', { project: activeId(), kind: $('storage-kind').value }));
+  } catch (error) {
+    if (turn !== storageTurn) return;
+    storageFiles = [];
+    renderStorage();
+    storageNote(error.message, 'error');
+    return;
+  }
+  if (turn !== storageTurn) return;
+  storageFiles = files.map((file) => ({
+    name: file.name, path: file.path, size: file.size, modified: file.time, printable: false, bambu: true,
+  }));
+  storageNote(files.length ? '' : t('No files'));
+  renderStorage();
+}
+
+$('storage-kind').addEventListener('change', () => showStorage());
 
 function storageSorted() {
   const order = $('storage-sort').value;
@@ -744,6 +776,7 @@ function renderStorageDetails() {
   line(t('Modified'), storageModified(file.modified));
   line(t('Sliced with'), file.slicer);
   if (!file.printable) lines.push(t('This file type cannot be started from here.'));
+  $('storage-print').hidden = Boolean(file.bambu);
   $('storage-detail-text').textContent = lines.join('\n');
   const picture = file.thumbnail ? storagePictures.get(file.thumbnail) : null;
   $('storage-preview').hidden = !picture;
@@ -825,6 +858,10 @@ document.addEventListener('keydown', (event) => {
 async function storageDelete() {
   const file = storageFiles.find((one) => one.name === storageSelected);
   if (storageBusy || !file) return;
+  if (file.bambu) {
+    await bambuStorageDelete(file);
+    return;
+  }
   const printer = hostsState.info ? hostsState.info.printer : '';
   const yes = await confirmBox(t('Delete file'), fmt(t('Delete "%s" from %s?\nThis cannot be undone.'), file.name, printer), t('Delete'), t('Cancel'));
   if (!yes) return;
@@ -843,6 +880,28 @@ async function storageDelete() {
   storageFiles = storageFiles.filter((one) => one.name !== file.name);
   renderStorage();
   storageNote(fmt(answer.gone ? t('%s was already gone from the printer.') : t('Deleted %s.'), file.name));
+}
+
+// MediaFilePanel.cpp l.580: the session asks, the file is deleted only
+// once confirmed.
+async function bambuStorageDelete(file) {
+  const asked = await call('device_file_delete', { project: activeId(), path: file.path });
+  if (!asked.confirm) return;
+  if (!await confirmBox(asked.confirm.title, asked.confirm.lines.join('\n\n'), asked.confirm.ok, t('Cancel'))) return;
+  storageSetBusy(true);
+  storageNote(fmt(t('Deleting %s...'), file.name));
+  try {
+    await call('device_file_delete', { project: activeId(), path: file.path, confirmed: true });
+  } catch (error) {
+    storageSetBusy(false);
+    storageNote('');
+    await inform(t('Delete file'), `${fmt(t('Could not delete "%s".'), file.name)}\n\n${error.message}`);
+    return;
+  }
+  storageSetBusy(false);
+  storageFiles = storageFiles.filter((one) => one !== file);
+  renderStorage();
+  storageNote(fmt(t('Deleted %s.'), file.name));
 }
 
 // PrinterStoragePanel.cpp `on_print`: what the printer is doing first, a

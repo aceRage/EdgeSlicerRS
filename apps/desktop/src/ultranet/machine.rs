@@ -131,6 +131,30 @@ pub struct Machine {
     /// `info.module` of the answer to `get_version`: (name, software,
     /// hardware, serial).
     pub modules: Vec<(String, String, String, String)>,
+    /// `upgrade_state` (DeviceManager.cpp l.4580-4670).
+    pub upgrade: Upgrade,
+}
+
+/// What a printer says of its firmware update (`upgrade_state`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Upgrade {
+    /// `dis_state` (`UpgradingDisplayState`): 0 nothing to update, 1 an
+    /// update the printer found, 2 updating, 3 finished; `None` before the
+    /// printer says.
+    pub display: Option<i64>,
+    /// `status`: "DOWNLOADING", "FLASHING", "UPGRADE_SUCCESS",
+    /// "UPGRADE_FAIL", ...
+    pub status: String,
+    /// `progress`, a percent as text.
+    pub progress: String,
+    /// `new_version_state` 1: the printer has found a newer firmware.
+    pub new_version: bool,
+    /// `force_upgrade`.
+    pub forced: bool,
+    /// `new_ver_list`: (module, its version, the new one).
+    pub versions: Vec<(String, String, String)>,
+    /// `ota_new_version_number`.
+    pub ota_new: String,
 }
 
 /// `BambuFans::classic_fan_byte`: "0".."15" steps as 0..255.
@@ -383,6 +407,65 @@ impl Machine {
                 .iter()
                 .filter_map(|item| Some((item["attr"].as_u64()?, item["code"].as_u64()?)))
                 .collect();
+        }
+        if let Some(u) = p.get("upgrade_state").filter(|u| u.is_object()) {
+            self.read_upgrade(u);
+        }
+    }
+
+    /// `upgrade_state`, as l.4580-4670 read it (without the reference's
+    /// hold count, which keeps "updating" shown for a few reports after
+    /// the button: the page says what the printer says).
+    fn read_upgrade(&mut self, u: &Value) {
+        let up = &mut self.upgrade;
+        if let Some(v) = text(&u["status"]) {
+            up.status = v;
+        }
+        if let Some(v) =
+            text(&u["progress"]).or_else(|| integer(&u["progress"]).map(|n| n.to_string()))
+        {
+            up.progress = v;
+        }
+        if let Some(v) = integer(&u["new_version_state"]) {
+            up.new_version = v == 1;
+        }
+        if let Some(v) = u["force_upgrade"].as_bool() {
+            up.forced = v;
+        }
+        if let Some(v) = text(&u["ota_new_version_number"]) {
+            up.ota_new = v;
+        }
+        if let Some(v) = integer(&u["dis_state"]) {
+            up.display = Some(v);
+        } else {
+            // "BBS compatibility with old version": from `status`.
+            up.display = Some(match up.status.as_str() {
+                "DOWNLOADING" | "FLASHING" | "UPGRADE_REQUEST" | "PRE_FLASH_START"
+                | "PRE_FLASH_SUCCESS" => 2,
+                "UPGRADE_SUCCESS" | "DOWNLOAD_FAIL" | "FLASH_FAIL" | "PRE_FLASH_FAIL"
+                | "UPGRADE_FAIL" => 3,
+                _ if up.new_version => 1,
+                _ => 0,
+            });
+        }
+        match u["new_ver_list"].as_array() {
+            Some(list) => {
+                up.versions = list
+                    .iter()
+                    .filter_map(|item| {
+                        let name = text(&item["name"])?;
+                        Some((
+                            name,
+                            text(&item["cur_ver"]).unwrap_or_default(),
+                            text(&item["new_ver"]).unwrap_or_default(),
+                        ))
+                    })
+                    .collect();
+                if let Some((_, _, new)) = up.versions.iter().find(|(name, _, _)| name == "ota") {
+                    up.ota_new = new.clone();
+                }
+            }
+            None => up.versions.clear(),
         }
     }
 

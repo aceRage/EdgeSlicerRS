@@ -215,6 +215,7 @@ impl Device for Klipper {
             camera: self.camera().is_some(),
             hms: false,
             versions: false,
+            ..Caps::default()
         })
     }
 
@@ -311,6 +312,7 @@ impl Device for Klipper {
             camera: if caps.camera { self.camera() } else { None },
             hms: Vec::new(),
             versions: Vec::new(),
+            ..Reading::default()
         })
     }
 
@@ -371,6 +373,7 @@ impl Device for Klipper {
             // reference has no other Klipper page, so every Klipper gets
             // the U1's.
             Command::Extrude(mm) => self.script(&format!("M83\nG1 E{mm} F300")),
+            Command::Update { .. } => Err(tr(super::NOT_HERE)),
         }
     }
 }

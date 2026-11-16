@@ -18,7 +18,14 @@ use crate::device::{self, Caps, Device};
 use crate::hosts::{self, Connection, Http, snapmaker};
 
 /// The calls answered here.
-pub(super) const JSON: [&str; 3] = ["device_info", "device_read", "device_command"];
+pub(super) const JSON: [&str; 6] = [
+    "device_info",
+    "device_read",
+    "device_command",
+    "device_camera",
+    "device_files",
+    "device_file_delete",
+];
 
 /// What each printer's page has, kept while Device is looked at (asked
 /// again with `refresh`), and whether an "Octo/Klipper" address is a
@@ -59,6 +66,12 @@ impl Session {
             "device_info" => self.device_info(args),
             "device_read" => self.device_read(args),
             "device_command" => self.device_command(args),
+            "device_camera" => {
+                let found = self.found(args)?.ok_or_else(|| tr(device::NOT_HERE))?;
+                found.device.camera(super::needed(args, "action")?)
+            }
+            "device_files" => self.device_files(args),
+            "device_file_delete" => self.device_file_delete(args),
             other => Err(format!("there is no call named {other}")),
         }
     }
@@ -249,6 +262,40 @@ impl Session {
         }
         found.device.command(&caps, &command)?;
         Ok(json!({ "sent": args["action"] }))
+    }
+
+    /// The printer's files of a `kind` (Bambu's "Storage", section 15 of
+    /// ULTRANET_BRIDGE.md): `{ files: [{ name, path, time, size }] }`.
+    fn device_files(&self, args: &Value) -> Result<Value, String> {
+        let found = self.found(args)?.ok_or_else(|| tr(device::NOT_HERE))?;
+        let files = found.device.files(super::needed(args, "kind")?)?;
+        Ok(json!({
+            "files": files
+                .iter()
+                .map(|f| json!({ "name": f.name, "path": f.path, "time": f.time, "size": f.size }))
+                .collect::<Vec<_>>(),
+        }))
+    }
+
+    /// "Delete" in Bambu's "Storage": without `confirmed` the reference's
+    /// question (MediaFilePanel.cpp l.580); with it, the file deleted.
+    fn device_file_delete(&self, args: &Value) -> Result<Value, String> {
+        let path = super::needed(args, "path")?;
+        let found = self.found(args)?.ok_or_else(|| tr(device::NOT_HERE))?;
+        if args.get("confirmed").and_then(Value::as_bool) != Some(true) {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            let confirm = device::Confirm {
+                title: tr("Delete file"),
+                lines: vec![crate::api::i18n::fill(
+                    &tr("Do you want to delete the file '%s' from printer?"),
+                    &[&name],
+                )],
+                ok: tr("Delete"),
+            };
+            return Ok(json!({ "confirm": confirm.json() }));
+        }
+        found.device.delete_file(path)?;
+        Ok(json!({ "deleted": path }))
     }
 }
 

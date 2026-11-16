@@ -39,6 +39,16 @@ pub const NEEDED: [&str; 6] = [
     "cancel_job",
 ];
 
+/// The methods of the proposed later minor (ULTRANET_BRIDGE.md section
+/// 15) each part of the Bambu Device page needs; a bridge of protocol 1.0
+/// offers none of them, and the part says so.
+pub const CAMERA: [&str; 2] = ["camera_start", "camera_stop"];
+pub const FILES: [&str; 2] = ["files_list", "files_delete"];
+pub const UPDATE: [&str; 1] = ["firmware_upgrade"];
+
+/// The largest camera frame kept (base64 of a JPEG of 4 MiB).
+const LARGEST_FRAME: usize = 6 << 20;
+
 /// The longest line read (section 3).
 const LONGEST_LINE: usize = 4 << 20;
 
@@ -144,6 +154,9 @@ pub struct JobState {
 #[derive(Default)]
 struct Shared {
     printers: Mutex<HashMap<String, Remote>>,
+    /// The latest camera frame of each printer (`camera_frame`): its
+    /// number and the JPEG as base64.
+    frames: Mutex<HashMap<String, (u64, String)>>,
     jobs: Mutex<HashMap<u64, JobState>>,
     codes: Mutex<Vec<String>>,
     /// Woken on every event.
@@ -546,6 +559,25 @@ impl Client {
         Ok(conn)
     }
 
+    /// Whether the running bridge offers all of `methods` (section 15's
+    /// later minor); false before `hello`.
+    pub fn offers(&self, methods: &[&str]) -> bool {
+        lock(&self.life)
+            .hello
+            .as_ref()
+            .is_some_and(|hello| methods.iter().all(|m| hello.methods.iter().any(|h| h == m)))
+    }
+
+    /// The latest camera frame of a printer: its number and the JPEG as
+    /// base64.
+    pub fn frame(&self, dev_id: &str) -> Option<(u64, String)> {
+        lock(&self.shared.frames).get(dev_id).cloned()
+    }
+
+    pub fn forget_frame(&self, dev_id: &str) {
+        lock(&self.shared.frames).remove(dev_id);
+    }
+
     /// Starts the bridge if need be (Device, the send dialog).
     pub fn start(&self) -> Result<(), String> {
         self.conn().map(|_| ())
@@ -882,6 +914,23 @@ fn event(message: &Value, conn: &Arc<Conn>, shared: &Arc<Shared>, started: Durat
                 remote.refused = false;
             }
             remote.machine.read(&msg);
+        }
+        // Section 15 (proposed): a frame of the camera the app started;
+        // only a JPEG (base64 of FF D8 FF begins "/9j/"), of a printer the
+        // session knows, and not too large, is kept.
+        Some("camera_frame") => {
+            let dev_id = id("dev_id");
+            let jpeg = p["jpeg"].as_str().unwrap_or_default();
+            if jpeg.starts_with("/9j/")
+                && jpeg.len() <= LARGEST_FRAME
+                && jpeg
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b))
+                && lock(&shared.printers).contains_key(&dev_id)
+            {
+                lock(&shared.frames)
+                    .insert(dev_id, (p["seq"].as_u64().unwrap_or(0), jpeg.to_owned()));
+            }
         }
         Some("job_status") => {
             let Some(job) = p["job"].as_u64() else { return };

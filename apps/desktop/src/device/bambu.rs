@@ -4,7 +4,12 @@
 //! publishes them (DeviceManager.cpp), each through the bridge's
 //! `send_message_to_printer`, which the contract already has
 //! (ULTRANET_BRIDGE.md section 5). The camera, Storage and a firmware
-//! update need more of the bridge: proposed there, not built here.
+//! update need more of the bridge, proposed for a later protocol minor
+//! (section 15, not in force): built here against that proposal and the
+//! mock bridge, each drawn only when the bridge offers its methods, and
+//! said to be unavailable, with why, when it answers protocol 1.0.
+
+use crate::ultranet::client::{CAMERA, FILES, UPDATE};
 
 use std::{
     collections::HashMap,
@@ -189,6 +194,27 @@ impl Bambu {
         Ok(())
     }
 
+    /// Why a part of section 15 cannot be had from the bridge running.
+    fn needs(&self, methods: &[&str]) -> String {
+        let minor = self.client.hello().map_or(0, |hello| hello.minor);
+        format!(
+            "This needs an UltraNet bridge of the later protocol minor (ULTRANET_BRIDGE.md section 15, proposed, not yet in force); the bridge running answers protocol 1.{minor} and does not offer {}.",
+            methods.join(", ")
+        )
+    }
+
+    /// A section 15 request, its `ret` checked.
+    fn bridge(&self, method: &str, params: Value) -> Result<Value, String> {
+        let result = self.client.ask(method, params)?;
+        match result["ret"].as_i64() {
+            Some(0) => Ok(result),
+            ret => Err(match result["refused"].as_str() {
+                Some(why) if !why.is_empty() => self.client.scrub(why),
+                _ => format!("The printer did not take it ({}).", ret.unwrap_or(-1)),
+            }),
+        }
+    }
+
     /// `publish_gcode`.
     fn gcode(&self, gcode: &str) -> Result<(), String> {
         self.publish(json!({ "print": { "command": "gcode_line", "param": gcode, "sequence_id": sequence() } }))
@@ -269,6 +295,18 @@ impl Device for Bambu {
             camera: false,
             hms: true,
             versions: true,
+            camera_frames: self.client.offers(&CAMERA),
+            storage: self.client.offers(&FILES),
+            update: self.client.offers(&UPDATE),
+            unavailable: [
+                ("camera", &CAMERA[..]),
+                ("storage", &FILES[..]),
+                ("update", &UPDATE[..]),
+            ]
+            .into_iter()
+            .filter(|(_, methods)| !self.client.offers(methods))
+            .map(|(part, methods)| (part, self.needs(methods)))
+            .collect(),
         })
     }
 
@@ -396,6 +434,7 @@ impl Device for Bambu {
                     (name.clone(), sw.clone(), hw.clone(), self.client.scrub(sn))
                 })
                 .collect(),
+            update: m.upgrade.display.map(|_| m.upgrade.clone()),
         })
     }
 
@@ -458,7 +497,101 @@ impl Device for Bambu {
             }
             // RecenterDialog's "Go Home" (`command_go_home`).
             Command::Home => self.gcode("G28 \n"),
+            // `command_axis_control("E", 1.0, ±10, 900)`: StatusPanel.cpp
+            // l.3636-3662, the reference's own extruder buttons.
             Command::Extrude(mm) => self.gcode(&format!("M83 \nG0 E{mm:.1} F900\n")),
+            // Section 15's `firmware_upgrade` (proposed): the bridge sends
+            // the reference's `command_upgrade_confirm` (DeviceManager.cpp
+            // l.2095) only to a printer that offers that version and is
+            // not printing. Never through `send_message_to_printer`.
+            Command::Update { version } => {
+                if !self.client.offers(&UPDATE) {
+                    return Err(self.needs(&UPDATE));
+                }
+                self.bridge(
+                    "firmware_upgrade",
+                    json!({ "dev_id": self.dev_id, "module": "ota", "version": version }),
+                )
+                .map(|_| ())
+            }
         }
+    }
+
+    /// Section 15's camera: started by the bridge with the code it holds;
+    /// its frames handed to the page as data, never the printer's address.
+    fn camera(&self, action: &str) -> Result<Value, String> {
+        if !self.client.offers(&CAMERA) {
+            return Err(self.needs(&CAMERA));
+        }
+        match action {
+            "start" => {
+                self.machine()?;
+                let result = self.bridge("camera_start", json!({ "dev_id": self.dev_id }))?;
+                Ok(json!({ "kind": result["kind"] }))
+            }
+            "frame" => Ok(match self.client.frame(&self.dev_id) {
+                Some((seq, jpeg)) => {
+                    json!({ "seq": seq, "picture": format!("data:image/jpeg;base64,{jpeg}") })
+                }
+                None => json!({ "seq": null, "picture": null }),
+            }),
+            "stop" => {
+                self.client.forget_frame(&self.dev_id);
+                self.bridge("camera_stop", json!({ "dev_id": self.dev_id }))?;
+                Ok(json!({}))
+            }
+            other => Err(format!("there is no camera action {other}")),
+        }
+    }
+
+    /// Section 15's `files_list` (`PrinterFileSystem` `LIST_INFO`): the
+    /// card's timelapses, videos or models.
+    fn files(&self, kind: &str) -> Result<Vec<super::DeviceFile>, String> {
+        if !self.client.offers(&FILES) {
+            return Err(self.needs(&FILES));
+        }
+        if !matches!(kind, "timelapse" | "video" | "model") {
+            return Err(format!("there are no files of the kind {kind}"));
+        }
+        self.machine()?;
+        let result = self.bridge(
+            "files_list",
+            json!({ "dev_id": self.dev_id, "type": kind, "storage": "external" }),
+        )?;
+        Ok(result["files"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|file| {
+                let path = file["path"].as_str().filter(|p| !p.is_empty())?;
+                Some(super::DeviceFile {
+                    name: self.client.scrub(file["name"].as_str().unwrap_or(path)),
+                    path: path.to_owned(),
+                    time: file["time"].as_f64().filter(|t| *t > 0.0),
+                    size: file["size"].as_u64(),
+                })
+            })
+            .collect())
+    }
+
+    /// Section 15's `files_delete` (`FILE_DEL`), once confirmed; never the
+    /// file a print is on.
+    fn delete_file(&self, path: &str) -> Result<(), String> {
+        if !self.client.offers(&FILES) {
+            return Err(self.needs(&FILES));
+        }
+        let m = self.machine()?;
+        let name = path.rsplit('/').next().unwrap_or(path);
+        let on = |file: &str| !file.is_empty() && file.rsplit('/').next() == Some(name);
+        if m.printing() && (on(&m.gcode_file) || on(&m.subtask)) {
+            return Err(
+                "The printer is printing this file. Finish or cancel the print first.".into(),
+            );
+        }
+        self.bridge(
+            "files_delete",
+            json!({ "dev_id": self.dev_id, "paths": [path] }),
+        )
+        .map(|_| ())
     }
 }

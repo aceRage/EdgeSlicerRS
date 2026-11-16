@@ -886,8 +886,11 @@ The printer is not printing, so there is nothing to pause.
 The printer has no paused print to resume.
 The printer is not printing, so there is nothing to stop.
 The printer is busy.
+The printer is printing: its firmware cannot be updated now.
+The printer has found no firmware update to install.
+The printer has not said which firmware it would install.
+The firmware the printer offers changed since it was shown. Look at it again.
 A temperature below 0 °C cannot be set.
 This printer cannot do that from here.
 The printer is printing: the axes and the extruder cannot be moved now.
 Before you go on, look at the printer: the bed and the space around the toolhead should be clear, and nobody's hands near it.
-Updating the firmware from here is not built: the list of firmware comes from Bambu's cloud.
