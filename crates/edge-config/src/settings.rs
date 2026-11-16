@@ -145,6 +145,13 @@ impl Settings {
         self.value(key)
     }
 
+    /// The value under `key`, not noted as asked for ([`Settings::noted_by`]):
+    /// for looking at a setting to say that it is not followed, which is
+    /// no reading of it for the print.
+    pub fn unnoted(&self, key: &str) -> Option<&Value> {
+        self.0.get(key)
+    }
+
     pub fn insert(&mut self, key: impl Into<String>, value: Value) -> Option<Value> {
         self.0.insert(key.into(), value)
     }
@@ -423,8 +430,10 @@ mod tests {
         assert_eq!(settings.float("a").unwrap(), Some(1.0));
         assert_eq!(settings.texts("b").unwrap().len(), 2);
         assert_eq!(settings.flag("missing").unwrap(), None);
-        // Going through all of them asks for none by name.
+        // Going through all of them asks for none by name, nor does
+        // looking at one unnoted.
         assert_eq!(settings.iter().count(), 4);
+        assert!(settings.unnoted("d").is_some());
         // A copy is noted with what it was copied from.
         let copy = settings.clone();
         assert_eq!(copy.integer("c").unwrap(), Some(4));

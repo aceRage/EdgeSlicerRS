@@ -2353,10 +2353,21 @@ fn summary(done: &Done, plate: Option<u32>) -> Value {
     }
     gaps.extend(sliced.notes().cloned());
     // Set by hand, and asked for by nothing: said in the form of the
-    // engine's own notes, after them.
-    gaps.extend(done.unread.iter().map(|(key, value)| {
-        format!("{key} \"{value}\": not read by the engine; it changes nothing in this print")
-    }));
+    // engine's own notes, after them, unless the engine said it already.
+    let engine_says = |key: &str| {
+        gaps.iter().any(|note| {
+            note.strip_prefix(key)
+                .is_some_and(|rest| rest.starts_with([' ', ':']))
+        })
+    };
+    let unread: Vec<String> = (done.unread.iter())
+        // A filament's own is named "key (filament N)".
+        .filter(|(key, _)| !engine_says(key.split(" (").next().unwrap_or(key)))
+        .map(|(key, value)| {
+            format!("{key} \"{value}\": not read by the engine; it changes nothing in this print")
+        })
+        .collect();
+    gaps.extend(unread);
 
     let gcode = match &done.gcode {
         Err(error) => json!({ "error": error }),
