@@ -12,6 +12,7 @@
 
 mod arc;
 mod avoid;
+mod bambu_vars;
 pub mod calib;
 mod calib_draw;
 mod chain;
@@ -551,6 +552,12 @@ pub fn write_timed(
         .min()
         .unwrap_or(0);
     variables.set("min_vitrification_temperature", Value::Int(softening));
+    // Bambu Studio 2.x's worked-out names: flushing, and one nozzle's.
+    bambu_vars::flush(&mut variables, settings.len());
+    let by_layer = variables
+        .value("print_sequence")
+        .is_none_or(|sequence| sequence.to_string() != "by object");
+    bambu_vars::single_nozzle(&mut variables, settings.len(), first, &used, by_layer);
     for (index, [x, y]) in change_path(&settings[first]).into_iter().enumerate() {
         variables.set(format!("travel_point_{}_x", index + 1), Value::Float(x));
         variables.set(format!("travel_point_{}_y", index + 1), Value::Float(y));
@@ -1782,6 +1789,13 @@ impl Writer<'_> {
                 }
                 writeln!(self.out, "M109 S{:.0}", s.nozzle_temperature_initial_layer)?;
             }
+        }
+        // The first filament, where the reference groups filaments by
+        // nozzle (GCode.cpp `_do_export`).
+        if s.machine_start_gcode.is_some()
+            && bambu_vars::nozzle_grouping(&self.variables, s.plate.by_object.len())
+        {
+            writeln!(self.out, ";VT{} H-1", self.state.tool)?;
         }
         // The exhaust fan as the print's filaments ask, after the start
         // G-code (GCode.cpp `_do_export`).

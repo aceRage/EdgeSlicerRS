@@ -2040,6 +2040,33 @@ estimate reads what the reference's does: `G28` as a move home, Bambu's
 commands (`T1000`, `T255`) as nothing, and the waits of a Bambu Lab
 printer's end G-code as after the print.
 
+The A2L, H2S and P2S (Bambu Studio 2.x templates) are given the names
+the reference works out for them (2026-11-16; `crates/edge-gcode/src/bambu_vars.rs`):
+`flush_temperatures` and `flush_volumetric_speeds` (each filament's
+`filament_flush_temp`, or `_fast` with `prime_volume_mode` Fast, the top
+of its `nozzle_temperature_range_high` where 0; its
+`filament_flush_volumetric_speed`, its `filament_max_volumetric_speed`
+where 0), and what the reference gives a printer of one nozzle:
+`filament_map` all on nozzle 1, `nozzle_diameter_at_nozzle_id`,
+`initial_filament_id`, `initial_no_support_filament_id`, the nozzle ids
+0 and hotend ids -1, `is_all_bbl_filament`, the auxiliary fan ramp off,
+and fixed values the reference gives where Bambu Studio works them out
+(`has_tpu_in_first_layer`, `cooling_filter_enabled`,
+`hold_chamber_temp_for_flat_print` false, `max_print_z` 0, so the
+check for obstacles under the bed is never written), listed in a note
+where the start G-code uses them. The spot Bambu Studio's picker chooses
+for a timelapse (`has_timelapse_safe_pos`, `timelapse_pos_x`/`_y`) is
+not given, nor `clear_to_x0` printing object by object, so a template
+that needs them is refused. A printer whose `extruder_variant_list`
+names more than one variant (H2S, P2S) has its first filament marked
+after the start G-code (`;VT0 H-1`), as the reference's grouping does.
+A setting the reference declares as a decimal reads as one in a template
+even when written as a whole number (`edge_config::float_number`): the
+P2S's `filament_max_volumetric_speed[…]/2` of 21 is 10.5, not 10. On a
+PLA cube the H2S's 306 and the P2S's 268 lines of start G-code are now
+the reference's; `main` refused both (`cooling_filter_enabled`,
+`initial_no_support_filament_id`).
+
 Projects made with `tools/make_project.py` from the BBL profiles, the
 part centred where the reference's command line moves it and the
 flushing volumes set to those it works out; lines of template G-code

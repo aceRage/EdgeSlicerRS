@@ -303,6 +303,22 @@ pub fn plain_number(key: &str) -> bool {
         .is_ok()
 }
 
+/// The plain numbers the reference declares as decimals (`coFloat`,
+/// `coFloats`, and those made of them), one to a line, sorted: a template
+/// reads such a setting as a decimal even where it is written as a whole
+/// number, so `21 / 2` is 10.5 there, not 10 (PlaceholderParser.cpp, a
+/// `ConfigOptionFloats` read with `set_d`).
+const FLOAT_NUMBERS: &str = include_str!("float_numbers.txt");
+
+/// Whether the reference reads `key` as a decimal number.
+pub fn float_number(key: &str) -> bool {
+    FLOAT_NUMBERS
+        .lines()
+        .collect::<Vec<_>>()
+        .binary_search(&key)
+        .is_ok()
+}
+
 /// A plain number written with a `%` after it, as some profiles write
 /// speeds: the reference reads the number and ignores the rest, so "50%"
 /// is 50 (Config.cpp `deserialize_float_value`, for whole numbers the
