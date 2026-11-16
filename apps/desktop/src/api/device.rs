@@ -18,7 +18,14 @@ use crate::device::{self, Caps, Device};
 use crate::hosts::{self, Connection, Http, snapmaker};
 
 /// The calls answered here.
-pub(super) const JSON: [&str; 3] = ["device_info", "device_read", "device_command"];
+pub(super) const JSON: [&str; 6] = [
+    "device_info",
+    "device_read",
+    "device_command",
+    "device_camera",
+    "device_files",
+    "device_file_delete",
+];
 
 /// What each printer's page has, kept while Device is looked at (asked
 /// again with `refresh`), and whether an "Octo/Klipper" address is a
@@ -27,6 +34,10 @@ pub(super) const JSON: [&str; 3] = ["device_info", "device_read", "device_comman
 pub(super) struct Devices {
     caps: Mutex<HashMap<String, Caps>>,
     kinds: Mutex<HashMap<String, &'static str>>,
+    /// "Storage"'s starts the person was asked about: the advice they
+    /// read, by printer and file; one confirmation, one start
+    /// (ElegooSdcpFiles.cpp `m_confirmed_plan`).
+    pub(super) confirmed: Mutex<HashMap<String, String>>,
 }
 
 /// A printer's page: its adapter, the key its facts are kept under, its
@@ -55,6 +66,12 @@ impl Session {
             "device_info" => self.device_info(args),
             "device_read" => self.device_read(args),
             "device_command" => self.device_command(args),
+            "device_camera" => {
+                let found = self.found(args)?.ok_or_else(|| tr(device::NOT_HERE))?;
+                found.device.camera(super::needed(args, "action")?)
+            }
+            "device_files" => self.device_files(args),
+            "device_file_delete" => self.device_file_delete(args),
             other => Err(format!("there is no call named {other}")),
         }
     }
@@ -144,16 +161,9 @@ impl Session {
                 }),
             },
             "elegoolink" if !hosts::elegoo::is_cc2(&connection.printer_model) => {
-                #[cfg_attr(not(test), allow(unused_mut))]
-                let mut link = hosts::elegoo::ElegooLink::new(&connection, timeouts)?;
-                #[cfg(test)]
-                {
-                    let port = tests::SDCP_PORT.load(std::sync::atomic::Ordering::SeqCst);
-                    if port != 0 {
-                        link.ws_port = port;
-                    }
-                }
-                Box::new(device::sdcp::Sdcp { link })
+                Box::new(device::sdcp::Sdcp {
+                    link: hosts::elegoo::ElegooLink::new(&connection, timeouts)?,
+                })
             }
             "prusalink" | "prusaconnect" => Box::new(device::prusalink::PrusaLink {
                 http: Http::new(&connection, timeouts)?,
@@ -252,6 +262,40 @@ impl Session {
         }
         found.device.command(&caps, &command)?;
         Ok(json!({ "sent": args["action"] }))
+    }
+
+    /// The printer's files of a `kind` (Bambu's "Storage", section 15 of
+    /// ULTRANET_BRIDGE.md): `{ files: [{ name, path, time, size }] }`.
+    fn device_files(&self, args: &Value) -> Result<Value, String> {
+        let found = self.found(args)?.ok_or_else(|| tr(device::NOT_HERE))?;
+        let files = found.device.files(super::needed(args, "kind")?)?;
+        Ok(json!({
+            "files": files
+                .iter()
+                .map(|f| json!({ "name": f.name, "path": f.path, "time": f.time, "size": f.size }))
+                .collect::<Vec<_>>(),
+        }))
+    }
+
+    /// "Delete" in Bambu's "Storage": without `confirmed` the reference's
+    /// question (MediaFilePanel.cpp l.580); with it, the file deleted.
+    fn device_file_delete(&self, args: &Value) -> Result<Value, String> {
+        let path = super::needed(args, "path")?;
+        let found = self.found(args)?.ok_or_else(|| tr(device::NOT_HERE))?;
+        if args.get("confirmed").and_then(Value::as_bool) != Some(true) {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            let confirm = device::Confirm {
+                title: tr("Delete file"),
+                lines: vec![crate::api::i18n::fill(
+                    &tr("Do you want to delete the file '%s' from printer?"),
+                    &[&name],
+                )],
+                ok: tr("Delete"),
+            };
+            return Ok(json!({ "confirm": confirm.json() }));
+        }
+        found.device.delete_file(path)?;
+        Ok(json!({ "deleted": path }))
     }
 }
 

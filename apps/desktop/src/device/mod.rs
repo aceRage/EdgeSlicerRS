@@ -87,6 +87,16 @@ pub struct Caps {
     /// Bambu's "HMS" and "Update" tabs.
     pub hms: bool,
     pub versions: bool,
+    /// The camera as frames the session hands over as data (`Device::camera`),
+    /// not an address: Bambu through the bridge.
+    pub camera_frames: bool,
+    /// The printer's files through `Device::files` (Bambu's "Storage").
+    pub storage: bool,
+    /// "Update firmware" (`Command::Update`).
+    pub update: bool,
+    /// The parts the page would draw but cannot now, and why ("camera",
+    /// "storage", "update"): Bambu's, with a bridge of protocol 1.0.
+    pub unavailable: Vec<(&'static str, String)>,
 }
 
 /// A heater now.
@@ -151,6 +161,8 @@ pub struct Reading {
     pub hms: Vec<Hms>,
     /// (module, software version, hardware version, serial).
     pub versions: Vec<(String, String, String, String)>,
+    /// What the printer says of a firmware update.
+    pub update: Option<crate::ultranet::machine::Upgrade>,
 }
 
 impl Reading {
@@ -183,6 +195,20 @@ pub enum Command {
     Home,
     /// Millimetres of filament, negative to draw it back.
     Extrude(f64),
+    /// "Update firmware" to the version the person was shown.
+    Update {
+        version: String,
+    },
+}
+
+/// A file on the printer as `Device::files` lists it (Bambu's storage).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeviceFile {
+    pub name: String,
+    pub path: String,
+    /// Seconds since 1970.
+    pub time: Option<f64>,
+    pub size: Option<u64>,
 }
 
 /// One family's printers.
@@ -195,6 +221,19 @@ pub trait Device: Send + Sync {
     /// Tells the printer. Called only once `gate` let it through and the
     /// person confirmed it.
     fn command(&self, caps: &Caps, command: &Command) -> Result<(), String>;
+    /// The camera as frames (`caps.camera_frames`): "start", "frame"
+    /// (`{ seq, picture }`, the picture a `data:` URL), "stop".
+    fn camera(&self, _action: &str) -> Result<Value, String> {
+        Err(tr(NOT_HERE))
+    }
+    /// The printer's files of a kind ("timelapse", "video", "model").
+    fn files(&self, _kind: &str) -> Result<Vec<DeviceFile>, String> {
+        Err(tr(NOT_HERE))
+    }
+    /// Deletes one, once the person confirmed it.
+    fn delete_file(&self, _path: &str) -> Result<(), String> {
+        Err(tr(NOT_HERE))
+    }
 }
 
 /// The question asked before a command, in the page's language.
@@ -275,6 +314,9 @@ pub fn command_of(args: &Value) -> Result<Command, String> {
             }
             Command::Extrude(mm)
         }
+        "update" => Command::Update {
+            version: text("version")?,
+        },
         other => return Err(format!("there is no command {other}")),
     })
 }
@@ -514,7 +556,58 @@ pub fn gate(
             }
             confirm(tr("Extruder"), line, false)
         }
+        // The riskiest command here: never while a job is on the printer,
+        // only to a version the printer says it found, the one the person
+        // was shown, and asked with the reference's own words.
+        Command::Update { version } => {
+            if !caps.update {
+                return refuse(&unavailable(caps, "update"));
+            }
+            if on_job(state) || state == "busy" {
+                return refuse(&tr(
+                    "The printer is printing: its firmware cannot be updated now.",
+                ));
+            }
+            let Some(up) = reading.update.as_ref().filter(|up| up.display == Some(1)) else {
+                return refuse(&tr("The printer has found no firmware update to install."));
+            };
+            if up.ota_new.is_empty() && up.versions.is_empty() {
+                return refuse(&tr(
+                    "The printer has not said which firmware it would install.",
+                ));
+            }
+            if *version != up.ota_new {
+                return refuse(&tr(
+                    "The firmware the printer offers changed since it was shown. Look at it again.",
+                ));
+            }
+            let mut lines: Vec<String> = up
+                .versions
+                .iter()
+                .map(|(module, now, new)| format!("{module}: {now} → {new}"))
+                .collect();
+            if lines.is_empty() {
+                lines.push(format!("ota: → {}", up.ota_new));
+            }
+            lines.push(tr(
+                "Are you sure you want to update? This will take about 10 minutes. Do not turn off the power while the printer is updating.",
+            ));
+            Ok(Confirm {
+                title: tr("Update firmware"),
+                lines,
+                ok: tr("Confirm"),
+            })
+        }
     }
+}
+
+/// Why a part of the page cannot be had now (`Caps::unavailable`), else
+/// "cannot do that from here".
+pub fn unavailable(caps: &Caps, part: &str) -> String {
+    caps.unavailable
+        .iter()
+        .find(|(name, _)| *name == part)
+        .map_or_else(|| tr(NOT_HERE), |(_, why)| why.clone())
 }
 
 /// A control the printer has not got.
@@ -542,6 +635,10 @@ pub fn caps_json(caps: &Caps) -> Value {
         "camera": caps.camera,
         "hms": caps.hms,
         "versions": caps.versions,
+        "camera_frames": caps.camera_frames,
+        "storage": caps.storage,
+        "update": caps.update,
+        "unavailable": caps.unavailable.iter().map(|(part, why)| (part.to_string(), Value::from(why.clone()))).collect::<serde_json::Map<_, _>>(),
     })
 }
 
@@ -573,6 +670,11 @@ pub fn reading_json(reading: &Reading) -> Value {
         "camera": reading.camera,
         "hms": reading.hms.iter().map(|h| json!({ "code": h.code, "level": h.level, "module": h.module, "text": h.text })).collect::<Vec<_>>(),
         "versions": reading.versions.iter().map(|(name, sw, hw, sn)| json!({ "name": name, "sw": sw, "hw": hw, "sn": sn })).collect::<Vec<_>>(),
+        "update": reading.update.as_ref().map(|up| json!({
+            "state": up.display, "status": up.status, "progress": up.progress, "forced": up.forced,
+            "version": up.ota_new,
+            "versions": up.versions.iter().map(|(module, now, new)| json!({ "module": module, "now": now, "new": new })).collect::<Vec<_>>(),
+        })),
     })
 }
 

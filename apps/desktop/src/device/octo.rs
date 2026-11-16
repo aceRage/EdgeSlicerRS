@@ -136,6 +136,7 @@ impl Device for Octo {
             camera: self.camera().is_some(),
             hms: false,
             versions: false,
+            ..Caps::default()
         })
     }
 
@@ -205,6 +206,7 @@ impl Device for Octo {
             camera: if caps.camera { self.camera() } else { None },
             hms: Vec::new(),
             versions: Vec::new(),
+            ..Reading::default()
         })
     }
 
@@ -254,6 +256,7 @@ impl Device for Octo {
                 "api/printer/tool",
                 json!({ "command": "extrude", "amount": mm }),
             ),
+            Command::Update { .. } => Err(tr(super::NOT_HERE)),
         }
     }
 }
@@ -294,8 +297,7 @@ pub fn files(http: &Http) -> Result<Vec<crate::hosts::Stored>, String> {
                     .as_f64()
                     .map(|t| t.round() as u32),
                 filament_mm: (mm > 0.0).then_some(mm),
-                filament_g: None,
-                filament_type: String::new(),
+                ..crate::hosts::Stored::default()
             });
         }
     }

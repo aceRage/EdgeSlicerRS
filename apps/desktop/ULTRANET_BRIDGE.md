@@ -22,7 +22,8 @@ Contents: 1. Choices and why. 2. Starting, finding, stopping. 3. Framing.
 4. Hello and versions. 5. Requests. 6. Events. 7. Long-running jobs,
 progress, cancel. 8. `PrintParams`. 9. Errors. 10. The access code.
 11. Security model. 12. C++ mapping, message by message. 13. What the
-bridge implementer decides. 14. What this app does with it.
+bridge implementer decides. 14. What this app does with it. 15. Proposed
+for a later protocol minor.
 
 ## 1. Choices and why
 
@@ -571,27 +572,60 @@ Bambu Lab printer", lists each step):
 
 ## 15. Proposed for a later protocol minor (not part of protocol 1.0)
 
-**Proposed, not in force.** Nothing below is sent by this app, and a bridge
-of protocol 1.0 need not answer it; each would be an addition an older
-reader can ignore (section 4: `minor`), offered in `methods` / `events`
-when a bridge has it. Written down so the Bambu Device page's remaining
-parts (UI_PARITY.md section 4, "One Device page for every printer family")
-have a contract to be built against. Each keeps section 11's model: nothing
+**Proposed, not in force.** A bridge of protocol 1.0 need not answer any of
+this; each is an addition an older reader can ignore (section 4: `minor`),
+offered in `methods` / `events` when a bridge has it. A bridge that offers
+them answers `hello` with `minor` 1. Written down so the Bambu Device page's
+remaining parts (UI_PARITY.md section 4, "One Device page for every printer
+family") have a contract to be built against, and **the app side is built
+against it**: each part of the page is drawn only when the bridge lists its
+methods, and otherwise says that it needs a bridge of this later minor and
+which method the running one lacks. Each keeps section 11's model: nothing
 listens, the access code stays on the pipe, no cloud, no discovery.
 
 | Proposed | Params / result | Plug-in / reference | For |
 | --- | --- | --- | --- |
 | `camera_start` (method) | `dev_id`; result `{ret, kind}` with `kind` "jpeg" (P1, A1: the BambuSource tunnel on port 6000) or "rtsps" (X1, H2, P2S: `rtsps://bblp:<code>@<ip>:322/streaming/live/1`), the stream opened by the bridge with the code it already holds | `MediaPlayCtrl.cpp` l.340-354; the `Bambu_*` tunnel functions of BambuSource (not in the plug-in's `bambu_network_*` entry points: the bridge would load BambuSource too, or UltraNet would offer its own) | "Camera" |
-| `camera_frame` (event) | `dev_id`, `seq`, `jpeg` (base64 of one JPEG frame; for "rtsps" the bridge decodes and re-encodes, at most 2 frames a second) | | the page shows the latest frame in an `<img>` of the app's own origin (a `data:` URL), never the printer's address |
-| `camera_stop` (method) | `dev_id`; result `{}` | | Device not looked at any more |
-| `files_list` (method) | `dev_id`, `type` ("timelapse", "video", "model"), `storage` ("external", "internal"); result `{ret, files: [{name, path, time, size}]}` | `PrinterFileSystem` `LIST_INFO` (0x0001) over the same tunnel (`MediaFilePanel.cpp`) | "Storage" |
-| `files_delete` (method) | `dev_id`, `paths`; result `{ret}` | `FILE_DEL` (0x0003) | "Storage" "Delete", after the reference's "Do you want to delete the file '%s' from printer?" |
-| `files_download` (method, a job) | `dev_id`, `path`, `to` (a path under the system's temporary folder the app names); `job_status` with the percent, `job_done` | `FILE_DOWNLOAD` (0x0004) | "Storage" "Download"; the model's "Print" (`start_sdcard_print` is in protocol 1 already) |
+| `camera_frame` (event) | `dev_id`, `seq` (increasing), `jpeg` (base64 of one JPEG frame, at most 4 MiB before encoding; for "rtsps" the bridge decodes and re-encodes, at most 2 frames a second); only for a printer whose camera the app started | | the page shows the latest frame in an `<img>` of the app's own origin (a `data:` URL), never the printer's address. The app keeps only the latest frame of each printer, and only one that is base64 of a JPEG (`/9j/...`) |
+| `camera_stop` (method) | `dev_id`; result `{ret}` | | Status not looked at any more |
+| `files_list` (method) | `dev_id`, `type` ("timelapse", "video", "model"), `storage` ("external", "internal"); result `{ret, files: [{name, path, time, size}]}` (`path` as the printer names it, `time` seconds since 1970) | `PrinterFileSystem` `LIST_INFO` (0x0001) over the same tunnel (`MediaFilePanel.cpp`) | "Storage" |
+| `files_delete` (method) | `dev_id`, `paths`; result `{ret, refused?}` | `FILE_DEL` (0x0003) | "Storage" "Delete", after the reference's "Do you want to delete the file '%s' from printer?"; the app also refuses the file a print is on |
+| `files_download` (method, a job) | `dev_id`, `path`, `to` (a path under the system's temporary folder the app names); `job_status` with the percent, `job_done` | `FILE_DOWNLOAD` (0x0004) | "Storage" "Download"; the model's "Print" (`start_sdcard_print` is in protocol 1 already). **Not used by the app yet** |
+| `firmware_upgrade` (method) | `dev_id`, `module` ("ota"), `version` (the new version the person was shown and confirmed); result `{ret, refused?}` (`refused` a sentence when the bridge's own check fails, `ret` non-zero) | `MachineObject::command_upgrade_confirm` (DeviceManager.cpp l.2095): `{"upgrade":{"command":"upgrade_confirm","sequence_id":"<n>","src_id":1}}`, qos 1, the push update of `UpgradePanel.cpp` (`confirm_upgrade`) | "Update" "Update firmware" |
 
-Not proposed, on purpose: the firmware list and its download (`get_printer_firmware`,
-"Update firmware"): the list of firmware is a call to Bambu's cloud, which this
-protocol leaves out (section 5); a LAN-only `upgrade` `start` needs a URL from
-it. "Update" shows the versions the printer reports (`get_version`), and says
-updating is not built. The HMS texts come from the reference's own
-`resources/hms` files; their daily refresh from Bambu's cloud is not proposed
-either.
+`ret` is 0 for success, as in section 5; `refused`, when present, is one
+sentence a person can read, never holding the access code.
+
+**The firmware update, in detail.** It is the riskiest command of the
+page, so it has a method of its own instead of a `send_message_to_printer`
+the bridge would pass on blindly: the app never sends an `upgrade` command
+through `send_message_to_printer` (a 1.0 bridge would carry it), and a
+bridge that does not list `firmware_upgrade` gets none. No cloud is
+involved: the printer itself reports whether it found a newer firmware, in
+its `push_status` report's `upgrade_state` (`dis_state` 1 "available",
+`new_version_state` 1, `new_ver_list` `[{name, cur_ver, new_ver}]`,
+`ota_new_version_number`; DeviceManager.cpp l.4580-4670), which the bridge
+already forwards as `local_message`; the printer fetches the firmware
+itself. Before it publishes `upgrade_confirm`, the bridge checks the
+printer's last report again: `dis_state` 1, the offered `ota` version equal
+to `version`, and `gcode_state` not `RUNNING`, `PAUSE`, `PREPARE` or
+`SLICING`; otherwise `ret` -1 with `refused`. The app checks the same
+before it asks the person ("Are you sure you want to update? This will take
+about 10 minutes. Do not turn off the power while the printer is
+updating.", with each module's version and the new one), refuses while a
+job is on the printer, and never sends it on its own. Progress comes back in
+the reports (`dis_state` 2, `status`, `progress`; 3 when finished).
+
+Still not proposed, on purpose: the cloud's firmware list and its download
+(`get_printer_firmware`, `upgrade` `start` with a URL): Bambu's cloud, which
+this protocol leaves out (section 5). The HMS texts come from the
+reference's own `resources/hms` files; their daily refresh from Bambu's
+cloud is not proposed either.
+
+**Changes to this section since it was first proposed** (the device-pages
+pass): `firmware_upgrade` added (the update was "not proposed" before:
+the printer's own `upgrade_state` needs no cloud); `minor` 1 named as the
+minor that offers all of it; `camera_frame`'s `seq`, size limit and
+"only for a printer whose camera was started" stated; `camera_stop`,
+`files_delete` and `firmware_upgrade` answer `{ret}` (and `refused`);
+`files_list`'s `path` and `time` defined. Protocol 1.0 is unchanged.

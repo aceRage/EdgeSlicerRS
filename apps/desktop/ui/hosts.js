@@ -397,6 +397,9 @@ $('send-form').addEventListener('submit', (event) => {
     if (!$('send-elegoo').hidden) {
       remembered.set('elegoolink_timelapse', options.timelapse ? '1' : '0');
       remembered.set('elegoolink_heated_bed_leveling', options.leveling ? '1' : '0');
+      // The plate side too, as the reference keeps its `bedType`: a start
+      // from Storage uses the last send's choices.
+      remembered.set('elegoolink_smooth_plate', options.smooth_plate ? '1' : '0');
     }
     if (start && !$('send-u1').hidden) {
       options.mapping = hostsState.mapping.length ? hostsState.mapping : undefined;
@@ -521,7 +524,7 @@ function showPrinterPage() {
   else if (typeof hideBambuDevice === 'function') hideBambuDevice();
   const url = !bambu && info && info.printer ? info.device_url : null;
   const native = bambu || Boolean(url && info.native);
-  const has = { status: native, storage: Boolean(url), hms: bambu, update: bambu, page: Boolean(url) };
+  const has = { status: native, storage: Boolean(url) || bambu, hms: bambu, update: bambu, page: Boolean(url) };
   const shown = bambu || Boolean(url);
   hostsState.native = native;
   $('device-bar').hidden = !shown;
@@ -576,8 +579,16 @@ $('device-reload').addEventListener('click', () => {
 $('storage-refresh').addEventListener('click', () => showStorage());
 
 let storageTurn = 0;
-// The files as last listed, shown in the order "Sort by" says.
+// The files as last listed, shown in the order "Sort by" says; the one
+// selected (its name); whether an action is under way.
 let storageFiles = [];
+let storageSelected = '';
+let storageBusy = false;
+// The preview pictures, fetched by the session (the printer's key stays
+// there) and handed over as data: by their path on the printer, `null`
+// for one that could not be had. Pictures of files gone are dropped.
+const storagePictures = new Map();
+let storagePictureTurn = 0;
 
 // PrinterStorage.cpp `format_duration`, `format_filament`.
 function storageDuration(seconds) {
@@ -598,6 +609,24 @@ function storageFilament(file) {
   return parts.join(', ');
 }
 
+// "PLA;PLA;PETG" -> "PLA, PETG" (`storage_types_text`).
+function storageTypes(types) {
+  const seen = [];
+  for (const one of (types || '').split(';')) {
+    const type = one.replace(/^[ "]+|[ "]+$/g, '');
+    if (type && !seen.includes(type)) seen.push(type);
+  }
+  return seen.join(', ');
+}
+
+// `storage_modified_text`: "%Y-%m-%d %H:%M".
+function storageModified(seconds) {
+  if (!seconds || seconds <= 0) return '';
+  const d = new Date(seconds * 1000);
+  const two = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
+}
+
 function storageNote(text, kind = 'quiet') {
   const note = $('storage-note');
   note.className = kind;
@@ -605,104 +634,334 @@ function storageNote(text, kind = 'quiet') {
 }
 
 async function showStorage() {
+  if (storageBusy) return;
   const turn = ++storageTurn;
   const info = hostsState.info;
   $('storage-title').textContent = info ? fmt(t('Files on %s'), info.printer) : t('Files on the printer');
+  $('storage-kind').hidden = !isBambu();
+  if (isBambu()) {
+    showBambuStorage(turn);
+    return;
+  }
   if (info && !info.storage) {
-    $('storage-body').replaceChildren();
-    storageNote(info.storage_reason || t('Storage is not available for this printer.'));
+    storageFiles = [];
+    renderStorage();
+    storageNote(`${t('Storage is not available for this printer.')}\n${info.storage_reason || ''}`.trim());
     return;
   }
   storageNote(t('Reading the printer\'s files...'));
+  let files;
   try {
-    ({ files: storageFiles } = await call('printer_files', { project: activeId() }));
+    ({ files } = await call('printer_files', { project: activeId() }));
   } catch (error) {
     if (turn !== storageTurn) return;
-    $('storage-body').replaceChildren();
+    storageFiles = [];
+    renderStorage();
     storageNote(`${t('The printer\'s files could not be listed.')}\n${error.message}`, 'error');
     return;
   }
   if (turn !== storageTurn) return;
-  storageNote(storageFiles.length ? '' : t('There are no G-code files on the printer.'));
+  storageFiles = files;
+  const listed = new Set(files.map((file) => file.thumbnail).filter(Boolean));
+  for (const path of [...storagePictures.keys()]) if (!listed.has(path)) storagePictures.delete(path);
+  storageNote(files.length ? '' : t('There are no G-code files on the printer.'));
+  renderStorage();
+  loadStoragePictures();
+}
+
+// A Bambu Lab printer's card (MediaFilePanel.cpp), through the bridge's
+// proposed `files_list` (ULTRANET_BRIDGE.md section 15): its timelapses,
+// videos or models, listed and deleted; a bridge of protocol 1.0 says
+// why it cannot.
+async function showBambuStorage(turn) {
+  $('storage-title').textContent = t('Storage');
+  storageNote(t('Loading file list...'));
+  let files;
+  try {
+    ({ files } = await call('device_files', { project: activeId(), kind: $('storage-kind').value }));
+  } catch (error) {
+    if (turn !== storageTurn) return;
+    storageFiles = [];
+    renderStorage();
+    storageNote(error.message, 'error');
+    return;
+  }
+  if (turn !== storageTurn) return;
+  storageFiles = files.map((file) => ({
+    name: file.name, path: file.path, size: file.size, modified: file.time, printable: false, bambu: true,
+  }));
+  storageNote(files.length ? '' : t('No files'));
   renderStorage();
 }
 
-function renderStorage() {
+$('storage-kind').addEventListener('change', () => showStorage());
+
+function storageSorted() {
   const order = $('storage-sort').value;
-  const files = storageFiles.slice().sort((a, b) => {
+  return storageFiles.slice().sort((a, b) => {
     if (order === 'oldest') return (a.modified || 0) - (b.modified || 0);
     if (order === 'name') return a.name.localeCompare(b.name);
     if (order === 'size') return (b.size || 0) - (a.size || 0);
     return (b.modified || 0) - (a.modified || 0);
   });
-  const printer = hostsState.info ? hostsState.info.printer : '';
-  $('storage-body').replaceChildren(...files.map((file) => {
-    const print = el('button', { type: 'button', textContent: t('Print'), title: t('Start printing this file on the printer (Enter)'), disabled: !file.printable });
-    const remove = el('button', { type: 'button', textContent: t('Delete'), title: t('Delete this file from the printer (Delete)') });
-    print.addEventListener('click', () => attempt(() => storagePrint(file, printer)));
-    remove.addEventListener('click', () => attempt(() => storageDelete(file, printer)));
-    const modified = file.modified ? new Date(file.modified * 1000).toLocaleString() : '';
-    const types = file.filament_type ? ` (${file.filament_type.split(';').filter(Boolean).join(', ')})` : '';
-    return el('tr', {},
-      el('td', { className: 'cut', textContent: file.name, title: file.name }),
-      el('td', { className: 'num', textContent: storageDuration(file.print_time) }),
-      el('td', { className: 'cut', textContent: storageFilament(file) + (storageFilament(file) ? types : ''), title: file.filament_type || '' }),
-      el('td', { className: 'num', textContent: file.size === null ? '' : sizeText(file.size) }),
-      el('td', { textContent: modified }),
-      el('td', { className: 'storage-actions' }, print, remove));
-  }));
 }
 
-// PrinterStoragePanel.cpp `on_delete`.
-async function storageDelete(file, printer) {
+function storagePicture(file, className) {
+  const data = file.thumbnail ? storagePictures.get(file.thumbnail) : null;
+  const img = el('img', { alt: '', className });
+  if (data) img.src = data;
+  else img.hidden = true;
+  return img;
+}
+
+function renderStorage() {
+  const files = storageSorted();
+  // The selection stays on the same file; with none, the first one, so
+  // its details and Print / Delete are there without a click.
+  if (!files.some((file) => file.name === storageSelected)) storageSelected = files.length ? files[0].name : '';
+  $('storage-table').hidden = !files.length;
+  $('storage-body').replaceChildren(...files.map((file) => {
+    const row = el('tr', { className: file.name === storageSelected ? 'on' : '' },
+      el('td', { className: 'storage-pic' }, storagePicture(file)),
+      el('td', { className: 'cut', textContent: file.name, title: file.name }),
+      el('td', { className: 'num', textContent: storageDuration(file.print_time) }),
+      el('td', { className: 'cut', textContent: storageFilament(file), title: storageTypes(file.filament_type) }),
+      el('td', { className: 'num', textContent: file.size === null ? '' : sizeText(file.size) }),
+      el('td', { textContent: storageModified(file.modified) }));
+    row.dataset.name = file.name;
+    row.setAttribute('aria-selected', String(file.name === storageSelected));
+    row.addEventListener('click', () => storageSelect(file.name));
+    row.addEventListener('dblclick', () => attempt(() => storagePrint()));
+    return row;
+  }));
+  renderStorageDetails();
+}
+
+function storageSelect(name) {
+  storageSelected = name;
+  for (const row of $('storage-body').children) {
+    const on = row.dataset.name === name;
+    row.classList.toggle('on', on);
+    row.setAttribute('aria-selected', String(on));
+    if (on) row.scrollIntoView({ block: 'nearest' });
+  }
+  renderStorageDetails();
+}
+
+// `update_details`: the picture, the name, what the slicer wrote into it.
+function renderStorageDetails() {
+  const file = storageFiles.find((one) => one.name === storageSelected);
+  $('storage-details').hidden = !storageFiles.length;
+  if (!file) {
+    $('storage-detail-name').textContent = storageFiles.length ? t('Select a file to see its details.') : '';
+    $('storage-detail-text').textContent = '';
+    $('storage-preview').hidden = true;
+    $('storage-print').disabled = true;
+    $('storage-delete').disabled = true;
+    return;
+  }
+  const slash = file.name.lastIndexOf('/');
+  $('storage-detail-name').textContent = file.name.slice(slash + 1);
+  const lines = [];
+  const line = (label, value) => { if (value) lines.push(`${label}: ${value}`); };
+  if (slash >= 0) line(t('Folder'), file.name.slice(0, slash));
+  line(t('Print time'), storageDuration(file.print_time));
+  line(t('Filament'), storageFilament(file));
+  line(t('Filament type'), storageTypes(file.filament_type));
+  if (file.layer_count) line(t('Layers'), String(file.layer_count));
+  if (file.layer_height) line(t('Layer height'), `${file.layer_height.toFixed(2)} mm`);
+  if (file.object_height) line(t('Height'), `${file.object_height.toFixed(1)} mm`);
+  if (file.nozzle_diameter) line(t('Nozzle'), `${file.nozzle_diameter.toFixed(2)} mm`);
+  line(t('Size'), file.size === null ? '' : sizeText(file.size));
+  line(t('Modified'), storageModified(file.modified));
+  line(t('Sliced with'), file.slicer);
+  if (!file.printable) lines.push(t('This file type cannot be started from here.'));
+  $('storage-print').hidden = Boolean(file.bambu);
+  $('storage-detail-text').textContent = lines.join('\n');
+  const picture = file.thumbnail ? storagePictures.get(file.thumbnail) : null;
+  // No picture to come (a printer whose list has none): no empty square.
+  $('storage-preview').parentElement.hidden = !file.thumbnail;
+  $('storage-preview').hidden = !picture;
+  if (picture) $('storage-preview').src = picture;
+  else $('storage-preview').removeAttribute('src');
+  $('storage-print').disabled = storageBusy || !file.printable;
+  $('storage-delete').disabled = storageBusy;
+}
+
+// The pictures, one at a time: the selected file's first, then the rows in
+// the order shown (the reference fetches the visible rows and a margin).
+async function loadStoragePictures() {
+  const turn = ++storagePictureTurn;
+  const files = storageSorted();
+  const selected = files.find((file) => file.name === storageSelected);
+  const order = selected ? [selected, ...files.filter((file) => file !== selected)] : files;
+  for (const file of order.slice(0, 60)) {
+    if (!file.thumbnail || storagePictures.has(file.thumbnail)) continue;
+    let picture = null;
+    try {
+      ({ picture } = await call('printer_file_thumbnail', { project: activeId(), path: file.thumbnail }));
+    } catch {
+      picture = null;
+    }
+    if (turn !== storagePictureTurn) return;
+    storagePictures.set(file.thumbnail, picture);
+    for (const row of $('storage-body').children) {
+      if (row.dataset.name === file.name && picture) {
+        const img = row.querySelector('.storage-pic img');
+        img.src = picture;
+        img.hidden = false;
+      }
+    }
+    if (file.name === storageSelected) renderStorageDetails();
+  }
+}
+
+function storageSetBusy(busy) {
+  storageBusy = busy;
+  $('storage-refresh').disabled = busy;
+  renderStorageDetails();
+}
+
+$('storage-print').addEventListener('click', () => attempt(() => storagePrint()));
+$('storage-delete').addEventListener('click', () => attempt(() => storageDelete()));
+// Enter prints, Delete deletes, the arrows move the selection, while the
+// list has the focus; F5 lists again anywhere in the tab.
+$('storage-table').addEventListener('keydown', (event) => {
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+  const files = storageSorted();
+  const at = files.findIndex((file) => file.name === storageSelected);
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    attempt(() => storagePrint());
+  } else if (event.key === 'Delete') {
+    event.preventDefault();
+    attempt(() => storageDelete());
+  } else if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && files.length) {
+    event.preventDefault();
+    const next = Math.max(0, Math.min(files.length - 1, at + (event.key === 'ArrowDown' ? 1 : -1)));
+    storageSelect(files[next].name);
+  }
+});
+$('device-storage').addEventListener('keydown', (event) => {
+  if (event.key !== 'F5') return;
+  event.preventDefault();
+  if (!storageBusy) showStorage();
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'F5' || $('device-storage').hidden || state.tab !== 'device') return;
+  if ($('device-storage').contains(document.activeElement)) return;
+  // A dialog open over the tab keeps the key.
+  if (document.querySelector('dialog[open]')) return;
+  event.preventDefault();
+  if (!storageBusy) showStorage();
+});
+
+// PrinterStoragePanel.cpp `on_delete`: the selected file.
+async function storageDelete() {
+  const file = storageFiles.find((one) => one.name === storageSelected);
+  if (storageBusy || !file) return;
+  if (file.bambu) {
+    await bambuStorageDelete(file);
+    return;
+  }
+  const printer = hostsState.info ? hostsState.info.printer : '';
   const yes = await confirmBox(t('Delete file'), fmt(t('Delete "%s" from %s?\nThis cannot be undone.'), file.name, printer), t('Delete'), t('Cancel'));
   if (!yes) return;
+  storageSetBusy(true);
   storageNote(fmt(t('Deleting %s...'), file.name));
   let answer;
   try {
     answer = await call('printer_file_delete', { project: activeId(), name: file.name });
   } catch (error) {
+    storageSetBusy(false);
     storageNote('');
     await inform(t('Delete file'), `${fmt(t('Could not delete "%s".'), file.name)}\n\n${error.message}`);
     return;
   }
+  storageSetBusy(false);
   storageFiles = storageFiles.filter((one) => one.name !== file.name);
   renderStorage();
   storageNote(fmt(answer.gone ? t('%s was already gone from the printer.') : t('Deleted %s.'), file.name));
 }
 
+// MediaFilePanel.cpp l.580: the session asks, the file is deleted only
+// once confirmed.
+async function bambuStorageDelete(file) {
+  const asked = await call('device_file_delete', { project: activeId(), path: file.path });
+  if (!asked.confirm) return;
+  if (!await confirmBox(asked.confirm.title, asked.confirm.lines.join('\n\n'), asked.confirm.ok, t('Cancel'))) return;
+  storageSetBusy(true);
+  storageNote(fmt(t('Deleting %s...'), file.name));
+  try {
+    await call('device_file_delete', { project: activeId(), path: file.path, confirmed: true });
+  } catch (error) {
+    storageSetBusy(false);
+    storageNote('');
+    await inform(t('Delete file'), `${fmt(t('Could not delete "%s".'), file.name)}\n\n${error.message}`);
+    return;
+  }
+  storageSetBusy(false);
+  storageFiles = storageFiles.filter((one) => one !== file);
+  renderStorage();
+  storageNote(fmt(t('Deleted %s.'), file.name));
+}
+
 // PrinterStoragePanel.cpp `on_print`: what the printer is doing first, a
 // print never over a running or paused job; then the question with what
 // the file holds; the printer is asked again just before it starts.
-async function storagePrint(file, printer) {
+// The Centauri Carbon's choices of the last send, for a start from Storage
+// (the reference's `start_options`); other printers ignore them.
+function storageStartOptions() {
+  return {
+    timelapse: remembered.get('elegoolink_timelapse') === '1',
+    leveling: remembered.get('elegoolink_heated_bed_leveling') === '1',
+    smooth_plate: remembered.get('elegoolink_smooth_plate') === '1',
+  };
+}
+
+async function storagePrint() {
+  const file = storageFiles.find((one) => one.name === storageSelected);
+  if (storageBusy || !file || !file.printable) return;
+  const printer = hostsState.info ? hostsState.info.printer : '';
+  storageSetBusy(true);
   storageNote(t('Asking the printer whether it is free...'));
+  const options = storageStartOptions();
   let check;
   try {
-    check = await call('printer_file_check', { project: activeId(), name: file.name });
+    check = await call('printer_file_check', { project: activeId(), name: file.name, options });
   } catch (error) {
+    storageSetBusy(false);
     storageNote('');
     await inform(t('Print'), `${t('The printer could not be asked whether it is free.')}\n\n${error.message}`);
     return;
   }
+  storageSetBusy(false);
   storageNote('');
   if (check.busy) {
-    const what = check.state === 'paused' ? t('The printer has a paused print.') : t('The printer is printing.');
+    const what = check.state === 'paused' ? t('The printer has a paused print.')
+      : check.state === 'printing' ? t('The printer is printing.') : t('The printer is busy.');
     await inform(t('Print'), `${what}${check.current ? ` (${check.current})` : ''}\n${t('Finish or cancel that job before starting another one.')}`);
     return;
   }
   let details = '';
   if (file.print_time) details += `${t('Print time')}: ${storageDuration(file.print_time)}\n`;
-  if (storageFilament(file)) details += `${t('Filament')}: ${storageFilament(file)}${file.filament_type ? ` (${file.filament_type})` : ''}\n`;
+  if (storageFilament(file)) details += `${t('Filament')}: ${storageFilament(file)}${file.filament_type ? ` (${storageTypes(file.filament_type)})` : ''}\n`;
+  // What this printer adds before a start (English, as the reference's
+  // printer messages on this tab): a Centauri Carbon's choices and CANVAS.
+  if (check.advice) details += `${details ? '\n' : ''}${check.advice}\n\n`;
   const question = `${fmt(t('Start printing "%s" on %s?'), file.name, printer)}\n\n${details}${t('The file prints exactly as it was sliced. Make sure the build plate is clear and the filament the file was sliced for is loaded.')}`;
   if (!(await confirmBox(t('Print'), question, t('Print'), t('Cancel')))) return;
+  storageSetBusy(true);
   storageNote(fmt(t('Starting %s...'), file.name));
   try {
-    await call('printer_file_print', { project: activeId(), name: file.name });
+    await call('printer_file_print', { project: activeId(), name: file.name, options });
   } catch (error) {
+    storageSetBusy(false);
     storageNote('');
     await inform(t('Print'), `${fmt(t('The print of "%s" did not start.'), file.name)}\n\n${error.message}`);
     return;
   }
+  storageSetBusy(false);
   storageNote(fmt(t('Print started: %s. Follow it on the printer page.'), file.name));
 }
 

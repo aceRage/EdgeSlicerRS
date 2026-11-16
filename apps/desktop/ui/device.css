@@ -45,3 +45,10 @@
 .dv-hms-text { overflow-wrap: anywhere; }
 #device-update dl { max-width: 640px; }
 .dv-unit-name:empty { display: none; }
+
+/* Bambu's camera: the latest frame, handed over as data. */
+#dv-camera-img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: var(--surface-well); border-radius: var(--radius-m); }
+#dv-camera-img[hidden], #dv-camera[hidden] { display: none; }
+#dv-camera-note { margin: 0; white-space: pre-line; }
+.dv-update { display: flex; align-items: center; gap: var(--space-3); margin-top: var(--space-3); }
+#dv-update-line { margin: 0; white-space: pre-line; }

@@ -349,6 +349,9 @@
             <section class="card dv-card" id="dv-camera-card" hidden>
               <h3 class="caps">Camera</h3>
               <iframe id="dv-camera" title="Camera" sandbox="allow-same-origin" referrerpolicy="no-referrer"></iframe>
+              <!-- Bambu: frames the session hands over as data (ULTRANET_BRIDGE.md section 15). -->
+              <img id="dv-camera-img" alt="Camera" hidden>
+              <p id="dv-camera-note" class="quiet" hidden></p>
             </section>
             <section class="card dv-card">
               <h3 class="caps">Printing Progress</h3>
@@ -390,12 +393,23 @@
       </div>
       <div id="device-update" class="dv-pane" hidden>
         <dl id="dv-versions" class="bambu-temps"></dl>
-        <p class="quiet">Updating the firmware from here is not built: the list of firmware comes from Bambu's cloud.</p>
+        <!-- "Update firmware" (UpgradePanel.cpp): the version the printer found, asked first, never
+             while printing; through the bridge's proposed `firmware_upgrade` (section 15). -->
+        <div id="dv-update" class="dv-update">
+          <p id="dv-update-line" class="quiet"></p>
+          <button type="button" id="dv-update-btn" class="dv-control" hidden>Update firmware</button>
+        </div>
       </div>
       <iframe id="device-frame" title="Printer page" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads" referrerpolicy="no-referrer"></iframe>
       <div id="device-storage" hidden>
         <div class="storage-head">
           <h2 id="storage-title">Files on the printer</h2>
+          <!-- Bambu (MediaFilePanel.cpp): the kind of file. -->
+          <select id="storage-kind" aria-label="Storage" hidden>
+            <option value="timelapse">Timelapse</option>
+            <option value="video">Video</option>
+            <option value="model">Model</option>
+          </select>
           <label for="storage-sort" class="colon">Sort by</label>
           <select id="storage-sort">
             <option value="newest">Newest first</option>
@@ -405,12 +419,25 @@
           </select>
           <button type="button" id="storage-refresh" title="List the printer's files again (F5)">Refresh</button>
         </div>
-        <div class="storage-scroll">
-          <table class="data-table" id="storage-table">
-            <thead><tr><th>Name</th><th class="num">Print time</th><th>Filament</th><th class="num">Size</th><th>Modified</th><th></th></tr></thead>
-            <tbody id="storage-body"></tbody>
-          </table>
-          <p id="storage-note" class="quiet"></p>
+        <!-- The files, and the selected one's details beside them (PrinterStoragePanel.cpp):
+             Enter or a double click prints, Delete deletes, F5 lists again. -->
+        <div class="storage-body">
+          <div class="storage-scroll">
+            <table class="data-table" id="storage-table" tabindex="0" aria-label="Files on the printer">
+              <thead><tr><th class="storage-pic"></th><th>Name</th><th class="num">Print time</th><th>Filament</th><th class="num">Size</th><th>Modified</th></tr></thead>
+              <tbody id="storage-body"></tbody>
+            </table>
+            <p id="storage-note" class="quiet"></p>
+          </div>
+          <aside id="storage-details" class="storage-details" hidden>
+            <div class="storage-preview"><img id="storage-preview" alt="" hidden></div>
+            <h3 id="storage-detail-name"></h3>
+            <p id="storage-detail-text" class="quiet"></p>
+            <div class="row">
+              <button type="button" id="storage-print" class="primary" title="Start printing this file on the printer (Enter)">Print</button>
+              <button type="button" id="storage-delete" title="Delete this file from the printer (Delete)">Delete</button>
+            </div>
+          </aside>
         </div>
       </div>
     </div>

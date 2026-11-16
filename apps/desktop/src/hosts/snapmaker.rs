@@ -505,6 +505,10 @@ impl Host for SnapmakerLan {
         moonraker::delete_file(&self.http, name)
     }
 
+    fn thumbnail(&self, path: &str) -> Option<Result<Vec<u8>, String>> {
+        Some(moonraker::thumbnail(&self.http, path))
+    }
+
     fn toolheads(&self) -> Option<Result<Vec<Toolhead>, String>> {
         Some(
             self.result(&moonraker::toolheads_query())
