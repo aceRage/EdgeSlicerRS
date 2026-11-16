@@ -2085,6 +2085,17 @@ the browser (800 wide, light): opened from the Calibration menu's code path
 on a U1 with Generic ASA (280 to 240, nine bands), the line said the
 fillet's and the range's errors and the columns and bands, the radius
 went off with its tick, and OK made the project, eight columns on the bed.
+The projects saved and sliced by the pin as plain prints (`edge-parity`;
+its command line cannot make the test): on the U1 245 layers in both,
+filament 3730.9 mm there and 3731.1 here, extruded path 120.27 and 120.28
+m, 3993 retractions in both, time 41m 51s there and 41m 33s here as the
+reference plans; on the Ender with labels 245 layers, 4130.2 and 4129.8
+mm, 4341 and 4344 retractions, travel 148.3 and 89.8 m and time 1h 52m
+and 1h 41m, of which the plain print here not going copy by copy with
+labels off is most (with `exclude_object` on: 125.0 m and 1h 45m); what
+is left is the order of a column's two pillars (the reference takes the
+back one first in every column, here the nearer) and where the aligned
+seam stands on them.
 
 The dialogs of Max flowrate, VFA, the two input shaping tests and
 Cornering were seen in the browser at 1280 dark, English (the pane drew
