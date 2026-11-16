@@ -1587,6 +1587,237 @@ check. Not picked up, waiting for the pin bump (upstream's
 `retract_after_outer_wall` and `precise_z_height` off, every extruder's
 `max_layer_height` raised, and the cut EPSILON lower.
 
+Max flowrate (`calib_max_vol_speed`, the dialog
+`MaxVolumetricSpeed_Test_Dlg`): "Max volumetric speed test" with
+"Settings" ("Start volumetric speed: " 5, "End volumetric speed: " 20,
+"Step: " 0.5, mm³/s after each), "Wiki Guide: Volumetric Speed
+Calibration", and its check ("Please input valid values: start > 0 …":
+start not over 0, step not over 0, or end under start + step). The project
+"Max volumetric speed test": the reference's `SpeedTestStructure.step`,
+which this engine cannot read (it reads no STEP file), as the pin's own
+STEP reader makes it a mesh: tessellated once by the pin's command line
+(`--export-stl`, linear deflection 0.003 mm and angle 0.5, the GUI's
+defaults) and kept in the engine (`crates/edge-engine/calib/
+SpeedTestStructure.stl`, 70036 triangles); narrowed in X to the bed's
+width less 10 mm when wider; cut at `(end - start + 1) / step` mm. Over
+the process `timelapse_type` traditional, `spiral_mode` on,
+`max_volumetric_extrusion_rate_slope` 0; over the first filament
+`filament_max_volumetric_speed` at least 200 (Orca #13658: never lowered)
+and `slow_down_layer_time` 0; over the printer `resonance_avoidance` 0 and
+the first extruder's `max_layer_height` raised to the test's layer where
+under it (a list of the extruders' values is shown as each extruder's
+own, `key#extruder`, where it changed); on the object
+`enable_overhang_speed` 0, `wall_loops` 1, `alternate_extra_wall` 0,
+`top_shell_layers` and `bottom_shell_layers` 0, `sparse_infill_density`
+0%, `overhang_reverse` 0, `outer_wall_line_width` 1.75 nozzles,
+`layer_height` 0.8 nozzle, `brim_type` outer_and_inner, `brim_width` 5,
+`brim_object_gap` 0. At every layer the outer wall's speed is
+`round(start' + z × step')` mm/s, z the layer's top and the dialog's
+values divided by the line's mm³ per mm times the filament's flow ratio
+(GCode.cpp `process_layer`, `m_calib_config` laid over every region's
+settings in `_extrude`); no line is written for it, the moves' F carries
+it. The vase is laid as vase mode lays any (`spiral_vase.rs`): the speed
+set at the layer change, before the spiral's ramp. Checked by the
+engine's test on a U1 and a Creality Ender-3 V3 SE (every layer's first
+wall speed against the formula, no setting left unfollowed) and the
+session's (the check, the settings shown changed, 100 layers, undo). The
+project saved and sliced by the pin's command line as a plain vase
+(`edge-parity`): 101 layers in both at the same heights, extruded path
+126.44 m in both, outer wall 114.90 m and brim 11.54 m in both, wall
+length per layer within 0.00% and each layer's extent within 0.006 mm.
+Not picked up, waiting for the pin bump (upstream's
+`calib_max_vol_speed` since): the model as `SpeedTestStructure.drc`
+(#11861), every extruder's `max_layer_height` raised,
+`precise_z_height` and `enable_wrapping_detection` off.
+
+VFA (`calib_VFA`, the dialog `VFA_Test_Dlg`): "VFA test" with "Settings"
+("Start speed: " 40, "End speed: " 200, "Step: " 10, mm/s after each;
+"Auto-scale for nozzle" and "Auto-adjust to max volumetric speed", ticked,
+with their tooltips), "Wiki Guide: VFA", and its check ("Please input valid
+values: start > 10 …"). Then, as `on_start`: when the end speed is over
+what the filament's maximum volumetric speed lets the outer wall (its
+width, else the line width, else the nozzle) print at the tower's layer
+height (half the nozzle when sized, else the process's), with both ticks
+the layer height is lowered to the largest of the printer's processes'
+layer heights that reaches it, within the machine's limits ("The end speed
+(%.0f mm/s) exceeds …The layer height has been reduced to %.2f mm …"), or,
+when none does, to the smallest with the end speed lowered to the limit
+there, a whole number of steps ("Even at the smallest layer height … Continue?",
+Yes / No), or, with no process layer height, asked ("… Continue anyway?");
+with a tick off it is asked ("Enable "Auto-adjust" …" / "Enable
+"Auto-scale for nozzle" and "Auto-adjust" …"); No keeps the dialog open
+(calib.cpp `calib_vfa_plan`, `calib_vfa_speed_limit`, ported and checked
+by the session's test). **differs**: the candidates are the printer's
+system processes; the reference also takes the person's own compatible
+processes. The project "VFA test": `vfa/VFA.stl` cut at
+`5 × ((end - start) / step + 1)` mm less EPSILON, then sized to the nozzle
+(`nozzle / 0.4` across, each 5 mm block 25 layers of the test's layer
+height) when ticked; over the process `enable_overhang_speed` 0,
+`timelapse_type` traditional, `wall_loops` 1, `alternate_extra_wall` 0,
+`top_shell_layers` 0, `bottom_shell_layers` 1, `sparse_infill_density` 0%,
+`overhang_reverse` 0, `detect_thin_wall` 0, `spiral_mode` on, and when
+sized `initial_layer_print_height` the layer height; over the first
+filament `slow_down_layer_time` 0; over the printer `resonance_avoidance`
+0; on the object `layer_height` (when sized), `brim_type` outer_only,
+`brim_width` 3, `brim_object_gap` 0. **Ahead of the pin**: EdgeSlicer
+`5c07d87e33` (on the fork's main), `bottom_shell_thickness` 0 beside the
+one bottom layer, the option being at the pin and the vase's bottom
+following it there. At every layer the outer wall's speed is the
+stepped value (`calib_stepped_layer_value`: `lround((end - start) / step)
++ 1` bands over the layers, layers 0 and 1 at the start, single
+precision), `std::round`ed, laid over every region's settings as Max
+flowrate's is. Checked by the engine's test on a U1 and a Creality Ender-3
+V3 SE: 425 layers, the last laid again flat after itself (vase mode), every
+layer's wall at its band's speed where the filament melts it, never over
+it, the 17 bands each seen, band 1 from layer 25. The project saved and
+sliced by the pin as a plain vase (`edge-parity`): 426 layer changes in
+both at the same heights (the vase's last layer twice in both), extruded
+path 246.88 m in both, outer wall 241.75 m in both, wall length per layer
+within 0.00% on average; gap fill 0.07 m here and 0.05 m there and
+retractions 118 here and 86 there, all on the first, solid layer. That
+comparison found a difference in the walls of every print with no sparse
+fill, a vase's always: the reference does not look for gaps inside the
+innermost wall when `sparse_infill_density` is 0 (PerimeterGenerator.cpp,
+the loop's last run), where this engine did, so a vase's narrow fins took
+gap fill and its layers were no single loop to spiral; now as the
+reference (`edge-perimeter`, `gaps_inside`). Not picked up, waiting for
+the pin bump (upstream's `calib_VFA` since): the model as `vfa.drc`,
+`enable_wrapping_detection` and `precise_z_height` off.
+
+Input shaping (`calib_input_shaping_freq`, `calib_input_shaping_damp`;
+the dialogs `Input_Shaping_Freq_Test_Dlg`, `Input_Shaping_Damp_Test_Dlg`):
+"Input shaping Frequency test" and "Input shaping Damp test", each with
+"Test model" ("Ringing Tower", "Fast Tower"), "Input shaper type" (the
+types the printer's firmware is offered, `input_shaper_types_for_flavor`
+less "Disable": Klipper "Default", "ZV", "MZV", "ZVD", "EI", "2HUMP_EI",
+"3HUMP_EI"; RepRapFirmware "Default", "MZV", "ZVD", "ZVDD", "ZVDDD",
+"EI2", "EI3", "DAA"; Marlin 2 "ZV"; else "Default"; the first picked) and
+the firmware's note (untranslated, as there), "Frequency settings":
+the frequency test's "X Start / End: " and "Y Start / End: " (15, 110 Hz)
+and "Damp: " (0.150) with "Recommended: Set Damp to 0. …"; the damping
+test's "Frequency X / Y: " (30, 30 Hz) and "Damp Start / End: " (0.000,
+0.400) with "Note: Use previously calculated frequencies."; for
+RepRapFirmware one frequency (range) for both axes ("Frequency (Start /
+End): ", "Frequency: ", with the tooltips "RepRap firmware uses the same
+frequency …"); "Wiki Guide: Input Shaping Calibration"; and the checks
+("Please input valid values: (0 < FreqStart < FreqEnd < 500)", "Please input
+a valid damping factor (0 < Damping/zeta factor <= 1)"; "Please input valid
+values: (0 < Freq < 500)", "Please input a valid damping factor (0 <=
+DampingStart < DampingEnd <= 1)"). The projects "Input shaping Frequency
+test" and "Input shaping Damping test": `ringing_tower.stl` or
+`fast_tower_test.stl`; for Marlin 2 with junction deviation
+`machine_max_junction_deviation` at least 0.25 and `default_junction_deviation`
+0, else `machine_max_jerk_x` and `_y` at least 5 (Klipper) or 10 and
+`default_jerk` 0; over the printer `resonance_avoidance` 0 and
+`input_shaping_emit` 0; over the first filament `slow_down_layer_time`,
+`slow_down_min_speed` 0 and `slow_down_for_layer_cooling` off, and, when
+its pressure advance is off (every U1 filament), `enable_pressure_advance`
+on, `pressure_advance` 0 and `adaptive_pressure_advance` off (Orca
+#11178); over the process `enable_overhang_speed` 0, `accel_to_decel_enable`
+on at 100%, `timelapse_type` traditional, `wall_loops` 1, `top_shell_layers`
+0, `bottom_shell_layers` 1, `sparse_infill_density` 0%, `detect_thin_wall`
+0, `spiral_mode` on, `spiral_mode_smooth` off, `bottom_surface_pattern`
+rectilinear, `outer_wall_speed` the slower of X's and Y's top speed and
+`default_acceleration` and `outer_wall_acceleration` the printing
+acceleration (`calib_machine_motion_limits`, 200 mm/s and 20000 mm/s²
+where unset); on the object `brim_type` outer_only, `brim_width` 3,
+`brim_object_gap` 0. **Ahead of the pin**: EdgeSlicer `5c07d87e33`,
+`bottom_shell_thickness` 0. At every layer, after the fan marker
+(GCode.cpp `process_layer`; GCodeWriter.cpp `set_input_shaping`): the
+frequency test's second layer the type and damping on both axes, every
+other the frequency of both axes (or of each, when their ranges differ),
+spread from the start on the third layer to the end on the last
+(`interpolate_value_across_layers` without a step, single precision); the
+damping test's second layer the type and each axis's frequency, every
+other the damping spread so. In each firmware's words: Klipper
+`SET_INPUT_SHAPER SHAPER_TYPE=… SHAPER_FREQ_X=…`/`DAMPING_RATIO_X=…` (both
+axes for A), RepRapFirmware `M593 P"…" F… S…` (no type for Default and
+DAA), Marlin 2 `M593 [X|Y] F… D…`; the frequency to two places, the
+damping to three, each only when over 0; "; Override input shaping" with
+`gcode_comments`. Marlin before 2 (every Bambu Lab printer) is refused
+("Input shaping is not supported by Marlin < 2.1.2. …"), and any other
+firmware ("Input shaping is only supported by Klipper, RepRapFirmware and
+Marlin 2"), as the reference's writer refuses them. In vase mode the line
+comes after the move up to the layer below's height that the spiral
+starts from and before its ramp, as there, and the last layer's flat copy
+carries it again. Checked by the engine's tests on a U1 (Klipper), a
+Creality Ender-3 V3 SE (Marlin 2) and the U1 told it is RepRapFirmware
+(no shipped RepRapFirmware printer has filaments of its own here):
+every layer's lines against the formulas, the second layer's in each
+firmware's form, the frequency 15 Hz on the first three layers, 62.5 at the
+middle of 103 and 110 at the top; and a Bambu Lab X1 Carbon refused. And
+by the session's (the checks, the printer's types, the settings shown
+changed, slice, undo). The projects saved and sliced by the pin as plain
+vases (`edge-parity`): the ringing tower 301 layers in both, extruded path
+165.73 m and outer wall 159.50 m in both, wall length per layer within
+0.00%; the fast tower 301 layers in both, 53.88 m there and 53.85 here,
+the last layer's flat copy 17.4% shorter here (the one layer that
+differs). Not picked up, waiting for the pin bump (upstream's since): the models
+as `.drc`, `precise_z_height` off.
+
+Cornering (`Calib_Cornering`, the dialog `Cornering_Test_Dlg`): "Cornering
+test" with "Test model" ("Ringing Tower", "Fast Tower", "SCV-V2"),
+"Cornering settings" ("Start: ", "End: "; on Marlin 2 with a junction
+deviation 0.000 to 0.250 mm, else jerk 1.000 to 15.000 mm/s), the note
+("Note: Lower values = sharper corners but slower speeds." and for Marlin 2
+"Marlin 2 Junction Deviation detected: …" / "Marlin 2 Classic Jerk
+detected: …", for RepRapFirmware "RepRap detected: Jerk in mm/s. …"),
+"Wiki Guide: Cornering Calibration"; its check ("Please input valid values:
+(0 <= Cornering <= %s)", 1.000 for junction deviation, else 100.000) and
+past 0.3 (junction deviation) or 20 its warning ("NOTE: High values may
+cause Layer shift (>%s)"), said, then made. The project "Cornering test":
+the model picked; for junction deviation `machine_max_junction_deviation`
+the end and `default_junction_deviation` 0, else `machine_max_jerk_x` and
+`_y` the end and `default_jerk` 0; over the printer `resonance_avoidance`
+0 and, but on Klipper (EdgeSlicer: `SET_INPUT_SHAPER` stays in force on
+the printer), `input_shaping_emit` on with `input_shaping_type` Disable;
+over the first filament `slow_down_layer_time`, `slow_down_min_speed` 0,
+`slow_down_for_layer_cooling` off, `filament_max_volumetric_speed` at least
+200 and pressure advance on at 0 where off; over the process as the input
+shaping tests but the speed and acceleration (`calib_machine_motion_limits`
+with 200 mm/s and 2000 mm/s² where unset) and no `accel_to_decel`; on
+the object the brim. **Ahead of the pin**: EdgeSlicer `5c07d87e33`,
+`bottom_shell_thickness` 0. At every layer (GCode.cpp `process_layer`):
+Marlin 2 with a junction deviation `M205 J` to three places, held to the
+machine's (`set_junction_deviation`), else the jerk
+(`set_jerk_xy`): Klipper `SET_VELOCITY_LIMIT SQUARE_CORNER_VELOCITY=`,
+Repetier `M207 X`, else `M205 X… Y…`, `%g`, held to the machine's x and y
+jerk as the writer keeps them (`std::lrint`, whole numbers), with a Bambu
+Lab printer's `Z… E…` (two digits) beside it, and only when it changes
+(`m_last_jerk`); the value spread from start on the third layer to end on
+the last. The input shaper turned off is told before the print, as
+`input_shaping_emit` asks of any print now (GCode.cpp
+`print_machine_envelope`, `write_input_shaping`, built for this): Marlin
+2 `M593 F0.00 D0.000`, RepRapFirmware `M593 F0.00 S0.000`, Klipper
+`SET_INPUT_SHAPER …`, each axis's frequency, damping and type as set (one
+line for RepRapFirmware and for Disable), never for Marlin before 2 or a
+Bambu Lab printer; with `emit_machine_limits_to_gcode` off only Klipper is
+told it, as there. Checked by the engine's test on a U1 (Klipper), a
+Creality Ender-3 V3 SE (Marlin 2, jerk; and with a junction deviation of
+0.08 set, `M205 J`) and a Bambu Lab X1 Carbon (`M205 X… Y… Z3 E2.5`), 500
+layers each, every layer's line against the formula and `M593 F0.00
+D0.000` before the print on the Ender; by hand, 1 to 15 over 100 layers is
+1 + 14/97 on the fourth, a jerk of 12.6 held to a machine's 12 writes
+`M205 X12 Y12`, a deviation of 0.3 held to 0.25 `M205 J0.250`; and by the
+session's (the check, the settings shown changed, slice, undo). The
+project (SCV-V2 on a U1) saved and sliced by the pin as a plain vase
+(`edge-parity`): 501 layers in both, extruded path 205.93 m there and
+205.92 here, outer wall 196.31 and 196.30 m, wall length per layer within
+0.00%; the first layer's bottom is laid with 121 retractions here and 63
+there (its fill's order). Not picked up, waiting for the pin bump: Orca
+#13253's maximum of 0.3 (from 1.0) and warning from 0.25 (from 0.3) for
+junction deviation, the models as `.drc`, `precise_z_height` off, and
+input shaping turned off on Klipper too.
+
+The dialogs of Max flowrate, VFA, the two input shaping tests and
+Cornering were seen in the browser at 1280 dark, English (the pane drew
+them at 800 wide), and at 900 light, German, opened from the menu, which
+shows the four on and Stringing and Ironing flow off; VFA's check said its
+lowered layer height for the U1's PLA (12 mm³/s: 0.12 mm) and made the
+project. Stringing (temp × retraction) and Ironing flow are not built
+yet: the menu keeps them off with "not yet: calibration models are not
+built".
+
 Checked: the engine's test slices "Pass 1" on a U1 and reads back that
 each tile's top surface feeds its own flow (+10%, -20%, +5% against
 `flowrate_0`, the median per mm within 0.2%), ten layers, and no note of
@@ -3824,7 +4055,11 @@ its tooltip "not yet: …" saying what it waits for.
 | | "Tutorial" | | built: the reference's guide page (`https://github.com/SoftFever/OrcaSlicer/wiki/Calibration`), opened by the window; a browser shows the address. **differs**: no mirror for a person in China (the reference picks it by the country it keeps; this app keeps none) |
 | | "Flow rate" ▸ "Pass 1", "Pass 2", "YOLO (Recommended)", "YOLO (perfectionist version)" | | built: on in Prepare; each makes its test at once, as the reference does (no dialog) |
 | | "Retraction test" | | built: on in Prepare; the dialog "Retraction test" |
-| | "Stringing (temp × retraction)", "Max flowrate", "Cornering", "Input Shaping" ▸ ("Input Shaping Frequency", "Input Shaping Damping/zeta factor"), "VFA", "Ironing flow" | | off: "not yet: calibration models are not built" (the reference has the menu in the macOS bar and a title-bar menu elsewhere) |
+| | "Max flowrate" | | built: on in Prepare; the dialog "Max volumetric speed test" |
+| | "VFA" | | built: on in Prepare; the dialog "VFA test" |
+| | "Input Shaping" ▸ "Input Shaping Frequency", "Input Shaping Damping/zeta factor" | | built: on in Prepare; the dialogs "Input shaping Frequency test" and "Input shaping Damp test" |
+| | "Cornering" | | built: on in Prepare; the dialog "Cornering test" |
+| | "Stringing (temp × retraction)", "Ironing flow" | | off: "not yet: calibration models are not built" (the reference has the menu in the macOS bar and a title-bar menu elsewhere) |
 | Account (macOS) | sign-in for Snapmaker, Bambu Lab, Flashforge | | not shown: the cloud is not this task |
 | Window (macOS) | "Minimize" [Cmd+M], "Zoom" | | the system's own, in the window; off in a browser |
 | | "Next Project", "Previous Project" | Cmd+Shift+] / [ | wired (`project_cycle`); on with two projects |

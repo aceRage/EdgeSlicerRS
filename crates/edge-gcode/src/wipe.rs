@@ -337,7 +337,7 @@ impl Writer<'_> {
         let wanted = if first_layer {
             s.initial_layer_speed
         } else {
-            s.outer_wall_speed
+            self.outer_wall_speed()
         };
         let speed = if role == Role::ExternalPerimeter && s.dont_slow_down_outer_wall {
             self.timing.fixed += length / wanted;

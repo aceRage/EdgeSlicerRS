@@ -31,6 +31,16 @@ pub enum CalibMode {
     PressureAdvancePattern,
     /// `Calib_Retraction_tower`.
     RetractionTower,
+    /// `Calib_Vol_speed_Tower`: "Max flowrate".
+    VolumetricSpeedTower,
+    /// `Calib_VFA_Tower`: "VFA".
+    VfaTower,
+    /// `Calib_Input_shaping_freq`: "Input Shaping Frequency".
+    InputShapingFrequency,
+    /// `Calib_Input_shaping_damp`: "Input Shaping Damping/zeta factor".
+    InputShapingDamping,
+    /// `Calib_Cornering`: "Cornering".
+    Cornering,
 }
 
 /// What the calibration's dialog asked for (calib.hpp `Calib_Params`).
@@ -46,6 +56,22 @@ pub struct CalibParams {
     /// "PA Pattern": the handles on the plate being sliced
     /// ([`CalibParams::on_plate`]), each pattern drawn round its own.
     pub handles: Vec<PatternHandle>,
+    /// "VFA": the layer height the tower prints at (0: half the nozzle),
+    /// which the dialog may lower (`vfa_layer_height`).
+    pub vfa_layer_height: f64,
+    /// "VFA": the model sized to the nozzle (`nozzle_based_resize`).
+    pub nozzle_based_resize: bool,
+    /// Input shaping: the frequencies from and to, of X and of Y
+    /// (`freqStartX`, `freqEndX`, `freqStartY`, `freqEndY`); the damping
+    /// test takes each axis's start.
+    pub freq_x: (f64, f64),
+    pub freq_y: (f64, f64),
+    /// Input shaping and cornering: the model (`test_model`): 0 the
+    /// ringing tower, 1 the fast tower, 2 (cornering) SCV-V2.
+    pub test_model: u32,
+    /// Input shaping: the shaper's type as the printer's
+    /// `input_shaping_type` writes it ("Default", "MZV", …).
+    pub shaper_type: String,
 }
 
 /// A "PA Pattern" handle cube on the plate being sliced: its box across
@@ -69,6 +95,12 @@ impl CalibParams {
             accelerations: Vec::new(),
             speeds: Vec::new(),
             handles: Vec::new(),
+            vfa_layer_height: 0.0,
+            nozzle_based_resize: true,
+            freq_x: (0.0, 1.0),
+            freq_y: (0.0, 1.0),
+            test_model: 0,
+            shaper_type: String::new(),
         }
     }
 
@@ -165,6 +197,40 @@ impl CalibParams {
                 start: self.start,
                 step: self.step,
             },
+            CalibMode::VolumetricSpeedTower => CalibrationKind::VolumetricSpeedTower {
+                start: self.start,
+                step: self.step,
+            },
+            CalibMode::VfaTower => CalibrationKind::VfaTower {
+                start: self.start,
+                end: self.end,
+                step: self.step,
+            },
+            CalibMode::InputShapingFrequency => {
+                let firmware = edge_gcode::ShaperFirmware::of(settings.text("gcode_flavor"))?;
+                CalibrationKind::InputShapingFrequency {
+                    firmware,
+                    damping: self.start,
+                    x: self.freq_x,
+                    y: self.freq_y,
+                    shaper: self.shaper_type.clone(),
+                }
+            }
+            CalibMode::Cornering => CalibrationKind::Cornering {
+                start: self.start,
+                end: self.end,
+                corner: corner(settings, bambu)?,
+            },
+            CalibMode::InputShapingDamping => {
+                let firmware = edge_gcode::ShaperFirmware::of(settings.text("gcode_flavor"))?;
+                CalibrationKind::InputShapingDamping {
+                    firmware,
+                    frequency: (self.freq_x.0, self.freq_y.0),
+                    start: self.start,
+                    end: self.end,
+                    shaper: self.shaper_type.clone(),
+                }
+            }
         };
         let jerk = |axis: &str| -> Result<f64, Failure> {
             Ok(first_number(settings, &format!("machine_max_jerk_{axis}"))?.unwrap_or(0.0))
@@ -426,7 +492,13 @@ pub fn pressure_advance(
             notes = made.notes;
             made.model
         }
-        CalibMode::TemperatureTower | CalibMode::RetractionTower => {
+        CalibMode::TemperatureTower
+        | CalibMode::RetractionTower
+        | CalibMode::VolumetricSpeedTower
+        | CalibMode::VfaTower
+        | CalibMode::InputShapingFrequency
+        | CalibMode::InputShapingDamping
+        | CalibMode::Cornering => {
             return Err("that test is not a pressure advance test".into());
         }
         CalibMode::PressureAdvanceLine => {
@@ -861,6 +933,624 @@ pub fn retraction(
         model,
         process,
         filament: Vec::new(),
+        printer,
+        params: Some(params.clone()),
+        notes: Vec::new(),
+    })
+}
+
+/// The reference's "Max flowrate" model, `volumetric_speed/
+/// SpeedTestStructure.step`, as its STEP reader makes it a mesh: this
+/// engine reads no STEP file, so the mesh is kept here, made once by the
+/// pin's command line (`--export-stl`, which tessellates with the GUI's
+/// defaults, a linear deflection of 0.003 mm and an angle of 0.5,
+/// `load_step`): 70036 triangles, 180 × 100 × 280 mm.
+const SPEED_TEST_STRUCTURE: &[u8] = include_bytes!("../calib/SpeedTestStructure.stl");
+
+/// Scales the model's one object about its middle, its foot kept on the
+/// bed (`ModelObject::scale`, then `ensure_on_bed`).
+fn scale_object(model: &mut Model, bed: Option<&Bed>, scale: [f64; 3]) -> Result<(), Failure> {
+    let copy = model
+        .objects()
+        .first()
+        .and_then(|object| object.copies().first())
+        .map(|copy| copy.id())
+        .ok_or("the calibration model has nothing in it")?;
+    let Some((scene, Some([low, high]))) = model.in_scene(bed, copy) else {
+        return Err("the calibration model has no printed material".into());
+    };
+    let middle = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, low[2]];
+    let sized = scene
+        .then(&Transform::translation([
+            -middle[0], -middle[1], -middle[2],
+        ]))
+        .then(&Transform {
+            rows: [
+                [scale[0], 0.0, 0.0],
+                [0.0, scale[1], 0.0],
+                [0.0, 0.0, scale[2]],
+                [0.0; 3],
+            ],
+        })
+        .then(&Transform::translation(middle));
+    model.set_transforms(bed, &[(copy, sized)])
+}
+
+/// The printable area's box (min x, min y, max x, max y).
+fn bed_box(settings: &Settings) -> Result<[f64; 4], Failure> {
+    let mut bed: Option<[f64; 4]> = None;
+    for corner in settings.texts("printable_area").unwrap_or(&[]) {
+        let (x, y) = corner
+            .split_once('x')
+            .ok_or_else(|| format!("printable_area: {corner} is not a corner"))?;
+        let (x, y): (f64, f64) = (x.trim().parse()?, y.trim().parse()?);
+        let [a, b, c, d] = bed.unwrap_or([x, y, x, y]);
+        bed = Some([a.min(x), b.min(y), c.max(x), d.max(y)]);
+    }
+    Ok(bed.ok_or("the printer has no printable_area")?)
+}
+
+/// The printer's first `max_layer_height` raised to `height` where it is
+/// under it, as a printer setting; none when it is not.
+fn raised_max_layer_height(
+    settings: &Settings,
+    height: f64,
+) -> Result<Option<(String, String)>, Failure> {
+    if let Some(most) = settings.floats("max_layer_height")?
+        && let Some(Some(first)) = most.first()
+        && *first < height
+    {
+        let mut values: Vec<String> = most
+            .iter()
+            .map(|value| value.map_or_else(|| "nil".to_owned(), written))
+            .collect();
+        values[0] = written(height);
+        return Ok(Some(("max_layer_height".to_owned(), values.join(","))));
+    }
+    Ok(None)
+}
+
+/// "Max flowrate" (Plater.cpp `calib_max_vol_speed`): the speed test
+/// structure, narrowed to the bed when wider, one wall 1.75 nozzles wide in
+/// layers of 0.8 nozzle, printed as a vase; cut to `(end - start + 1) /
+/// step` mm. The slice then speeds the outer wall up with the height so
+/// that it melts `start` mm³/s at the bed and `step` more each mm
+/// (`edge_gcode::calib::volumetric_tower_speed`). `settings` are those the
+/// project starts from.
+pub fn max_flowrate(
+    params: &CalibParams,
+    settings: &Settings,
+    bed: Option<&Bed>,
+) -> Result<CalibProject, Failure> {
+    let mesh = edge_mesh::stl::parse(SPEED_TEST_STRUCTURE)
+        .map_err(|error| format!("the speed test structure could not be read: {error}"))?;
+    let mut model = Model::new();
+    model.import(
+        bed,
+        &Model::from(crate::load::Opened::mesh("SpeedTestStructure", mesh)),
+        None,
+    )?;
+    // Narrowed to the bed less 10 mm, in X only.
+    let area = bed_box(settings)?;
+    let width = {
+        let copy = model.objects()[0].copies()[0].id();
+        match model.in_scene(bed, copy) {
+            Some((_, Some([low, high]))) => high[0] - low[0],
+            _ => return Err("the speed test structure has no printed material".into()),
+        }
+    };
+    let narrow = (area[2] - area[0] - 10.0) / width;
+    if narrow < 1.0 {
+        scale_object(&mut model, bed, [narrow, 1.0, 1.0])?;
+    }
+    let nozzle = nozzle_diameter(settings)?;
+    let line_width = nozzle * 1.75;
+    let layer_height = nozzle * 0.8;
+    let mut printer = Vec::new();
+    printer.extend(raised_max_layer_height(settings, layer_height)?);
+    printer.push(("resonance_avoidance".to_owned(), "0".to_owned()));
+    // Orca #13658: never lower the filament's own limit.
+    let max_volumetric = filament_number(settings, "filament_max_volumetric_speed", 0)?;
+    let filament = vec![
+        (
+            "filament_max_volumetric_speed".to_owned(),
+            written(max_volumetric.max(200.0)),
+        ),
+        ("slow_down_layer_time".to_owned(), "0".to_owned()),
+    ];
+    let mut process = Vec::new();
+    let line_width_text = written(line_width);
+    let layer_height_text = written(layer_height);
+    set_on_object(
+        &mut model,
+        bed,
+        &[
+            ("enable_overhang_speed", "0"),
+            ("wall_loops", "1"),
+            ("alternate_extra_wall", "0"),
+            ("top_shell_layers", "0"),
+            ("bottom_shell_layers", "0"),
+            ("sparse_infill_density", "0%"),
+            ("overhang_reverse", "0"),
+            ("outer_wall_line_width", line_width_text.as_str()),
+            ("layer_height", layer_height_text.as_str()),
+            ("brim_type", "outer_and_inner"),
+            ("brim_width", "5"),
+            ("brim_object_gap", "0"),
+        ],
+        &mut process,
+    )?;
+    process.extend(pairs(&[
+        ("timelapse_type", "0"),
+        ("spiral_mode", "1"),
+        ("max_volumetric_extrusion_rate_slope", "0"),
+    ]));
+    // Cut the top: `(end - start + 1) / step` mm.
+    let height = (params.end - params.start + 1.0) / params.step;
+    if height < height_of(&model, bed)? {
+        cut(&mut model, bed, height, Keep::Lower)?;
+    }
+    // The volumetric speeds as the outer wall's speeds: over the plastic
+    // the line lays per mm, at the filament's flow ratio.
+    let flow_ratio = filament_number(settings, "filament_flow_ratio", 0)?;
+    let mm3_per_mm = line_mm3_per_mm(line_width, layer_height) * flow_ratio;
+    if mm3_per_mm <= 0.0 {
+        return Err("Max flowrate: the line lays no plastic (filament_flow_ratio is 0)".into());
+    }
+    let mut speeds = params.clone();
+    speeds.start = params.start / mm3_per_mm;
+    speeds.end = params.end / mm3_per_mm;
+    speeds.step = params.step / mm3_per_mm;
+    Ok(CalibProject {
+        name: "Max volumetric speed test".to_owned(),
+        model,
+        process,
+        filament,
+        printer,
+        params: Some(speeds),
+        notes: Vec::new(),
+    })
+}
+
+/// The VFA tower's base: blocks of 5 mm, each 25 layers of 0.2 mm, made
+/// for a 0.4 mm nozzle (calib.hpp, Orca #14759).
+const VFA_LAYERS_PER_BLOCK: f64 = 25.0;
+const VFA_BASE_BLOCK_HEIGHT: f64 = 5.0;
+const VFA_BASE_NOZZLE_DIAMETER: f64 = 0.4;
+
+/// The fastest outer wall speed, mm/s, the filament's maximum volumetric
+/// speed allows a line of this width and layer height (calib.cpp
+/// `calib_vfa_speed_limit`).
+pub fn vfa_speed_limit(max_volumetric_speed: f64, line_width: f64, layer_height: f64) -> f64 {
+    let mm3_per_mm = line_mm3_per_mm(line_width, layer_height);
+    if mm3_per_mm > 0.0 {
+        max_volumetric_speed / mm3_per_mm
+    } else {
+        1e9
+    }
+}
+
+/// What the VFA dialog does when the end speed is over what the filament
+/// can melt at the tower's layer height (calib.hpp `CalibVfaPlan`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum VfaPlan {
+    /// The end speed is reached at the default layer height.
+    Fits,
+    /// This layer height, one the printer's processes use, reaches it.
+    LayerHeightReduced(f64),
+    /// Even the smallest is too thick: that layer height, and the end
+    /// speed lowered to this (a whole number of steps).
+    EndSpeedLowered(f64, f64),
+    /// No process layer height to take.
+    NoCandidates,
+}
+
+/// calib.cpp `calib_vfa_plan`: the largest of the process layer heights
+/// (within the machine's limits, none above the default) that reaches the
+/// end speed; else the smallest, the end speed lowered to the limit there,
+/// snapped down to a step (at least `start + step`).
+#[allow(clippy::too_many_arguments)]
+pub fn vfa_plan(
+    start: f64,
+    end: f64,
+    step: f64,
+    default_layer_height: f64,
+    mut candidates: Vec<f64>,
+    machine_min_layer_height: f64,
+    machine_max_layer_height: f64,
+    max_volumetric_speed: f64,
+    line_width: f64,
+    nozzle_diameter: f64,
+) -> VfaPlan {
+    let limit = |height: f64| vfa_speed_limit(max_volumetric_speed, line_width, height);
+    if max_volumetric_speed <= 0.0 || nozzle_diameter <= 0.0 || end <= limit(default_layer_height) {
+        return VfaPlan::Fits;
+    }
+    candidates.retain(|&height| {
+        !(height <= 0.0
+            || (machine_min_layer_height > 0.0 && height < machine_min_layer_height - 1e-6)
+            || (machine_max_layer_height > 0.0 && height > machine_max_layer_height + 1e-6))
+    });
+    candidates.sort_by(f64::total_cmp);
+    candidates.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+    let Some(&smallest) = candidates.first() else {
+        return VfaPlan::NoCandidates;
+    };
+    for &height in candidates.iter().rev() {
+        if height > default_layer_height + 1e-6 {
+            continue;
+        }
+        if limit(height) >= end {
+            return VfaPlan::LayerHeightReduced(height);
+        }
+    }
+    let mut lowered = if step > 0.0 {
+        (limit(smallest) / step).floor() * step
+    } else {
+        limit(smallest)
+    };
+    if lowered < start + step {
+        lowered = start + step;
+    }
+    VfaPlan::EndSpeedLowered(smallest, lowered)
+}
+
+/// "VFA" (Plater.cpp `calib_VFA`): the VFA tower of 5 mm blocks, cut to
+/// one block a step (EPSILON under the block's top), sized to the nozzle
+/// with each block 25 layers of the test's layer height when asked
+/// (`nozzle_based_resize`); one wall, one bottom layer, vase mode. The
+/// slice then steps the outer wall's speed from `start` to `end` over the
+/// layers (`edge_gcode::calib::vfa_tower_speed`). `settings` are those the
+/// project starts from.
+pub fn vfa(
+    params: &CalibParams,
+    settings: &Settings,
+    calib_dir: &Path,
+    bed: Option<&Bed>,
+) -> Result<CalibProject, Failure> {
+    let mut model = load(calib_dir, "vfa/VFA.stl", bed)?;
+    let mut nozzle = nozzle_diameter(settings)?;
+    if nozzle <= 0.0 {
+        nozzle = VFA_BASE_NOZZLE_DIAMETER;
+    }
+    let layer_height = if params.vfa_layer_height > 0.0 {
+        params.vfa_layer_height
+    } else {
+        nozzle / 2.0
+    };
+    // Cut on the model as it is, at the base blocks' height; EPSILON under
+    // the block's top so the cut misses its flat face.
+    let height =
+        VFA_BASE_BLOCK_HEIGHT * ((params.end - params.start) / params.step + 1.0) - EPSILON;
+    if height < height_of(&model, bed)? {
+        cut(&mut model, bed, height, Keep::Lower)?;
+    }
+    if params.nozzle_based_resize {
+        let xy = nozzle / VFA_BASE_NOZZLE_DIAMETER;
+        let z = VFA_LAYERS_PER_BLOCK * layer_height / VFA_BASE_BLOCK_HEIGHT;
+        if (xy - 1.0).abs() > EPSILON || (z - 1.0).abs() > EPSILON {
+            scale_object(&mut model, bed, [xy, xy, z])?;
+        }
+    }
+    let mut process = pairs(&[
+        ("enable_overhang_speed", "0"),
+        ("timelapse_type", "0"),
+        ("wall_loops", "1"),
+        ("alternate_extra_wall", "0"),
+        ("top_shell_layers", "0"),
+        ("bottom_shell_layers", "1"),
+        // Ahead of the pin: EdgeSlicer 5c07d87e33 (on the fork's main):
+        // with one bottom layer, no bottom thickness either, which would
+        // add solid layers under the test (a vase's bottom follows it).
+        ("bottom_shell_thickness", "0"),
+        ("sparse_infill_density", "0%"),
+        ("overhang_reverse", "0"),
+        ("detect_thin_wall", "0"),
+        ("spiral_mode", "1"),
+    ]);
+    let layer_height_text = written(layer_height);
+    let mut own = vec![
+        ("brim_type", "outer_only"),
+        ("brim_width", "3"),
+        ("brim_object_gap", "0"),
+    ];
+    if params.nozzle_based_resize {
+        process.push((
+            "initial_layer_print_height".to_owned(),
+            layer_height_text.clone(),
+        ));
+        own.insert(0, ("layer_height", layer_height_text.as_str()));
+    }
+    set_on_object(&mut model, bed, &own, &mut process)?;
+    let mut made = params.clone();
+    made.vfa_layer_height = if params.nozzle_based_resize {
+        layer_height
+    } else {
+        0.0
+    };
+    Ok(CalibProject {
+        name: "VFA test".to_owned(),
+        model,
+        process,
+        filament: pairs(&[("slow_down_layer_time", "0")]),
+        printer: pairs(&[("resonance_avoidance", "0")]),
+        params: Some(made),
+        notes: Vec::new(),
+    })
+}
+
+/// The machine's motion limits a tower prints at (calib.cpp
+/// `calib_machine_motion_limits`): the slower of X's and Y's top speeds
+/// and the printing acceleration, each `fallback` where not set.
+fn motion_limits(
+    settings: &Settings,
+    fallback_speed: f64,
+    fallback_acceleration: f64,
+) -> Result<(f64, f64), Failure> {
+    let first =
+        |key: &str| -> Result<f64, Failure> { Ok(first_number(settings, key)?.unwrap_or(0.0)) };
+    let (x, y) = (first("machine_max_speed_x")?, first("machine_max_speed_y")?);
+    let acceleration = first("machine_max_acceleration_extruding")?;
+    Ok((
+        if x > 0.0 && y > 0.0 {
+            x.min(y)
+        } else {
+            fallback_speed
+        },
+        if acceleration > 0.0 {
+            acceleration
+        } else {
+            fallback_acceleration
+        },
+    ))
+}
+
+/// PresetFlowVariant.hpp `calib_enable_pressure_advance_if_off` (Orca
+/// #11178): a filament with pressure advance off gets it on at 0, adaptive
+/// off, for the test; one with it on keeps its own.
+fn pressure_advance_if_off(settings: &Settings, filament: &mut Set) -> Result<(), Failure> {
+    let on = settings
+        .texts("enable_pressure_advance")
+        .and_then(|values| values.first())
+        .is_some_and(|value| value == "1");
+    if !on {
+        filament.extend(pairs(&[
+            ("enable_pressure_advance", "1"),
+            ("pressure_advance", "0"),
+            ("adaptive_pressure_advance", "0"),
+        ]));
+    }
+    Ok(())
+}
+
+/// The towers the input shaping and cornering tests print: 0 the ringing
+/// tower, 1 the fast tower, 2 SCV-V2 (cornering only).
+fn shaping_model(calib_dir: &Path, test_model: u32, bed: Option<&Bed>) -> Result<Model, Failure> {
+    load(
+        calib_dir,
+        match test_model {
+            0 => "input_shaping/ringing_tower.stl",
+            1 => "input_shaping/fast_tower_test.stl",
+            _ => "cornering/SCV-V2.stl",
+        },
+        bed,
+    )
+}
+
+/// "Input Shaping Frequency" and "Input Shaping Damping/zeta factor"
+/// (Plater.cpp `calib_input_shaping_freq`, `calib_input_shaping_damp`):
+/// the ringing or the fast tower, one wall, one bottom layer, vase mode,
+/// at the machine's top speed and acceleration, its jerk (or junction
+/// deviation) loosened; the slice then sets the shaper at each layer
+/// (`edge_gcode::calib::input_shaping_line`). `settings` are those the
+/// project starts from.
+pub fn input_shaping(
+    params: &CalibParams,
+    settings: &Settings,
+    calib_dir: &Path,
+    bed: Option<&Bed>,
+) -> Result<CalibProject, Failure> {
+    let name = match params.mode {
+        CalibMode::InputShapingFrequency => "Input shaping Frequency test",
+        CalibMode::InputShapingDamping => "Input shaping Damping test",
+        _ => return Err("that test is not an input shaping test".into()),
+    };
+    // The firmware is told the shaper per layer; one that cannot be is
+    // refused as the reference's writer refuses it, before anything.
+    edge_gcode::ShaperFirmware::of(settings.text("gcode_flavor"))?;
+    let mut model = shaping_model(calib_dir, params.test_model.min(1), bed)?;
+    let mut process: Set = Vec::new();
+    let mut printer: Set = Vec::new();
+    let klipper = settings.text("gcode_flavor") == Some("klipper");
+    if junction_deviation(settings)? {
+        let deviation = first_number(settings, "machine_max_junction_deviation")?.unwrap_or(0.0);
+        printer.push((
+            "machine_max_junction_deviation".to_owned(),
+            written(deviation.max(0.25)),
+        ));
+        process.push(("default_junction_deviation".to_owned(), "0".to_owned()));
+    } else {
+        let jerk = if klipper { 5.0 } else { 10.0 };
+        for axis in ["x", "y"] {
+            let key = format!("machine_max_jerk_{axis}");
+            let had = first_number(settings, &key)?.unwrap_or(0.0);
+            printer.push((key, written(had.max(jerk))));
+        }
+        process.push(("default_jerk".to_owned(), "0".to_owned()));
+    }
+    printer.extend(pairs(&[
+        ("resonance_avoidance", "0"),
+        ("input_shaping_emit", "0"),
+    ]));
+    let mut filament = pairs(&[
+        ("slow_down_layer_time", "0"),
+        ("slow_down_min_speed", "0"),
+        ("slow_down_for_layer_cooling", "0"),
+    ]);
+    pressure_advance_if_off(settings, &mut filament)?;
+    let (speed, acceleration) = motion_limits(settings, 200.0, 20000.0)?;
+    process.extend(pairs(&[
+        ("enable_overhang_speed", "0"),
+        // A 100% factor sends Klipper MINIMUM_CRUISE_RATIO=0 with every
+        // acceleration change, for the whole test.
+        ("accel_to_decel_enable", "1"),
+        ("accel_to_decel_factor", "100%"),
+        ("timelapse_type", "0"),
+        ("wall_loops", "1"),
+        ("top_shell_layers", "0"),
+        ("bottom_shell_layers", "1"),
+        // Ahead of the pin: EdgeSlicer 5c07d87e33 (on the fork's main).
+        ("bottom_shell_thickness", "0"),
+        ("sparse_infill_density", "0%"),
+        ("detect_thin_wall", "0"),
+        ("spiral_mode", "1"),
+        ("spiral_mode_smooth", "0"),
+        ("bottom_surface_pattern", "rectilinear"),
+    ]));
+    process.push(("outer_wall_speed".to_owned(), written(speed)));
+    process.push(("default_acceleration".to_owned(), written(acceleration)));
+    process.push(("outer_wall_acceleration".to_owned(), written(acceleration)));
+    set_on_object(
+        &mut model,
+        bed,
+        &[
+            ("brim_type", "outer_only"),
+            ("brim_width", "3"),
+            ("brim_object_gap", "0"),
+        ],
+        &mut process,
+    )?;
+    Ok(CalibProject {
+        name: name.to_owned(),
+        model,
+        process,
+        filament,
+        printer,
+        params: Some(params.clone()),
+        notes: Vec::new(),
+    })
+}
+
+/// How the cornering test tells this printer its corner speed (GCode.cpp
+/// `process_layer`, `Calib_Cornering`; GCodeWriter.cpp
+/// `apply_print_config` for the limits it is held to).
+fn corner(settings: &Settings, bambu: bool) -> Result<edge_gcode::Corner, Failure> {
+    let flavor = settings.text("gcode_flavor").unwrap_or("marlin");
+    let first =
+        |key: &str| -> Result<f64, Failure> { Ok(first_number(settings, key)?.unwrap_or(0.0)) };
+    if junction_deviation(settings)? {
+        return Ok(edge_gcode::Corner::JunctionDeviation {
+            max: first("machine_max_junction_deviation")?,
+        });
+    }
+    // The machine's x and y jerk as the writer keeps them: `std::lrint`
+    // (to the nearest whole number, halves to even) for the flavours that
+    // use the machine limits, else none.
+    let mach_limits = matches!(flavor, "marlin" | "marlin2" | "klipper" | "reprapfirmware");
+    let kept = |value: f64| {
+        if mach_limits {
+            value.round_ties_even()
+        } else {
+            0.0
+        }
+    };
+    Ok(edge_gcode::Corner::Jerk {
+        form: match flavor {
+            "klipper" => edge_gcode::JerkForm::Klipper,
+            "repetier" => edge_gcode::JerkForm::Repetier,
+            _ => edge_gcode::JerkForm::Marlin,
+        },
+        max: [
+            kept(first("machine_max_jerk_x")?),
+            kept(first("machine_max_jerk_y")?),
+        ],
+        bambu: bambu
+            .then(|| -> Result<[f64; 2], Failure> {
+                Ok([first("machine_max_jerk_z")?, first("machine_max_jerk_e")?])
+            })
+            .transpose()?,
+    })
+}
+
+/// "Cornering" (Plater.cpp `Calib_Cornering`): the ringing tower, the fast
+/// tower or SCV-V2, one wall, one bottom layer, vase mode, at the
+/// machine's top speed and acceleration, its jerk (or junction deviation)
+/// limit at the test's end; the slice then spreads the corner speed from
+/// `start` to `end` over the layers. `settings` are those the project
+/// starts from.
+pub fn cornering(
+    params: &CalibParams,
+    settings: &Settings,
+    calib_dir: &Path,
+    bed: Option<&Bed>,
+) -> Result<CalibProject, Failure> {
+    let mut model = shaping_model(calib_dir, params.test_model, bed)?;
+    let end = written(params.end);
+    let mut process: Set = Vec::new();
+    let mut printer: Set = Vec::new();
+    if junction_deviation(settings)? {
+        printer.push(("machine_max_junction_deviation".to_owned(), end.clone()));
+        process.push(("default_junction_deviation".to_owned(), "0".to_owned()));
+    } else {
+        printer.push(("machine_max_jerk_x".to_owned(), end.clone()));
+        printer.push(("machine_max_jerk_y".to_owned(), end));
+        process.push(("default_jerk".to_owned(), "0".to_owned()));
+    }
+    printer.push(("resonance_avoidance".to_owned(), "0".to_owned()));
+    // EdgeSlicer: a Klipper printer's input shaping is left as it is set
+    // (SET_INPUT_SHAPER stays in force on the printer until a restart);
+    // every other is told to turn it off for the test.
+    if settings.text("gcode_flavor") != Some("klipper") {
+        printer.extend(pairs(&[
+            ("input_shaping_emit", "1"),
+            ("input_shaping_type", "Disable"),
+        ]));
+    }
+    let max_volumetric = filament_number(settings, "filament_max_volumetric_speed", 0)?;
+    let mut filament = pairs(&[
+        ("slow_down_layer_time", "0"),
+        ("slow_down_min_speed", "0"),
+        ("slow_down_for_layer_cooling", "0"),
+    ]);
+    // Orca #13658: never lower the filament's own limit.
+    filament.push((
+        "filament_max_volumetric_speed".to_owned(),
+        written(max_volumetric.max(200.0)),
+    ));
+    pressure_advance_if_off(settings, &mut filament)?;
+    let (speed, acceleration) = motion_limits(settings, 200.0, 2000.0)?;
+    process.extend(pairs(&[
+        ("enable_overhang_speed", "0"),
+        ("timelapse_type", "0"),
+        ("wall_loops", "1"),
+        ("top_shell_layers", "0"),
+        ("bottom_shell_layers", "1"),
+        // Ahead of the pin: EdgeSlicer 5c07d87e33 (on the fork's main).
+        ("bottom_shell_thickness", "0"),
+        ("sparse_infill_density", "0%"),
+        ("detect_thin_wall", "0"),
+        ("spiral_mode", "1"),
+        ("spiral_mode_smooth", "0"),
+        ("bottom_surface_pattern", "rectilinear"),
+    ]));
+    process.push(("outer_wall_speed".to_owned(), written(speed)));
+    process.push(("default_acceleration".to_owned(), written(acceleration)));
+    process.push(("outer_wall_acceleration".to_owned(), written(acceleration)));
+    set_on_object(
+        &mut model,
+        bed,
+        &[
+            ("brim_type", "outer_only"),
+            ("brim_width", "3"),
+            ("brim_object_gap", "0"),
+        ],
+        &mut process,
+    )?;
+    Ok(CalibProject {
+        name: "Cornering test".to_owned(),
+        model,
+        process,
+        filament,
         printer,
         params: Some(params.clone()),
         notes: Vec::new(),
