@@ -3743,7 +3743,7 @@ page, "Nozzle rack (experimental)" on an extruder's, and the
 | A filament's "Compatible printers condition", "Compatible process profiles condition" | **differs**: shown, not offered: they decide which presets are offered with which, which matters to a saved preset only |
 | What a value may be (Field.cpp) | **added**, as for the process: refused in the page and by the session, with the reason; a point is "XxY" |
 | What the engine would stop at | **added**: refused with the engine's reason, asked with the block printed in the filament being set |
-| A setting set by hand that nothing read | **added**: with the print's notes, named with whose it is: `fan_max_speed (filament 1) "60": not read by the engine; it changes nothing in this print` |
+| A setting set by hand that nothing read | **added**: with the print's notes, named with whose it is: `fan_max_speed (filament 1) "60": not read by the engine; it changes nothing in this print`; left out where the engine's own note on the setting says it already (`z_offset "0.2": not followed; the print is made as if it were "0"`, from the engine's table of settings it does not follow, `edge-engine/src/unfollowed.rs`, given whenever one is set to a value that changes the reference's print, by hand or by a preset; English in every language, as the engine's other notes are) |
 
 Since the sixteenth pass a filament's or the printer's preset may be one
 of the person's (section 8, "User presets"): the head of the panel carries

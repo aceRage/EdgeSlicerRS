@@ -425,6 +425,20 @@ fn what_the_engine_does_with_an_option_is_its_own_answer() {
     );
     assert_eq!(hollow["set"]["hollow_interior"], "1");
     assert!(listed(&hollow, "unread", "hollow_interior"));
+    // Nothing reads it, and the engine says so when it is on.
+    assert!(
+        hollow["notes"]["hollow_interior"][0]
+            .as_str()
+            .unwrap()
+            .contains("not followed")
+    );
+    // Read by no slice, and nothing for the engine to say of it.
+    let numbered = ask(
+        &session,
+        "process_set",
+        json!({ "key": "gcode_add_line_number", "value": true }),
+    );
+    assert!(listed(&numbered, "unread", "gcode_add_line_number"));
     // Read and followed: nothing is said of it.
     let last = ask(
         &session,
@@ -463,8 +477,17 @@ fn what_the_engine_does_with_an_option_is_its_own_answer() {
     );
     assert!(
         gaps.contains(
-            &"hollow_interior \"1\": not read by the engine; it changes nothing in this print"
+            &"gcode_add_line_number \"1\": not read by the engine; it changes nothing in this print"
         ),
+        "{gaps:?}"
+    );
+    // Where the engine says it already, it is said once, in the engine's
+    // words.
+    assert_eq!(
+        gaps.iter()
+            .filter(|gap| gap.starts_with("hollow_interior"))
+            .collect::<Vec<_>>(),
+        [&"hollow_interior \"1\": not followed; the print is made as if it were \"0\""],
         "{gaps:?}"
     );
     // What was read is not among them, set by hand or not.
