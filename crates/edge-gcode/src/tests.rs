@@ -730,6 +730,7 @@ fn temperatures_change_after_the_first_layer() {
     assert!(beds(&same).is_empty());
     let klipper = PrintSettings {
         klipper: true,
+        acceleration_form: AccelerationForm::Klipper,
         ..same.clone()
     };
     assert_eq!(beds(&klipper), ["M140 S60 ; set bed temperature"]);
@@ -1349,6 +1350,103 @@ fn fan_runs_faster_on_layers_that_take_less_time() {
 }
 
 #[test]
+fn marlin_2_is_told_printing_and_travel_accelerations_apart() {
+    let limits = |settings: &PrintSettings| -> Vec<String> {
+        let text = printed(2, settings);
+        text.lines()
+            .filter(|line| {
+                ["SET_VELOCITY", "M204", "M201", "M202"]
+                    .iter()
+                    .any(|start| line.starts_with(start))
+            })
+            .map(str::to_owned)
+            .collect()
+    };
+    let marlin2 = PrintSettings {
+        acceleration_form: AccelerationForm::PrintTravel,
+        default_acceleration: 10000.0,
+        outer_wall_acceleration: 5000.0,
+        initial_layer_acceleration: 500.0,
+        travel_acceleration: 12000.0,
+        ..basic()
+    };
+    // GCodeWriter.cpp `set_acceleration_internal`: `M204 P` for printing,
+    // `M204 T` for travel, each said again only when it changes, so the
+    // travel after the outer wall needs no line of its own.
+    assert_eq!(
+        limits(&marlin2),
+        [
+            "M204 T500",
+            "M204 P500",
+            "M204 T12000",
+            "M204 P5000",
+            "M204 P10000",
+        ]
+    );
+    // Held to the machine's limits: printing to the extruding one, travel
+    // to the travel one.
+    let held = PrintSettings {
+        max_print_acceleration: 8000.0,
+        max_travel_acceleration: 9000.0,
+        ..marlin2.clone()
+    };
+    assert_eq!(
+        limits(&held)[2..],
+        ["M204 T9000", "M204 P5000", "M204 P8000"]
+    );
+    // Repetier says them with M201 and M202; Marlin before 2 with one
+    // `M204 S`, printing and travel alike.
+    let repetier = PrintSettings {
+        acceleration_form: AccelerationForm::Repetier,
+        ..marlin2.clone()
+    };
+    assert_eq!(
+        limits(&repetier)[..3],
+        ["M202 X500 Y500", "M201 X500 Y500", "M202 X12000 Y12000"]
+    );
+    let marlin = PrintSettings {
+        acceleration_form: AccelerationForm::Single,
+        ..marlin2.clone()
+    };
+    assert_eq!(
+        limits(&marlin)[..3],
+        ["M204 S500", "M204 S12000", "M204 S5000"]
+    );
+}
+
+#[test]
+fn acceleration_forms_and_limits_follow_the_flavor() {
+    use edge_config::Settings;
+    for (flavor, form) in [
+        (Some("klipper"), AccelerationForm::Klipper),
+        (Some("marlin2"), AccelerationForm::PrintTravel),
+        (Some("reprapfirmware"), AccelerationForm::PrintTravel),
+        (Some("repetier"), AccelerationForm::Repetier),
+        (Some("marlin"), AccelerationForm::Single),
+        (Some("reprap"), AccelerationForm::Single),
+        (None, AccelerationForm::Single),
+    ] {
+        assert_eq!(AccelerationForm::of(flavor), form, "{flavor:?}");
+    }
+    let limits = |flavor: &str| {
+        let json = format!(
+            r#"{{"gcode_flavor": "{flavor}", "machine_max_acceleration_extruding": ["20000"],
+                "machine_max_acceleration_travel": ["9000.5"], "machine_max_acceleration_x": ["15000"],
+                "machine_max_acceleration_y": ["16000"]}}"#
+        );
+        let settings = Settings::from_json(&json).unwrap();
+        let s = PrintSettings::from_settings(&settings).unwrap();
+        (s.max_print_acceleration, s.max_travel_acceleration)
+    };
+    assert_eq!(limits("marlin2"), (20000.0, 9001.0));
+    assert_eq!(limits("reprapfirmware"), (20000.0, 9001.0));
+    // Klipper's one limit covers every move: the least of the three.
+    assert_eq!(limits("klipper"), (15000.0, 15000.0));
+    assert_eq!(limits("marlin"), (20000.0, 0.0));
+    assert_eq!(limits("repetier"), (0.0, 0.0));
+}
+
+#[test]
 fn acceleration_follows_the_feature_and_the_first_layer() {
     let limits = |settings: &PrintSettings| -> Vec<String> {
         let text = printed(2, settings);
@@ -1359,6 +1457,7 @@ fn acceleration_follows_the_feature_and_the_first_layer() {
     };
     let klipper = PrintSettings {
         klipper: true,
+        acceleration_form: AccelerationForm::Klipper,
         accel_to_decel_factor: Some(0.5),
         default_acceleration: 10000.0,
         outer_wall_acceleration: 5000.0,
@@ -1395,6 +1494,7 @@ fn acceleration_follows_the_feature_and_the_first_layer() {
     );
     let marlin = PrintSettings {
         klipper: false,
+        acceleration_form: AccelerationForm::Single,
         accel_to_decel_factor: None,
         ..klipper.clone()
     };
@@ -1407,6 +1507,7 @@ fn acceleration_follows_the_feature_and_the_first_layer() {
 fn pressure_advance_is_set_once_before_the_first_layer() {
     let klipper = PrintSettings {
         klipper: true,
+        acceleration_form: AccelerationForm::Klipper,
         pressure_advance: Some(0.02),
         ..basic()
     };
@@ -2587,6 +2688,7 @@ fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
         ram_advance: Some(0.02),
         pressure_advance: None,
         klipper: true,
+        acceleration_form: AccelerationForm::Klipper,
         filament_start_gcode: Some("SET_PRESSURE_ADVANCE ADVANCE=0.03".into()),
         ..tool
     });
@@ -2601,6 +2703,7 @@ fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
         ram_advance: Some(0.02),
         pressure_advance: None,
         klipper: true,
+        acceleration_form: AccelerationForm::Klipper,
         ..tool
     });
     let mut out = Vec::new();
@@ -4253,5 +4356,6 @@ fn copies_printed_object_by_object_are_each_finished_before_the_next() {
     // again.
     settings.bed_temperature = Some(60.0);
     settings.klipper = true;
+    settings.acceleration_form = AccelerationForm::Klipper;
     assert_eq!(beds(&settings), ["M140 S60 ; set bed temperature"]);
 }

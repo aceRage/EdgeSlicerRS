@@ -1992,7 +1992,15 @@ tower writes it (`; CP TOOLCHANGE START`, the material, `M220 S100`,
 `; WIPE_TOWER_START` / `_END`, the filament's end G-code before the
 filament is pulled back). Every Marlin or RepRapFirmware printer is told
 its limits before the start G-code (`M201`, `M203`, `M204`, `M205`,
-`emit_machine_limits_to_gcode`), and every file has the reference's
+`emit_machine_limits_to_gcode`). Accelerations are said in the firmware's
+own words (GCodeWriter.cpp `set_acceleration_internal`; 2026-11-16):
+Klipper's `SET_VELOCITY_LIMIT ACCEL=`; on Marlin 2 and RepRapFirmware
+`M204 P` for printing and `M204 T` for travel, on Repetier `M201 X Y` and
+`M202 X Y`, each kept track of apart; elsewhere one `M204 S`. Printing is
+held to `machine_max_acceleration_extruding` on Marlin, Marlin 2,
+RepRapFirmware and Klipper (on Klipper also to the x and y limits), travel
+to `machine_max_acceleration_travel` on Marlin 2 and RepRapFirmware and to
+the printing limit on Klipper. And every file has the reference's
 `;_SET_FAN_SPEED_CHANGING_LAYER` marker after each layer change. Positions
 are taken back by `extruder_offset` (0x2 on the P1 and X1). The
 timelapse G-code (`time_lapse_gcode`, dropped before) goes where the

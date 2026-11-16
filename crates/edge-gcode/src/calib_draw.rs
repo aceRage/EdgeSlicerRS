@@ -21,6 +21,10 @@ pub struct Pen {
     pub firmware: AdvanceFirmware,
     pub bambu: bool,
     pub klipper: bool,
+    /// How an acceleration is said, and what printing is held to (0 for
+    /// nothing), as the writer has them.
+    pub acceleration_form: crate::AccelerationForm,
+    pub max_print_acceleration: f64,
     /// Klipper's deceleration share, as the writer has it.
     pub accel_to_decel_factor: Option<f64>,
     /// `gcode_comments`: the writer's comments on its moves.
@@ -44,6 +48,8 @@ impl Pen {
             firmware: calibration.firmware,
             bambu: s.bambu,
             klipper: s.klipper,
+            acceleration_form: s.acceleration_form,
+            max_print_acceleration: s.max_print_acceleration,
             accel_to_decel_factor: s.accel_to_decel_factor,
             comments: calibration.comments,
             retraction_length: s.retraction_length,
@@ -268,27 +274,25 @@ impl<'a> Drawing<'a> {
         self.out.push_str(&text);
     }
 
-    /// `GCodeWriter::set_print_acceleration`: nothing for 0 or the value
-    /// in force; written as this crate's writer writes an acceleration.
+    /// `GCodeWriter::set_print_acceleration`: held to the machine's
+    /// limit, then nothing for 0 or the value in force; written as this
+    /// crate's writer writes a printing acceleration.
     pub(crate) fn set_print_acceleration(&mut self, acceleration: f64) {
+        let limit = self.pen.max_print_acceleration;
+        let acceleration = if limit > 0.0 {
+            acceleration.min(limit)
+        } else {
+            acceleration
+        };
         if acceleration <= 0.0 || Some(acceleration) == self.acceleration {
             return;
         }
         self.acceleration = Some(acceleration);
-        let _ = match (self.pen.klipper, self.pen.accel_to_decel_factor) {
-            (true, Some(factor)) if factor > 0.0 => {
-                let factor = factor.min(1.0);
-                let ratio = format!("{:.6}", 1.0 - factor);
-                let ratio = ratio.trim_end_matches('0').trim_end_matches('.');
-                writeln!(
-                    self.out,
-                    "SET_VELOCITY_LIMIT ACCEL={acceleration:.0} ACCEL_TO_DECEL={:.0} MINIMUM_CRUISE_RATIO={ratio}",
-                    acceleration * factor
-                )
-            }
-            (true, _) => writeln!(self.out, "SET_VELOCITY_LIMIT ACCEL={acceleration:.0}"),
-            (false, _) => writeln!(self.out, "M204 S{acceleration:.0}"),
-        };
+        let line =
+            self.pen
+                .acceleration_form
+                .command(false, acceleration, self.pen.accel_to_decel_factor);
+        self.out.push_str(&line);
     }
 
     /// `GCodeWriter::set_jerk_xy`: held to the machine's x and y jerk.
@@ -1163,6 +1167,8 @@ mod tests {
             firmware: AdvanceFirmware::Klipper,
             bambu: false,
             klipper: true,
+            acceleration_form: crate::AccelerationForm::Klipper,
+            max_print_acceleration: 0.0,
             accel_to_decel_factor: None,
             comments: false,
             retraction_length: 0.8,

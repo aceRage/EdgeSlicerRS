@@ -60,8 +60,8 @@ pub use scarf::{Scarf, ScarfSeam};
 pub use seam::Seam;
 pub use seam_plan::{SeamMeasures, SeamMesh, SeamObject, SeamPart, SeamScene, measure_seams};
 pub use settings::{
-    Labelling, Lift, ObjectLabel, ObjectRun, OverhangFan, Plate, PrintSettings, Timelapse,
-    WallDirection, WallOrder, gcode_template,
+    AccelerationForm, Labelling, Lift, ObjectLabel, ObjectRun, OverhangFan, Plate, PrintSettings,
+    Timelapse, WallDirection, WallOrder, gcode_template,
 };
 pub use spiral_vase::Spiral;
 
@@ -1482,8 +1482,12 @@ struct State {
     line_speed: f64,
     /// The last feedrate written, in mm/min.
     feedrate: f64,
-    /// The last acceleration written, in mm/s².
+    /// The last acceleration written, in mm/s²: the printing one, and
+    /// travel's too where the firmware has no travel acceleration apart.
     acceleration: f64,
+    /// The last travel acceleration written where the firmware has one
+    /// apart from the printing one (`AccelerationForm::separate_travel`).
+    travel_acceleration: f64,
     /// The last fan speeds written, 0 to 255.
     fan: Option<u8>,
     /// Whether the fan has been asked to run for an overhang or a bridge.
@@ -2064,6 +2068,7 @@ impl Writer<'_> {
         self.state.wipe_path.clear();
         self.state.feedrate = 0.0;
         self.state.acceleration = 0.0;
+        self.state.travel_acceleration = 0.0;
         Ok(())
     }
 
@@ -2416,7 +2421,7 @@ impl Writer<'_> {
         };
         let s = self.settings;
         if s.default_acceleration > 0.0 {
-            self.accelerate(s.travel_acceleration)?;
+            self.accelerate_travel(s.travel_acceleration)?;
         }
         if first.filament != self.state.tool {
             self.flush_labels()?;
@@ -4813,30 +4818,49 @@ impl Writer<'_> {
         flow.mm3_per_mm() * s.filament_flow_ratio * s.print_flow_ratio * share
     }
 
-    /// Tells the printer a new acceleration limit, if it is a change.
+    /// Tells the printer a new printing acceleration, if it is a change
+    /// (GCodeWriter.cpp `set_print_acceleration`).
     fn accelerate(&mut self, acceleration: f64) -> io::Result<()> {
-        if acceleration <= 0.0 || acceleration == self.state.acceleration {
+        self.set_acceleration(false, acceleration)
+    }
+
+    /// Tells the printer a new travel acceleration, if it is a change
+    /// (GCodeWriter.cpp `set_travel_acceleration`): on Marlin 2,
+    /// RepRapFirmware and Repetier one of its own, elsewhere the one
+    /// acceleration there is.
+    fn accelerate_travel(&mut self, acceleration: f64) -> io::Result<()> {
+        self.set_acceleration(true, acceleration)
+    }
+
+    /// GCodeWriter.cpp `set_acceleration_internal`: held to the machine's
+    /// limit, then nothing for 0 or the value in force, which is kept
+    /// apart for travel where the firmware has a travel acceleration.
+    fn set_acceleration(&mut self, travel: bool, acceleration: f64) -> io::Result<()> {
+        let s = self.settings;
+        let limit = if travel {
+            s.max_travel_acceleration
+        } else {
+            s.max_print_acceleration
+        };
+        let acceleration = if limit > 0.0 {
+            acceleration.min(limit)
+        } else {
+            acceleration
+        };
+        let last = if travel && s.acceleration_form.separate_travel() {
+            &mut self.state.travel_acceleration
+        } else {
+            &mut self.state.acceleration
+        };
+        if acceleration <= 0.0 || acceleration == *last {
             return Ok(());
         }
-        self.state.acceleration = acceleration;
-        match (self.settings.klipper, self.settings.accel_to_decel_factor) {
-            // The limit is said both ways (GCodeWriter.cpp
-            // `append_klipper_accel_to_decel`): Klipper before 0.13 and
-            // vendor forks read ACCEL_TO_DECEL, current Klipper only
-            // MINIMUM_CRUISE_RATIO, which is one less the same share.
-            (true, Some(factor)) if factor > 0.0 => {
-                let factor = factor.min(1.0);
-                let ratio = format!("{:.6}", 1.0 - factor);
-                let ratio = ratio.trim_end_matches('0').trim_end_matches('.');
-                writeln!(
-                    self.out,
-                    "SET_VELOCITY_LIMIT ACCEL={acceleration:.0} ACCEL_TO_DECEL={:.0} MINIMUM_CRUISE_RATIO={ratio}",
-                    acceleration * factor
-                )
-            }
-            (true, _) => writeln!(self.out, "SET_VELOCITY_LIMIT ACCEL={acceleration:.0}"),
-            (false, _) => writeln!(self.out, "M204 S{acceleration:.0}"),
-        }
+        *last = acceleration;
+        let line = s
+            .acceleration_form
+            .command(travel, acceleration, s.accel_to_decel_factor);
+        self.out.extend_from_slice(line.as_bytes());
+        Ok(())
     }
 
     /// `sheltered` says the move may go unretracted however long it is,
@@ -4875,9 +4899,9 @@ impl Writer<'_> {
             && s.first_layer_travel_acceleration > 0.0
             && s.default_acceleration > 0.0
         {
-            self.accelerate(s.first_layer_travel_acceleration.round())?;
+            self.accelerate_travel(s.first_layer_travel_acceleration.round())?;
         } else if self.state.first_layer && s.initial_layer_acceleration > 0.0 {
-            self.accelerate(s.initial_layer_acceleration)?;
+            self.accelerate_travel(s.initial_layer_acceleration)?;
         } else if s.default_acceleration > 0.0 {
             let bridge = s.bridge_acceleration.resolve(s.outer_wall_acceleration);
             let wanted = match role {
@@ -4885,7 +4909,7 @@ impl Writer<'_> {
                 Some(Role::ExternalPerimeter) if short => s.outer_wall_acceleration,
                 _ => s.travel_acceleration,
             };
-            self.accelerate(wanted)?;
+            self.accelerate_travel(wanted)?;
         }
         let exposed = !sheltered
             || matches!(
