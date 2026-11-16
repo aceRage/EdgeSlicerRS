@@ -1770,7 +1770,10 @@ fn variables(
             Setting::One(text) => variables.set(key, setting_value(text, decimal)),
             Setting::Many(texts) => variables.set_list(
                 key,
-                texts.iter().map(|text| setting_value(text, decimal)).collect(),
+                texts
+                    .iter()
+                    .map(|text| setting_value(text, decimal))
+                    .collect(),
             ),
         }
     }
