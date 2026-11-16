@@ -2116,11 +2116,12 @@ the next copy's box, then `printing_by_object_gcode` and the first layer's
 temperatures; layers are numbered on through the copies, and first-layer
 speeds, fans and the second layer's temperatures go by each copy's own.
 The skirt goes with the first copy, each brim with its own. Vase mode
-prints several copies this way, each a vase. Refused with it: smooth
-timelapse, the prime tower with more than one filament (in the reference's
-own words, from a refusal the reference has switched off: it then prints
-the plate layer by layer where its first copy changes tool on its first
-layer), calibration prints and per-object skirts; G-code set at layers is
+prints several copies this way, each a vase. Several copies have no prime
+tower: the setting is turned off for the plate, as the reference turns it
+off (PrintConfig.cpp `normalize_fdm_2`; the pinned reference counts objects
+there, so copies of one object keep the tower and are printed layer by
+layer, EdgeSlicer #1075, which is not copied). Refused with it: smooth
+timelapse, calibration prints and per-object skirts; G-code set at layers is
 left out with a note, as the reference leaves it out. Compared with the
 reference on two objects and three copies on a U1, a tall and a short
 object (the reference's order), two objects in two filaments, two vases,

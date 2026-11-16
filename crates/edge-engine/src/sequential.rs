@@ -313,14 +313,28 @@ pub(crate) fn order(copies: &[Copy<'_>], settings: &Settings) -> Result<Vec<usiz
     }
 }
 
+/// Turns the prime tower off for a plate whose several copies are printed
+/// object by object, and says whether it was on: the reference turns the
+/// setting itself off (PrintConfig.cpp `normalize_fdm_2`, from
+/// PrintApply.cpp). Not as the pinned reference in one thing: it counts
+/// objects, so copies of one object keep the tower and are then printed
+/// layer by layer (EdgeSlicer #1075); the caller counts copies, as the
+/// reference's plater does. Smooth timelapse, which keeps the tower
+/// there, is refused before this ([`validate`]).
+pub(crate) fn tower_off(settings: &mut Settings) -> Result<bool, Failure> {
+    let on = settings.flag("enable_prime_tower")? == Some(true);
+    if on {
+        settings.insert("enable_prime_tower", edge_config::Value::One("0".into()));
+    }
+    Ok(on)
+}
+
 /// What printing object by object refuses besides the clearances
 /// (Print.cpp `validate`), and the order the copies are printed in, by
 /// their place in `copies`; none for a plate printed layer by layer.
-/// `filaments` is how many filaments the plate prints in.
 pub(crate) fn validate(
     settings: &Settings,
     copies: &[Copy<'_>],
-    filaments: usize,
     calibration: bool,
 ) -> Result<Option<Vec<usize>>, Failure> {
     if !by_object(settings) {
@@ -333,15 +347,9 @@ pub(crate) fn validate(
         );
     }
     let order = order(copies, settings)?;
-    // Not as the reference, on purpose. Its refusal of the prime tower
-    // here is switched off (`#if 0`): it then builds the tower for the
-    // whole plate and, where the first copy changes tool on its first
-    // layer, prints every copy together, layer by layer, though object
-    // by object was asked for, and without a tower where it does not.
-    // Here the tower is refused, in the reference's own words.
-    if settings.flag("enable_prime_tower")? == Some(true) && filaments > 1 {
-        return Err("The prime tower is not supported in \"By object\" print.".into());
-    }
+    // The prime tower is not refused: the reference's refusal is switched
+    // off (`#if 0`) and it turns the tower off instead where several
+    // copies are printed (`normalize_fdm_2`), as `crate::pipeline` does.
     if calibration {
         return Err(
             "a calibration print is printed layer by layer; print_sequence \"by object\" \
@@ -464,27 +472,27 @@ mod tests {
     fn what_printing_by_object_refuses() {
         let one = [("A", block(40.0, 20.0, 15.0, 10.0))];
         let copies: Vec<Copy<'_>> = one.iter().map(|(name, mesh)| Copy { name, mesh }).collect();
-        let refused = |extra: &str, filaments: usize, calibration: bool| {
-            validate(&u1(extra), &copies, filaments, calibration)
+        let refused = |extra: &str, calibration: bool| {
+            validate(&u1(extra), &copies, calibration)
                 .err()
                 .map(|e| e.to_string())
         };
-        assert_eq!(refused("", 1, false), None);
+        assert_eq!(refused("", false), None);
         assert_eq!(
-            refused(r#", "timelapse_type": "1""#, 1, false).as_deref(),
+            refused(r#", "timelapse_type": "1""#, false).as_deref(),
             Some(
                 "Smooth mode of timelapse is not supported when \"by object\" sequence is enabled."
             )
         );
-        assert_eq!(
-            refused(r#", "enable_prime_tower": "1""#, 2, false).as_deref(),
-            Some("The prime tower is not supported in \"By object\" print.")
-        );
-        // One filament builds no tower.
-        assert_eq!(refused(r#", "enable_prime_tower": "1""#, 1, false), None);
-        assert!(refused("", 1, true).is_some());
+        // The prime tower is turned off for it, not refused.
+        assert_eq!(refused(r#", "enable_prime_tower": "1""#, false), None);
+        let mut with_tower = u1(r#", "enable_prime_tower": "1""#);
+        assert!(tower_off(&mut with_tower).unwrap());
+        assert_eq!(with_tower.flag("enable_prime_tower").unwrap(), Some(false));
+        assert!(!tower_off(&mut with_tower).unwrap());
+        assert!(refused("", true).is_some());
         let by_layer = Settings::from_json(r#"{"print_sequence": "by layer"}"#).unwrap();
-        assert!(validate(&by_layer, &copies, 2, true).unwrap().is_none());
+        assert!(validate(&by_layer, &copies, true).unwrap().is_none());
     }
 
     /// Two blocks, a tall one at x 20 listed first and a short one at

@@ -391,7 +391,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         loaded,
         is_project,
         placed,
-        settings,
+        mut settings,
         layer_height: (layer_height, _),
         first_layer_height: (first_layer_height, _),
         closing_radius: (closing_radius, _),
@@ -410,7 +410,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let own = loaded.own;
     let (min, max) = loaded.bounds;
 
-    let print = PrintSettings::from_settings(&settings)?;
+    let mut print = PrintSettings::from_settings(&settings)?;
     // What vase mode refuses (`crate::spiral`): the copies on the plate
     // and the filaments the object prints in, colours painted on it
     // among them.
@@ -466,19 +466,15 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 mesh: &objects[*at],
             })
             .collect();
-        let mut filaments: Vec<usize> = bodies.iter().map(|body| body.filament).collect();
-        filaments.extend(
-            (painted.iter())
-                .flat_map(|object| &object.facets)
-                .map(|facet| usize::from(facet.filament))
-                .filter(|filament| *filament > 0),
-        );
-        filaments.sort_unstable();
-        filaments.dedup();
         // One copy is printed the same either way.
-        crate::sequential::validate(&settings, &copies, filaments.len(), calibration.is_some())?
+        crate::sequential::validate(&settings, &copies, calibration.is_some())?
             .filter(|order| order.len() > 1)
     };
+    // Several copies printed object by object have no prime tower, and
+    // the file's settings say so.
+    if sequence.is_some() && crate::sequential::tower_off(&mut settings)? {
+        print = PrintSettings::from_settings(&settings)?;
+    }
     // A bare model has no place on the bed of its own: it goes in the
     // middle, as the reference's arranger leaves a single part. One that
     // was put somewhere by hand stays there.
