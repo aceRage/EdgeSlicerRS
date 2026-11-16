@@ -754,8 +754,6 @@ mod tests {
             "flashforge_serial_number",
             "gcode_add_line_number",
             "grab_length",
-            "graphic_effect_plate_temp",
-            "graphic_effect_plate_temp_initial_layer",
             "has_filament_switcher",
             "host_type",
             "image_fill_detail",
@@ -843,16 +841,7 @@ mod tests {
         pub const PLACEHOLDER: &[&str] = &["chamber_minimal_temperature"];
         /// Being made to be followed on branches of their own; each comes
         /// off here when it lands.
-        pub const IN_HAND: &[&str] = &[
-            "farthest_point_timelapse",
-            "fan_speedup_time",
-            "fan_speedup_overhangs",
-            "fan_kickstart",
-            "idle_temperature",
-            "machine_max_force_Y",
-            "machine_bed_mass_Y",
-            "support_interface_loop_pattern",
-        ];
+        pub const IN_HAND: &[&str] = &[];
         /// Only matter with toolchange_ordering "cyclic", which has a
         /// note of its own (pipeline.rs).
         pub const SAID_BY_ANOTHER: &[&str] =
