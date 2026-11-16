@@ -42,31 +42,61 @@ pub struct Layer {
 }
 
 /// Cutting planes at the middle of each layer, as the reference slicer does,
-/// so a contour represents the layer's average cross-section.
+/// so a contour represents the layer's average cross-section; the
+/// printer's least layer height taken as the layer height (see
+/// [`layer_planes_for`]).
 pub fn layer_planes(
     z_min: f64,
     z_max: f64,
     first_layer_height: f64,
     layer_height: f64,
 ) -> Vec<f64> {
+    layer_planes_for(z_min, z_max, first_layer_height, layer_height, layer_height)
+}
+
+/// Cutting planes at the middle of each layer of an object from `z_min` to
+/// `z_max` laid at one layer height: the first layer always, then a layer
+/// for as long as its middle is below the object's top, as the reference
+/// lays them (Slicing.cpp `generate_object_layers`, over the profile
+/// `layer_height_profile_from_ranges` gives an object with no ranges). A
+/// layer whose middle falls on the top exactly is not made. How many there
+/// are is the reference's own count, its heights added up one by one
+/// (`layering::object_layers`, which the printer's least layer height
+/// `min_layer_height` plays a part in), so a top that falls within a hair
+/// of a layer's middle is decided as there; the planes themselves are
+/// worked out from their index, so tall prints do not drift.
+pub fn layer_planes_for(
+    z_min: f64,
+    z_max: f64,
+    first_layer_height: f64,
+    layer_height: f64,
+    min_layer_height: f64,
+) -> Vec<f64> {
     assert!(
         first_layer_height > 0.0 && layer_height > 0.0,
         "layer heights must be positive"
     );
-    let mut planes = Vec::new();
-    for index in 0.. {
-        // Derived from the index rather than accumulated, so tall prints do not drift.
-        let plane = if index == 0 {
-            z_min + first_layer_height / 2.0
-        } else {
-            z_min + first_layer_height + (index as f64 - 0.5) * layer_height
-        };
-        if plane > z_max {
-            break;
-        }
-        planes.push(plane);
+    if z_max <= z_min {
+        return Vec::new();
     }
-    planes
+    let params = layering::SlicingParams {
+        layer_height,
+        first_layer_height,
+        min_layer_height,
+        max_layer_height: layer_height.max(min_layer_height),
+        height: z_max - z_min,
+    };
+    let profile = layering::profile_from_ranges(&params, &[]);
+    let count = layering::object_layers(&params, &profile, false).len();
+    (0..count)
+        .map(|index| {
+            if index == 0 {
+                z_min + first_layer_height / 2.0
+            } else {
+                z_min + first_layer_height + (index as f64 - 0.5) * layer_height
+            }
+        })
+        .collect()
 }
 
 /// Cuts `mesh` at each plane height. `planes` must be sorted ascending.
@@ -472,6 +502,25 @@ mod tests {
         let planes = layer_planes(5.0, 6.05, 0.3, 0.2);
         assert!((planes[0] - 5.15).abs() < 1e-12 && (planes[1] - 5.4).abs() < 1e-12);
         assert_eq!(planes.len(), 5);
+    }
+
+    #[test]
+    fn a_layer_whose_middle_is_the_top_is_not_made() {
+        // Slicing.cpp `generate_object_layers`: a layer only while
+        // `print_z + height / 2 < top`. A 12 mm part at 0.08 mm over a
+        // 0.2 mm first layer: the 149th layer's middle, 12.000, is the top
+        // itself, so it ends at 11.96 in 148 layers (a P1S project the
+        // reference slices so).
+        let planes = layer_planes_for(0.0, 12.0, 0.2, 0.08, 0.08);
+        assert_eq!(planes.len(), 148);
+        assert!((planes[147] - 11.92).abs() < 1e-9);
+        // A hair over the middle and the layer is made.
+        assert_eq!(layer_planes_for(0.0, 12.001, 0.2, 0.08, 0.08).len(), 149);
+        // Raised off the bed the same.
+        assert_eq!(layer_planes_for(3.0, 15.0, 0.2, 0.08, 0.08).len(), 148);
+        // The first layer is always laid; nothing for nothing.
+        assert_eq!(layer_planes_for(0.0, 0.05, 0.2, 0.2, 0.08).len(), 1);
+        assert!(layer_planes_for(1.0, 1.0, 0.2, 0.2, 0.08).is_empty());
     }
 
     #[test]

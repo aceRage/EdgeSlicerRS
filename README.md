@@ -819,7 +819,13 @@ Working:
   (`SlicingParameters::create_from_config`). The adaptive profile from the
   slopes of the object's faces, its smoothing and a stroke of the layer
   height tool are ported for the desktop app. The objects that set nothing
-  of their heights are sliced together at the plate's, as before; each set
+  of their heights are sliced together at the plate's, as before, the
+  tallest one's layers stopping where the reference's do: a layer only
+  while its middle is below the top, so none whose middle falls on the
+  top exactly (`generate_object_layers`, its count taken from its own
+  sum of heights, `edge_slice::layer_planes_for`; 2026-11-16, before which
+  such a layer was made: a 12 mm part at 0.08 mm had 149 layers, the
+  reference 148). Each set
   of objects whose layers agree is sliced by itself, everything up to the
   order of tools, the prime tower, skirt and brim; their layers are then
   laid together by their tops, tops within `EPSILON` as one, at their
