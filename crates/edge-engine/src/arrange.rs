@@ -144,6 +144,7 @@ fn first_layer_bed_key(bed_type: &str) -> Option<&'static str> {
         "High Temp Plate" => "hot_plate_temp_initial_layer",
         "Textured PEI Plate" => "textured_plate_temp_initial_layer",
         "Textured Cool Plate" => "textured_cool_plate_temp_initial_layer",
+        "Graphic Effect Plate" => "graphic_effect_plate_temp_initial_layer",
         "Supertack Plate" => "supertack_plate_temp_initial_layer",
         _ => return None,
     })

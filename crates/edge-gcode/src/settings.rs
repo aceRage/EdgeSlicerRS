@@ -782,13 +782,19 @@ impl PrintSettings {
             extent
         });
 
-        // The bed temperature lives under a key named after the plate in use.
+        // The bed temperature lives under a key named after the plate in use
+        // (PrintConfig.hpp `get_bed_temp_key`, `get_bed_temp_1st_layer_key`).
+        // The reference falls back to the High Temp Plate's keys for a plate
+        // without its own ("Default Plate"), to avoid a null pointer
+        // (GCode.cpp `_do_export`, `get_bed_temperature`); not followed: such
+        // a plate is listed below and gets no bed temperature.
         let bed_key = match settings.text("curr_bed_type") {
             Some("Cool Plate") => Some("cool_plate_temp"),
             Some("Engineering Plate") => Some("eng_plate_temp"),
             Some("High Temp Plate") => Some("hot_plate_temp"),
             Some("Textured PEI Plate") => Some("textured_plate_temp"),
             Some("Textured Cool Plate") => Some("textured_cool_plate_temp"),
+            Some("Graphic Effect Plate") => Some("graphic_effect_plate_temp"),
             Some("Supertack Plate") => Some("supertack_plate_temp"),
             Some(other) => {
                 unsupported.push(format!(
@@ -2177,6 +2183,20 @@ mod tests {
             ),
             (Some(35.0), Some(40.0))
         );
+        // A Snapmaker U1's Graphic Effect Plate has keys of its own.
+        let graphic = read(
+            r#"{"curr_bed_type": "Graphic Effect Plate", "graphic_effect_plate_temp": ["65", "70"],
+                "graphic_effect_plate_temp_initial_layer": ["68"], "hot_plate_temp": ["55"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                graphic.bed_temperature,
+                graphic.bed_temperature_initial_layer
+            ),
+            (Some(65.0), Some(68.0))
+        );
+        assert!(graphic.unsupported.is_empty());
         assert_eq!(
             (settings.wall_order, settings.infill_first),
             (WallOrder::OuterInner, true)
