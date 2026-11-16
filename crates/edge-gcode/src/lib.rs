@@ -874,7 +874,9 @@ pub fn write_timed(
         };
         for (change, tool, temperature) in &changes {
             let wanted = &settings[*tool];
-            if wanted.standby_temperature_delta.is_none() || wanted.preheat_time <= 0.0 {
+            if (wanted.standby_temperature_delta.is_none() && wanted.idle_temperature.is_none())
+                || wanted.preheat_time <= 0.0
+            {
                 continue;
             }
             let last = ends.partition_point(|end| *end <= *change);
@@ -2336,12 +2338,17 @@ impl Writer<'_> {
         if let Some(template) = s.filament_end_gcode.as_ref().filter(|_| !framed) {
             self.custom("filament_end_gcode", template)?;
         }
-        // A tool waiting its turn is kept cooler so it does not ooze; one
-        // that is not needed again is switched off.
-        if let Some(delta) = s.standby_temperature_delta {
+        // A tool waiting its turn is kept cooler so it does not ooze, at
+        // its filament's own idle temperature where it has one, else by
+        // the delta; one that is not needed again is switched off
+        // (GCode.cpp `OozePrevention::pre_toolchange`).
+        if s.standby_temperature_delta.is_some() || s.idle_temperature.is_some() {
             let standby = if self.last_use[from] < cursor {
                 0.0
+            } else if let Some(idle) = s.idle_temperature {
+                idle
             } else {
+                let delta = s.standby_temperature_delta.unwrap_or(0.0);
                 (self.temperature(from, layer == 0) + delta).max(0.0)
             };
             writeln!(
@@ -2554,7 +2561,9 @@ impl Writer<'_> {
                 .collect();
             for tool in used.iter().copied().filter(|tool| *tool != active) {
                 let mut temperature = self.all[tool].nozzle_temperature_initial_layer;
-                if let Some(delta) = self.all[tool].standby_temperature_delta {
+                if let Some(idle) = self.all[tool].idle_temperature {
+                    temperature = idle;
+                } else if let Some(delta) = self.all[tool].standby_temperature_delta {
                     temperature += delta;
                 }
                 if temperature > 0.0 {

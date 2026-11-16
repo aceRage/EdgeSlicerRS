@@ -1494,7 +1494,9 @@ feature filaments (`wall_filament`, `sparse_infill_filament`,
     ties and of the order it is handed the tools in; both are ported as
     they stand, because the tower is a layer taller or shorter by it.
   - A tool change follows the reference: pull the filament well back, cool
-    the tool being put away, run the printer's own tool-change G-code,
+    the tool being put away (with `ooze_prevention`, to its filament's
+    `idle_temperature` where that is set, else by
+    `standby_temperature_delta`), run the printer's own tool-change G-code,
     heat and select the new tool, and push its filament back as far as it
     was pulled when last put away (on a printer of one nozzle, as far as
     the change pulled it back: the one retraction is shared, Extruder.cpp

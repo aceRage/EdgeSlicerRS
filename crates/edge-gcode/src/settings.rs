@@ -314,6 +314,10 @@ pub struct PrintSettings {
     /// idle nozzles from oozing; and how long before its turn it is heated
     /// again, in seconds.
     pub standby_temperature_delta: Option<f64>,
+    /// The filament's own temperature for its tool while it waits, in
+    /// place of the delta, when the profile keeps idle nozzles from oozing
+    /// (`idle_temperature`; 0, the default, for none).
+    pub idle_temperature: Option<f64>,
     pub preheat_time: f64,
     /// Whether the tool's temperature is waited for after a change.
     pub tool_change_temperature_wait: bool,
@@ -547,6 +551,7 @@ impl Default for PrintSettings {
             change_filament_gcode: None,
             retract_length_toolchange: 10.0,
             standby_temperature_delta: None,
+            idle_temperature: None,
             preheat_time: 30.0,
             tool_change_temperature_wait: true,
             single_nozzle: true,
@@ -1144,6 +1149,10 @@ impl PrintSettings {
             standby_temperature_delta: match settings.flag("ooze_prevention")? {
                 Some(true) => Some(settings.float("standby_temperature_delta")?.unwrap_or(-5.0))
                     .filter(|delta| *delta != 0.0),
+                _ => None,
+            },
+            idle_temperature: match settings.flag("ooze_prevention")? {
+                Some(true) => first("idle_temperature")?.filter(|idle| *idle > 0.0),
                 _ => None,
             },
             preheat_time: settings
