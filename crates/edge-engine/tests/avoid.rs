@@ -169,6 +169,12 @@ fn routed_travel_comes_out_the_same_on_one_thread_and_on_many() {
             .build()
             .unwrap()
             .install(|| gcode(&sliced(&[("reduce_crossing_wall", "1")])).0)
+            // The object is named after its file, which each run writes
+            // under a name of its own (`; printing object <name>`).
+            .lines()
+            .filter(|line| !line.contains("printing object "))
+            .collect::<Vec<_>>()
+            .join("\n")
     };
     let one = run(1);
     assert!(one == run(4) && one == run(1));
