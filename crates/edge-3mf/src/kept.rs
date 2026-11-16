@@ -237,6 +237,9 @@ pub(crate) struct PartRead {
     pub transform: edge_mesh::Transform,
     /// The mesh it was read with, which what its triangles carry is of.
     pub mesh: Arc<edge_mesh::Mesh>,
+    /// The text it was read as, which its entries describe while the part
+    /// still has it.
+    pub text: Option<Arc<crate::TextVolume>>,
 }
 
 impl PartialEq for PartRead {
@@ -323,7 +326,13 @@ impl PartKept {
                 Entry::Meta { key, .. } => {
                     !(key.starts_with("source_") || key == "matrix" || key == "name")
                 }
-                Entry::Raw(raw) => !(raw.starts_with("<mesh_stat") || is_text(raw)),
+                // Its text and its shape (`text_configuration` and
+                // `emboss_shape` are reset).
+                Entry::Raw(raw) => {
+                    !(raw.starts_with("<mesh_stat")
+                        || is_text(raw)
+                        || raw.starts_with("<slic3rpe:shape"))
+                }
             })
             .cloned()
             .collect();
@@ -645,6 +654,11 @@ fn parse_ranges(text: &str) -> Vec<LayerRange> {
 /// `TEXT_TAG`).
 fn is_text(raw: &str) -> bool {
     raw.starts_with("<slic3rpe:text")
+}
+
+/// Whether an entry of a part describes its text or its shape.
+pub(crate) fn is_text_or_shape(entry: &Entry) -> bool {
+    matches!(entry, Entry::Raw(raw) if crate::text::is_text_entry(raw))
 }
 
 impl ObjectKept {

@@ -211,7 +211,7 @@ does with each option.
 | --- | --- | --- |
 | A 3D view of every plate with the objects on it, orbit / pan / zoom, selection | `View3D`, `GLCanvas3D` | **added**, in 3D: section 9. Where the browser has no WebGL2, the view from above the first pass built is kept: the bed of the printer chosen with its grid and each object's outline (its convex hull), name and size, drag to move, wheel to zoom, "Fit part" [Z] and "Fit bed" |
 | Main toolbar: "Add" [Ctrl+I], "Add plate", "Auto orient all/selected objects" [Q], "Arrange all objects" [A] with its options, "Split to objects", "Split to parts", "Variable layer height", "Assembly View" | `GLCanvas3D::_init_main_toolbar` l.9274 | **added**: "Add", "Add plate", "Auto orient all/selected objects" [Q] and Shift+Q (section 13, "Auto orient": the reference's orienter, ported), "Arrange all objects" with its options (section 13, "Arrange": the reference's arranger, ported), "Split to objects", "Split to parts" and "Variable layer height" (section 13). **not yet**: the assembly view |
-| Gizmos: "Move" [M], "Rotate" [R], "Scale" [S], "Lay on face" [F], "Cut" [C], "Mesh Boolean" [B], "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H], "Color Painting" [N], "Texture displacement", "Emboss" [T], "SVG", "Measure" [U], "Assemble" [Y], "Simplify", "Brim Ears" [E], "Sculpt", "Edit", "Fillet / chamfer (CAD)" | `Gizmos/GLGizmosManager.cpp::init` l.224 | **added**: "Move", "Rotate" and "Scale" with their number fields, and "Lay on face" [F] (section 13); "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H] and "Color Painting" [N] (section 13, "The painting tools"); "Cut" [C]: "Planar" on a flat surface, "Pick face", a part given to the other side, "Dovetail", "Keep cut editable" / "Edit cut..." / "Copy cut to..." (section 13, "Cut"); "Mesh Boolean" [B] (section 13, "Mesh Boolean"); "Simplify", opened from the menus as the reference's is (section 13, "Simplify"). **not yet**: "Cut"'s curved and drawn surfaces and connectors (section 13, "Cut"), "Texture displacement", "Emboss", "SVG", "Measure", "Assemble", "Brim Ears", "Sculpt", "Edit", "Fillet / chamfer (CAD)": each waits for the engine to do what it does (joining meshes, displacing a surface, text and pictures made into meshes, measuring and assembling, brim ears in the brim) |
+| Gizmos: "Move" [M], "Rotate" [R], "Scale" [S], "Lay on face" [F], "Cut" [C], "Mesh Boolean" [B], "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H], "Color Painting" [N], "Texture displacement", "Emboss" [T], "SVG", "Measure" [U], "Assemble" [Y], "Simplify", "Brim Ears" [E], "Sculpt", "Edit", "Fillet / chamfer (CAD)" | `Gizmos/GLGizmosManager.cpp::init` l.224 | **added**: "Move", "Rotate" and "Scale" with their number fields, and "Lay on face" [F] (section 13); "Support Painting" [L], "Seam painting" [P], "Paint-on fuzzy skin" [H] and "Color Painting" [N] (section 13, "The painting tools"); "Cut" [C]: "Planar" on a flat surface, "Pick face", a part given to the other side, "Dovetail", "Keep cut editable" / "Edit cut..." / "Copy cut to..." (section 13, "Cut"); "Mesh Boolean" [B] (section 13, "Mesh Boolean"); "Simplify", opened from the menus as the reference's is (section 13, "Simplify"). "Emboss" [T] (section 13, "Emboss (the Text tool)"). **not yet**: "Cut"'s curved and drawn surfaces and connectors (section 13, "Cut"), "Texture displacement", "SVG", "Measure", "Assemble", "Brim Ears", "Sculpt", "Edit", "Fillet / chamfer (CAD)": each waits for the engine to do what it does (joining meshes, displacing a surface, text and pictures made into meshes, measuring and assembling, brim ears in the brim) |
 | Object list: plates, objects, parts, instances, layer ranges; columns "Name", printable, "Fila.", paint marks; the object, part and plate menus | `GUI_ObjectList.cpp`, `GUI_Factories.cpp` | **added**: plates, objects, parts and instances with "Name", printable and "Fila.", and the object's, the part's and the plate's menus (section 13); the mark of an item with settings of its own, "Layers" and its height ranges (eighteenth pass, section 13). **not yet**: the paint marks |
 | View options: "Realistic View", "X-Ray", "Center of Mass", "Show 3D Navigator", Ctrl+0..6 views | `GLCanvas3D.cpp` l.8297, View menu | **added**: the navigator and the views (section 9). **not yet**: the three view options |
 
@@ -2717,6 +2717,118 @@ Extra low's error (`Configuration::max_error = 1.`, GLGizmoSimplify.hpp
 l.62), so what it shows on opening is not what the slider says (the same on
 the fork's main).
 
+### Emboss (the Text tool)
+
+The pinned build shows `GLGizmoEmboss` on its toolbar ("Emboss" [T],
+`GLGizmosManager.cpp::init`, icon `toolbar_text.svg`); the older
+`GLGizmoText.cpp` is commented out of the build (`src/slic3r/CMakeLists.txt`
+l.260), so this ports Emboss. Read from `Gizmos/GLGizmoEmboss.cpp/.hpp`,
+`Jobs/EmbossJob.cpp`, `libslic3r/Emboss.cpp/.hpp`, `TextConfiguration.hpp`,
+`EmbossShape.hpp`, `SurfaceDrag.cpp` (`calc_distance`, `calc_angle`,
+`face_selected_volume_to_camera`, `get_volume_transformation`),
+`Utils/WxFontUtils.cpp`, `Utils/RaycastManager.cpp`, `GUI_Factories.cpp`
+(`append_menu_item_add_text`, `append_menu_item_edit_text`) and
+`Format/bbs_3mf.cpp` (`TextConfigurationSerialization`, `to_xml(EmbossShape)`,
+`read_emboss_shape`, `create_fix`). The solid and its place are the engine's
+(`crates/edge-engine/src/emboss.rs`, `crates/edge-text`); the description in
+a project `crates/edge-3mf/src/text.rs`; the fonts and calls the session's
+(`src/api/emboss.rs`: `text_fonts`, `text_font_preview`, `text_part`,
+`text_edit`); the page's `ui/text.js`.
+
+| C++ | Where | Here |
+| --- | --- | --- |
+| T or the toolbar: with a text part selected, the tool opens on it; with an object selected, a text is added where the line of sight through the middle of the object's outline on the screen meets it (or below the object, square to it, when it meets nothing) and the tool opens on it; with nothing selected, an object of a text is made on the plate | `on_shortcut_key`, `create_volume`, `start_create_volume_without_position`, `find_closest`, `start_create_object_job` | **added** (the middle of the object's box as the view shows it, for the outline's middle) |
+| "Add part" / "Add negative part" / "Add modifier" ▸ "Text" in the object menu, at the point the menu was opened; "Edit text" in the part menu of a text part | `append_menu_item_add_text`, `append_menu_item_edit_text` | **added** |
+| A new text: "Embossed text", style "NORMAL" (wx's normal font: Helvetica on macOS, its point size 13 taken as the height in mm), 1 mm deep; its Z along the face's normal, its up the world's Z laid on the face, or the world's Y on a face looking up or down more than 0.9; the style's rotation after | `init_create`, `create_default_styles`, `create_transformation_onto_surface`, `suggest_up`, `apply_transformation` | **added**; Windows' and Linux's wx sizes (9 and 10) written but not measured |
+| The solid: the letters laid out (advance widths, no kerning, new lines, a tab four spaces, alignment), each grown 50 shape units, united, shrunk back, healed; raised `depth` along Z, a part from 0.015 mm under its face, a negative part or modifier from 0.015 mm above it inwards; named after the text, new lines as spaces | `create_shape`, `union_with_delta`, `try_create_mesh`, `polygons2model`, `ProjectZ`, `text_volume_name` | **added**. **differs**: the caps are cut by ear cutting, the reference's by a constrained Delaunay triangulation: the same solid, other triangles |
+| The text box, with "Embossed text cannot contain only white spaces." | `draw_text_input` | **added**; the box shows plain text, not the font (the reference draws it in the font with ImGui) |
+| "Font": the installed fonts by name, each drawn in itself, with a filter; italic and bold ("Set italic"/"Unset italic", "Set bold"/"Unset bold": the family's italic or bold face, else a skew of 0.2 or a boldness of 20) | `draw_font_list`, `draw_font_preview`, `draw_italic_button`, `draw_bold_button` | **added**, and a list of the family's faces beside it (wx picks a face by weight and slant; here they are named). The count of fonts that could not be read is said under the list |
+| "Height" (0.1 to 1000 mm), "Depth" (0.01 to 10 000 mm) | `draw_height`, `draw_depth`, `limits` | **added** |
+| "Advanced": "Use surface", "Per glyph", "Alignment" (left, center, right; top, middle, bottom), "Char gap" and "Line gap" (points, half the ascent each way; "Line gap" only for several lines), "Boldness", "Skew ratio", "From surface" (twice the depth each way; not for an object of one text, nor with "Use surface"), "Rotation" (clockwise, ±180°), "Keep up", "Set text to face camera" | `draw_advanced` | **added**, but "Use surface" and "Per glyph": shown, and can be taken off a text read with them, not put on (see below) |
+| "Operation": "Join", "Cut" (context "EmbossOperation"), "Modifier"; not for the object's last printed part ("You can't change a type of the last solid part of the object.") | `draw_model_type` | **added** |
+| Every change remakes the part in the session (jobs; "Emboss attribute change"), the add is "Add Emboss text Volume" / "Add Emboss text object" | `process`, `UpdateJob`, `create_volume` | **added**: the changes made while the tool stays open on one text are one step of the history; the reference takes one for each change |
+| A font a project names that is not installed: "Can't load exactly same font ...", only the font can be chosen, then "Apply" | `create_notification_not_valid_font`, `m_is_unknown_font` | **added** |
+| What a project says of a text part: `slic3rpe:shape` (scale, unhealed, depth, use surface, the bend, the fix transform, an SVG's paths) and `slic3rpe:text` (the text, inline shapes, style name, font descriptor and its type, char gap, line gap, line height, boldness, skew, per glyph, alignment, collection, family, face name, style, weight); the fix is the move to the middle of the mesh's box, which the reference reads back after it centres the mesh | `TextConfigurationSerialization`, `to_xml(EmbossShape)`, `read_emboss_shape`, `read_old`, `create_fix` | **added** (section 15): read, written as the reference writes it (its escapes, numbers to seventeen significant digits, its stream's `max_digits10`), written back as read while the text is unchanged; the text's frame is the part's matrix times the fix's undoing, as `update_volume` makes it |
+
+**Fonts.** The system's, from the platform's standard folders only
+(macOS: `/System/Library/Fonts` with `Supplemental`, `/Library/Fonts`,
+`~/Library/Fonts`; Windows: `%WINDIR%\Fonts`, `%LOCALAPPDATA%\Microsoft\Windows\Fonts`;
+Linux: `/usr/share/fonts`, `/usr/local/share/fonts`, `~/.local/share/fonts`,
+`~/.fonts`; only macOS's checked). A font file is untrusted: only its table
+directory and five small tables are read to list it, a file over 64 MB is
+not read, a font that does not hold together is left out and counted.
+TrueType and CFF outlines, single fonts and collections; left out: CFF2
+(variable OpenType outlines, which `ttf-parser` reads only with a feature
+this build does not take), bitmap and colour fonts, and families whose name
+starts with a dot (macOS's hidden faces, which its own list leaves out).
+On macOS this finds 775 faces in 370 files; SF India's CFF2 faces, Apple
+Color Emoji (over 64 MB) and one bitmap font are left out. The bundled ones:
+only those with a licence beside them in the reference's `resources/fonts`,
+NanumGothic (`OFL.txt`) and the symbol fallback
+(`OFL-NotoSansSymbols2.txt`), read from there and not copied here; the
+reference offers NanumGothic and HarmonyOS Sans SC only on Linux and
+Windows (`Label::initSysFont`), and HarmonyOS Sans SC and Noto Sans KR have
+no licence file in the pin, so they are not offered. The page is given
+families, faces and drawn samples, never a file's place. A project's font
+is written on macOS as the reference writes it (`wxFontDescriptor_MacOsX`,
+wx's version 2 descriptor of the PostScript name and size, and the face
+name, style and weight as wx names them), else, and for a bundled font, as
+the file's name only (`file_name`); it is found again by that PostScript
+name, then by the face name with its weight and slant, then by the file's
+name.
+
+**How it was checked.** Tests: the solid against its shape (closed, its
+volume the shape's area times the depth, its extent off the face), the
+style's options (a char gap of 100 units widens two letters by 100/1000 em,
+two lines are a line height apart), the placement (a wall's text upright
+and reading left to right, a top face's with the world's Y up, the turn
+read back), "From surface" and "Set text to face camera", a text added,
+made again as one step, saved and read back (the frame read back is the
+frame saved, the description written back unchanged when unchanged, the
+slice the same), and a text the reference centred made again in its frame.
+In the reference: a project saved here with a text on the 3DBenchy hull
+(`work/text/benchy_neg.3mf`, a negative text "Edge", Helvetica 7 mm, 1 mm
+deep) loaded and sliced by the pinned build's command line, 240 layers as
+here, and written back by it (`--export-3mf`) with its `slic3rpe:shape` and
+`slic3rpe:text` as they were (the reference reads it as a text part) and
+the part's component moved to the middle of its centred mesh, as the fix
+says. Filament: the reference 3778.02 mm, here 3767.35; the same text as a
+printed part, 3788.99 and 3778.00: the text adds 10.97 mm there and 10.65
+here; the 0.3 % left is this engine's own on the 3DBenchy. Not checked: the
+reference's GUI opening such a project's text in its Emboss tool (its window
+is not opened here); the reference reads its own `wxFontDescriptor_MacOsX`
+through wx, which was read from wx's source (`wxNativeFontInfo::FromString`,
+version 2), not run. In the browser pane: the panel, the font list drawn in
+each font, a text added on the 3DBenchy's hull from the object menu, made
+again as it was edited, saved and restored as editable, made negative and
+sliced; a negative text on the OrcaCube's top face sliced and seen engraved
+in Preview (`~/Dev/EdgeSlicerRS-shots/text/`).
+
+**Errors found in the C++** (by reading the pin; not run, no fix PR
+opened from here): `Model.cpp` l.3193, `ModelVolume::split` resets a
+text's `text_configuration` but not its `emboss_shape`, so each piece of a
+split text reads as an SVG part (`is_svg()`, Model.hpp l.1164: a shape and
+no text) though it has no SVG; here a piece keeps neither.
+`GLGizmoEmboss.cpp` l.1237, `create_default_styles` falls back to
+`resources/fonts/NotoSans-Regular.ttf` when no installed font loads, a file
+the pin does not carry; here, with no font at all the tool says so. Not an
+error but worth knowing: "Boldness" is shown in "points" and stored as a
+value the reference divides by the size before growing the outline in font
+units (`apply_font_prop`), which `TextConfiguration.hpp` calls mm; it is
+taken as the reference takes it.
+
+**Not yet**, each refused in words where a text asks for it: "Use surface"
+(the text cut from the object's surface and raised along it,
+CutSurface.cpp, 4 140 lines on CGAL's corefinement: a port of its own),
+"Per glyph" (each letter placed on a section of the object), "Curve" (this
+fork's bent text, EmbossBend.cpp), inline shapes and the "Insert" popup,
+the style list (saving, renaming, other styles, kept in the app's
+settings), "Collection" (a font of a collection other than the first:
+written and read, not offered), dragging the text over the surface and the
+3D move and rotate handles, "Mirror" of a text, the QR code / barcode
+part. A text read with "Use surface", "Per glyph" or a curve keeps its mesh
+and description as read until those are taken off.
+
 ### Repair/Remesh, and the object list's mesh warning
 
 Read from `GUI_Factories.cpp` (`append_menu_item_fix_through_netfabb`),
@@ -2884,9 +2996,9 @@ shows; `part_menu`; `append_menu_items_add_volume`;
 
 | C++ | Where | Here |
 | --- | --- | --- |
-| The part menu: "Delete", "Edit text", "Repair", "Simplify", "Center", "Drop", "Mirror", "Hide"/"Show", "Separate", "Split" ("To objects", "To parts", "By painted colour"), "Edit in Parameter Table", "Change type", "Reload from disk", "Replace with STL", "Edit in Blender", "Edit in FreeCAD", "Fillet / chamfer", "Export as one STL", then "Change Filament", "Override paint", the support groups, "Precise Seam Type" | GUI_Factories.cpp l.2539–2585, l.2998 | **added**: "Delete", "Center", "Drop" (both "Move Object" steps), "Mirror" ▸ "Along X axis"…, "Split" ▸ "To objects" (off, as the C++ has it for a part) and "To parts", "Change type", "Change Filament" ("Default" and each filament by its preset's name; "Set Filament for selected items" for several; only with more than one filament, for parts and modifiers), "Repair/Remesh" (section 13, "Repair/Remesh"), "Simplify Model" (the reference's words for "Simplify"; section 13, "Simplify"). **differs**: "Change type" is a sub-menu of the six kinds, where the C++ asks in a dialog ("Choose part type", "Type:"); "Split" is on whenever "To parts" can be done (see "Errors found in the C++"). **not yet**: the rest (each needs something the model does not have: text and SVG parts, hiding, a part made an object of its own, the table of "Edit in Parameter Table", reloading from a file, exporting). "Rename" is not in the C++'s shown part menu either; a double click or F2 renames |
+| The part menu: "Delete", "Edit text", "Repair", "Simplify", "Center", "Drop", "Mirror", "Hide"/"Show", "Separate", "Split" ("To objects", "To parts", "By painted colour"), "Edit in Parameter Table", "Change type", "Reload from disk", "Replace with STL", "Edit in Blender", "Edit in FreeCAD", "Fillet / chamfer", "Export as one STL", then "Change Filament", "Override paint", the support groups, "Precise Seam Type" | GUI_Factories.cpp l.2539–2585, l.2998 | **added**: "Delete", "Center", "Drop" (both "Move Object" steps), "Mirror" ▸ "Along X axis"…, "Split" ▸ "To objects" (off, as the C++ has it for a part) and "To parts", "Change type", "Change Filament" ("Default" and each filament by its preset's name; "Set Filament for selected items" for several; only with more than one filament, for parts and modifiers), "Repair/Remesh" (section 13, "Repair/Remesh"), "Simplify Model" (the reference's words for "Simplify"; section 13, "Simplify"), "Edit text" for a text part (section 13, "Emboss (the Text tool)"). **differs**: "Change type" is a sub-menu of the six kinds, where the C++ asks in a dialog ("Choose part type", "Type:"); "Split" is on whenever "To parts" can be done (see "Errors found in the C++"). **not yet**: the rest (each needs something the model does not have: SVG parts, hiding, a part made an object of its own, the table of "Edit in Parameter Table", reloading from a file, exporting). "Rename" is not in the C++'s shown part menu either; a double click or F2 renames |
 | "Height range Modifier" (no tooltip) after them, and "Edit Process Settings" after "Printable" | GUI_Factories.cpp l.967, l.3262 | **added** (eighteenth pass): "Height range Modifier" gives an object without ranges one from 0 to 2 mm, selects "Layers" and turns the Process section to "Objects"; "Edit Process Settings" turns it to "Objects" for what is selected. **not yet**: "Color Pattern...", "Edit in Parameter Table" (the table, section 2) |
-| "Add part", "Add negative part", "Add modifier", "Add support blocker", "Add support enforcer", "Add precise seam" in the object's menu, each "Load..." and the generic shapes "Cube", "Cylinder", "Sphere", "Cone", "Disc", "Torus", text, SVG… | GUI_Factories.cpp l.426, l.659, l.922 | **added**: the first five, each with "Load..." (an STL's or a 3MF's printed geometry, as it stands in its file, named after it: "Load Part" / "Load Modifier") and "Cube" (a tenth of the bed's greater side, square to the bed, beside the right front corner of the object's box at its foot: "Add primitive", named "Generic-Cube"). The part made is selected. **not yet**: "Add precise seam", "Height range Modifier", "Color Pattern...", and "Cylinder", "Sphere", "Cone", "Disc", "Torus" and the rest, which wait for `edge_mesh::primitives` to make them (it makes boxes only) |
+| "Add part", "Add negative part", "Add modifier", "Add support blocker", "Add support enforcer", "Add precise seam" in the object's menu, each "Load..." and the generic shapes "Cube", "Cylinder", "Sphere", "Cone", "Disc", "Torus", text, SVG… | GUI_Factories.cpp l.426, l.659, l.922 | **added**: the first five, each with "Load..." (an STL's or a 3MF's printed geometry, as it stands in its file, named after it: "Load Part" / "Load Modifier") and "Cube" (a tenth of the bed's greater side, square to the bed, beside the right front corner of the object's box at its foot: "Add primitive", named "Generic-Cube"), and "Text" for a part, a negative part and a modifier (section 13, "Emboss (the Text tool)"). The part made is selected. **not yet**: "Add precise seam", "Height range Modifier", "Color Pattern...", and "Cylinder", "Sphere", "Cone", "Disc", "Torus" and the rest, which wait for `edge_mesh::primitives` to make them (it makes boxes only) |
 | A new model part takes the object's `extruder` as its own; any other kind none | GUI_ObjectList.cpp l.2416–2421, l.2529–2534 | **added** |
 | Deleting a part: not the last solid one ("Deleting the last solid part is not allowed."); when one volume is left, its config goes to the object | l.2856–2913 | **added**, the filament going to the object; a part's other settings stay with the part (the model keeps no settings of an object's) |
 | Changing a part's type: the last solid part keeps its type ("The type of the last solid object part is not to be changed."); the volumes are sorted by type after | `change_part_type` l.5819, `set_volume_type` l.5930 | **added**. **differs**: a part keeps its place in the list; the reference sorts the volumes by type |
@@ -3724,7 +3836,7 @@ entry, in a fixed order:
 | `[Content_Types].xml`, `_rels/.rels` | written afresh, as the reference writes them; `_rels/.rels` names the cover (`Auxiliaries/.thumbnails/…` when the file had one, else the first plate's picture while that is written) |
 | `3D/3dmodel.model`: the header, an object of components for each object, the build (each copy: transform, printable) | written afresh. The header keeps every `<metadata>` the file had (title, designer, licence, description…), with `Application` "EdgeSlicer-2.4.9.0" (the pinned reference's version, `edge_3mf::REFERENCE_VERSION`, checked against the submodule by a test), `BambuStudio:3mfVersion` 1, the dates and the designer's id empty as the reference writes them. The reference reads a file as a whole project (plates, settings, presets) only when its `Application` names EdgeSlicer, Snapmaker Orca or Bambu Studio, so the reference's own name is the one written. Transforms are written as the shortest text that reads back to the same number (the reference writes 9 digits) |
 | `3D/Objects/<name>_<n>.model`, `3D/_rels/3dmodel.model.rels` | written afresh: a file for each object, each mesh of it that no earlier part has (the same mesh painted alike is written once and named from every part that has it, as `ShareMesh` does); vertices as the shortest text that reads back to the same `f32`; each triangle with every attribute it carried as the file had it (`paint_color`, `paint_seam`, `paint_supports`, `paint_fuzzy_skin`, texture layers, `face_property`). A `/` or another character a path cannot hold in an object's name is written `_` in the file's name (the reference writes the name as it is) |
-| `Metadata/model_settings.config` | written afresh from the model: each object's name and filament (`extruder`), each part's name, `subtype`, own filament (`extruder`, none for "default") and, once it has moved, `matrix` (see "Parts" below). Kept as the file had them, where the part is still what it was read as: every other metadata and setting of each object and part (per-object and per-part settings, modifiers' settings, `matrix`, `source_*`, Precise Seam's type, embossed text and SVG descriptions, `mesh_stat`), each plate's own (`locked`, `bed_type`, `print_sequence`, `first_layer_print_sequence`, `spiral_mode`, `filament_map_mode`, `filament_maps` with one entry for each filament, `print_history`…), a setting changed here (the lock, "Plate Settings") set in place or added where the reference writes it and one given back to the project taken out (`PlateKept::with`), a plate added here written as the reference writes a new one until something is set on it (`PlateKept::fresh`), each copy's place in the assembly view while its object has all its copies, and each copy's `identify_id` (the number the reference labels it with in G-code) while it has. Plates are numbered as they stand, each with its name and its copies |
+| `Metadata/model_settings.config` | written afresh from the model: each object's name and filament (`extruder`), each part's name, `subtype`, own filament (`extruder`, none for "default") and, once it has moved, `matrix` (see "Parts" below). Kept as the file had them, where the part is still what it was read as: every other metadata and setting of each object and part (per-object and per-part settings, modifiers' settings, `matrix`, `source_*`, Precise Seam's type, embossed text and SVG descriptions, `mesh_stat`; a text made or made again here is described afresh, `slic3rpe:shape` then `slic3rpe:text` after its metadata, as `TextConfigurationSerialization::to_xml` writes them: section 13, "Emboss (the Text tool)"), each plate's own (`locked`, `bed_type`, `print_sequence`, `first_layer_print_sequence`, `spiral_mode`, `filament_map_mode`, `filament_maps` with one entry for each filament, `print_history`…), a setting changed here (the lock, "Plate Settings") set in place or added where the reference writes it and one given back to the project taken out (`PlateKept::with`), a plate added here written as the reference writes a new one until something is set on it (`PlateKept::fresh`), each copy's place in the assembly view while its object has all its copies, and each copy's `identify_id` (the number the reference labels it with in G-code) while it has. Plates are numbered as they stand, each with its name and its copies |
 | `Metadata/project_settings.config` | the settings, below |
 | `Metadata/slice_info.config` | written afresh: the header alone, as the reference writes a project saved unsliced |
 | `Metadata/layer_config_ranges.xml` (height ranges and their settings) | an object's ranges kept as the file has them until they are edited here; then written as the reference writes them (`_add_layer_config_ranges_file_to_archive`: Boost's XML with each tag on a line, a range's `min_z` and `max_z`, an `<option opt_key>` for each of its settings in order of key), under the object's place as it stands (eighteenth pass). **differs**: the file ends with a new line, which the reference's does not have, as before this pass (the writer's own, for kept ranges too) |

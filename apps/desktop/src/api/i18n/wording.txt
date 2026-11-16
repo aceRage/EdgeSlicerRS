@@ -894,3 +894,7 @@ A temperature below 0 °C cannot be set.
 This printer cannot do that from here.
 The printer is printing: the axes and the extruder cannot be moved now.
 Before you go on, look at the printer: the bed and the space around the toolhead should be clear, and nobody's hands near it.
+No font is installed that the text can be written in.
+%d fonts could not be read and are not listed.
+Text that follows the surface ("Use surface") cannot be made here yet.
+Text placed letter by letter ("Per glyph") cannot be made here yet.
