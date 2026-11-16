@@ -87,8 +87,9 @@ p.warn { margin: 0; color: var(--warn); }
 .storage-details { flex: none; width: 260px; display: flex; flex-direction: column; gap: var(--space-2); overflow: auto; padding: var(--space-3); border: 1px solid var(--line-2); border-radius: var(--radius-l); background: var(--surface-raised); }
 .storage-details[hidden] { display: none; }
 .storage-preview { width: 100%; aspect-ratio: 1; display: grid; place-items: center; border-radius: var(--radius-m); background: var(--surface-well); }
-.storage-preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
-.storage-details h3 { margin: 0; overflow-wrap: anywhere; }
+.storage-preview[hidden] { display: none; }
+.storage-preview img { width: 100%; height: 100%; object-fit: contain; }
+.storage-details h3 { margin: 0; overflow-wrap: anywhere; text-transform: none; letter-spacing: normal; }
 #storage-detail-text { margin: 0; white-space: pre-line; font-size: var(--size-label); }
 #storage-delete:not(:disabled) { color: var(--danger); }
 #device-page .row { margin-top: var(--space-2); }

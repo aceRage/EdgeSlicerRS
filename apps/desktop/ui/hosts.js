@@ -779,6 +779,8 @@ function renderStorageDetails() {
   $('storage-print').hidden = Boolean(file.bambu);
   $('storage-detail-text').textContent = lines.join('\n');
   const picture = file.thumbnail ? storagePictures.get(file.thumbnail) : null;
+  // No picture to come (a printer whose list has none): no empty square.
+  $('storage-preview').parentElement.hidden = !file.thumbnail;
   $('storage-preview').hidden = !picture;
   if (picture) $('storage-preview').src = picture;
   else $('storage-preview').removeAttribute('src');
