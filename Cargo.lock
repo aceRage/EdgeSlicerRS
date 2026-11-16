@@ -412,6 +412,7 @@ dependencies = [
  "edge-text",
  "edge-tower",
  "rayon",
+ "rustc-hash",
  "tempfile",
  "zip",
 ]

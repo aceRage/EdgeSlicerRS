@@ -120,6 +120,10 @@ pub(super) struct Fonts {
     /// Fonts read whole, by their place in the list.
     read: HashMap<usize, Arc<Font>>,
     fallback: Option<Option<Arc<Font>>>,
+    /// The surface the last text that follows it was cut from, and what it
+    /// was made of: made again only when the other parts or the text's
+    /// frame change, not on each keystroke.
+    surface: Option<(emboss::SurfaceKey, Arc<emboss::Surface>)>,
 }
 
 /// The platform's standard font folders. Only macOS's are checked; the
@@ -569,6 +573,32 @@ impl Session {
         fonts.dirs = Some(dirs);
     }
 
+    /// The surface a text in `object` (`part` once it is there) standing at
+    /// `frame` is cut from: the one kept when it is of the same parts and
+    /// frame, else made and kept. None when the object has no other
+    /// printed part that bounds a volume.
+    fn text_surface(
+        &self,
+        model: &edge_engine::Model,
+        object: u64,
+        part: Option<u64>,
+        frame: &Transform,
+    ) -> Result<Option<Arc<emboss::Surface>>, String> {
+        let key = model
+            .text_surface_key(object, part, frame)
+            .map_err(|e| e.to_string())?;
+        if let Some((held, surface)) = &lock(&self.fonts).surface
+            && *held == key
+        {
+            return Ok(Some(surface.clone()));
+        }
+        let Some(surface) = key.surface().map(Arc::new) else {
+            return Ok(None);
+        };
+        lock(&self.fonts).surface = Some((key, surface.clone()));
+        Ok(Some(surface))
+    }
+
     /// The bundled symbol font, when it is there with its licence.
     fn fallback(&self) -> Option<Arc<Font>> {
         if let Some(fallback) = lock(&self.fonts).fallback.clone() {
@@ -682,14 +712,9 @@ impl Session {
                 .flatten()
         });
         let face = self.font_list().find(&volume.text);
-        let only_part = model.objects()[at]
-            .shape()
-            .parts()
-            .iter()
-            .filter(|held| held.kind == PartKind::Normal)
-            .count()
-            == 1
-            && kind == PartKind::Normal;
+        let only_part = model
+            .is_only_printed_part(object, part)
+            .map_err(|e| e.to_string())?;
         Ok(json!({
             "object": object,
             "part": part,
@@ -729,6 +754,7 @@ impl Session {
             // `limits.emboss`.
             .clamp(0.01, 1e4);
         let kind = kind_of(text(args, "kind"))?;
+        let use_surface = style.get("use_surface").and_then(Value::as_bool) == Some(true);
         let mut model = match &stage.file {
             Some(file) => file.model.clone(),
             None => edge_engine::Model::new(),
@@ -737,7 +763,7 @@ impl Session {
         let (name, part, made) = match op {
             "add" => {
                 let config = configuration(style, &face, None)?;
-                let text = emboss::emboss(fonts, &config, depth, kind).map_err(fail)?;
+                let mut text = emboss::emboss(fonts, &config, depth, kind).map_err(fail)?;
                 let angle = style
                     .get("angle")
                     .and_then(Value::as_f64)
@@ -757,6 +783,22 @@ impl Session {
                             }
                             _ => None,
                         };
+                        // "Use surface" in the style: cut from the object
+                        // where the text lands; where it lands nowhere or
+                        // the cut gives nothing, flat
+                        // (`CreateVolumesJob::process`).
+                        if use_surface && let Some(hit) = hit {
+                            let frame = model
+                                .text_frame_on(bed.as_ref(), copy, hit, angle, None)
+                                .map_err(fail)?;
+                            if let Some(surface) =
+                                self.text_surface(&model, object, None, &frame)?
+                                && let Ok(on) =
+                                    emboss::emboss_on_surface(fonts, &config, depth, kind, &surface)
+                            {
+                                text = on;
+                            }
+                        }
                         let part = model
                             .add_text(bed.as_ref(), object, copy, hit, angle, None, kind, text)
                             .map_err(fail)?;
@@ -794,22 +836,13 @@ impl Session {
                 let mut config = configuration(style, &face, Some(&was.text))?;
                 // A style name the page did not change stays.
                 config.style_name = was.text.style_name.clone();
-                if style.get("use_surface").and_then(Value::as_bool) == Some(true) {
-                    let mut shape = was.shape.clone();
-                    shape.use_surface = true;
-                    if let Some(why) = emboss::not_yet(&config, &shape) {
-                        return Err(tr(why));
-                    }
-                }
-                let kept = edge_engine::EmbossShape {
-                    use_surface: false,
-                    ..was.shape.clone()
-                };
-                if let Some(why) = emboss::not_yet(&config, &kept) {
+                if let Some(why) = emboss::not_yet(&config, &was.shape) {
                     return Err(tr(why));
                 }
-                let mut text = emboss::emboss(fonts, &config, depth, kind).map_err(fail)?;
-                text.volume.shape.bend = None;
+                // "Use surface" is not for the object's only printed part
+                // (`start_update_volume`, `is_the_only_one_part`).
+                let use_surface =
+                    use_surface && !model.is_only_printed_part(object, part).map_err(fail)?;
                 let mut frame = model.text_frame(object, part).map_err(fail)?;
                 // "Rotation" and "From surface": the part turned about and
                 // moved along its own Z (`do_local_z_rotate`,
@@ -821,7 +854,9 @@ impl Session {
                         frame = emboss::apply_angle_distance(&frame, Some(wanted - now), None);
                     }
                 }
+                // "From surface" is not used with "Use surface".
                 if let Some(wanted) = style.get("distance").and_then(Value::as_f64)
+                    && !use_surface
                     && let Some(copy) = args.get("copy").and_then(Value::as_u64)
                 {
                     let now = model
@@ -851,6 +886,26 @@ impl Session {
                         )
                         .map_err(fail)?;
                 }
+                let text = if use_surface {
+                    // Turned on now: the text's origin moved onto the
+                    // surface first (`calc_surface_offset`).
+                    if !was.shape.use_surface
+                        && let Some(offset) = model
+                            .text_surface_offset(object, part, &frame)
+                            .map_err(fail)?
+                    {
+                        frame = emboss::moved_in_frame(&frame, offset);
+                    }
+                    let surface = self
+                        .text_surface(&model, object, Some(part), &frame)?
+                        .ok_or_else(|| tr(emboss::NO_SURFACE))?;
+                    emboss::emboss_on_surface(fonts, &config, depth, kind, &surface)
+                        .map_err(fail)?
+                } else {
+                    let mut text = emboss::emboss(fonts, &config, depth, kind).map_err(fail)?;
+                    text.volume.shape.bend = None;
+                    text
+                };
                 let kind = args.get("kind").map(|_| kind);
                 model
                     .set_text(bed.as_ref(), object, part, text, Some(frame), kind)

@@ -20,9 +20,13 @@
 // history ("Emboss attribute change"). The fonts are the session's
 // (`text_fonts`): their names, and each drawn in itself for the list.
 //
-// Not here yet, and so not offered: "Use surface" and "Per glyph" (shown,
-// off), the curve, the style list, inline shapes, dragging the text over
-// the surface and the 3D handles.
+// "Use surface" cuts the text from the surface it stands on and remakes
+// it on every change, as `UpdateSurfaceVolumeJob` does; the session keeps
+// the surface between changes.
+//
+// Not here yet, and so not offered: "Per glyph" (shown, off), the curve,
+// the style list, inline shapes, dragging the text over the surface and
+// the 3D handles.
 (function (GL) {
   const M = GL.math;
 
@@ -468,10 +472,17 @@
       const advanced = el('details', { className: 'text-advanced', open: Boolean(this.advancedOpen) && !locked });
       advanced.addEventListener('toggle', () => { this.advancedOpen = advanced.open; });
       advanced.append(el('summary', { textContent: t('Advanced') }));
-      const notYet = t('Text that follows the surface ("Use surface") cannot be made here yet.');
-      const surface = el('input', { type: 'checkbox', checked: Boolean(s.use_surface), disabled: !s.use_surface || locked });
-      surface.addEventListener('change', () => { s.use_surface = surface.checked; this.changed(true); });
-      const surfaceLabel = el('label', { className: 'edit-check', title: notYet }, surface, ` ${t('Use surface')}`);
+      // "Use surface": the text cut from the surface it stands on. Not for
+      // an object's only printed part, unless it is on already, so that it
+      // can be taken off (`can_use_surface`); turned on, "From surface" is
+      // let go of, as the surface takes its place.
+      const surface = el('input', { type: 'checkbox', checked: Boolean(s.use_surface), disabled: locked || (!s.use_surface && o.onlyPart) });
+      surface.addEventListener('change', () => {
+        s.use_surface = surface.checked;
+        if (s.use_surface) { s.distance = null; o.touched.distance = false; }
+        this.changed(true);
+      });
+      const surfaceLabel = el('label', { className: 'edit-check' }, surface, ` ${t('Use surface')}`);
       const glyph = el('input', { type: 'checkbox', checked: Boolean(s.per_glyph), disabled: !s.per_glyph || locked });
       glyph.addEventListener('change', () => { s.per_glyph = glyph.checked; this.changed(true); });
       const glyphLabel = el('label', { className: 'edit-check', title: t('Text placed letter by letter ("Per glyph") cannot be made here yet.') }, glyph, ` ${t('Per glyph')}`);
