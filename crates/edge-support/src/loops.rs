@@ -56,7 +56,7 @@ pub(crate) fn contact_loops(
             if points.len() < 2 {
                 continue;
             }
-            if edge_clip::clip_lines(&[points.clone()], &near)?.is_empty() {
+            if edge_clip::clip_lines(std::slice::from_ref(points), &near)?.is_empty() {
                 continue;
             }
             // Where along the ring the walk is: the segment's first point
