@@ -345,3 +345,50 @@ mod tests {
         assert!(!nozzle_grouping(&variables, 1));
     }
 }
+/// Whether `key` is one of the bed-slinger mass model's two settings and
+/// the printer models it: the reference lists them in the file's settings
+/// only then (GCode.cpp, `dump_mass_model_keys`; the A2L sets both).
+pub(crate) fn listed_mass_model(settings: &edge_config::Settings, key: &str) -> bool {
+    const KEYS: [&str; 2] = ["machine_max_force_Y", "machine_bed_mass_Y"];
+    KEYS.contains(&key)
+        && KEYS.iter().any(|key| {
+            settings
+                .float(key)
+                .ok()
+                .flatten()
+                .is_some_and(|value| value > 0.0)
+        })
+}
+
+/// The Y acceleration a bed-slinger's motor can give the bed and the part
+/// on it (GCode.cpp `mass_load_limited_machine_acceleration`, Bambu
+/// Studio's): `machine_max_force_Y` (N) over `machine_bed_mass_Y` plus the
+/// mass printed so far (g), at most the lowest `machine_max_acceleration_y`;
+/// that lowest alone where either is unset (0) or nothing is printed yet.
+/// In mm/s².
+pub(crate) fn y_acceleration_limit(force: f64, bed_mass: f64, printed: f64, limit_y: f64) -> f64 {
+    const EPSILON: f64 = 1e-4;
+    if force > EPSILON && bed_mass > EPSILON && printed > EPSILON {
+        // 1 N = 1e6 g mm/s².
+        (force * 1e6 / (bed_mass + printed)).min(limit_y)
+    } else {
+        limit_y
+    }
+}
+
+#[cfg(test)]
+mod mass_tests {
+    use super::y_acceleration_limit;
+
+    #[test]
+    fn the_y_limit_falls_as_the_part_grows() {
+        // The A2L: 29 N over its 2700 g bed.
+        assert_eq!(y_acceleration_limit(29.0, 2700.0, 0.0, 8000.0), 8000.0);
+        assert_eq!(y_acceleration_limit(29.0, 2700.0, 900.0, 8000.0), 8000.0);
+        let heavy = y_acceleration_limit(29.0, 2700.0, 1300.0, 8000.0);
+        assert!((heavy - 29e6 / 4000.0).abs() < 1e-9);
+        // Either setting unset: the machine's limit.
+        assert_eq!(y_acceleration_limit(0.0, 2700.0, 1300.0, 8000.0), 8000.0);
+        assert_eq!(y_acceleration_limit(29.0, 0.0, 1300.0, 8000.0), 8000.0);
+    }
+}

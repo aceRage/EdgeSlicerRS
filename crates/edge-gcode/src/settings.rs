@@ -1254,7 +1254,10 @@ impl PrintSettings {
                 // and what only names the preset a setting came from.
                 let mut config: Vec<(String, String)> = settings
                     .iter()
-                    .filter(|(key, _)| edge_config::reference_knows(key))
+                    .filter(|(key, _)| {
+                        edge_config::reference_knows(key)
+                            || crate::bambu_vars::listed_mass_model(settings, key)
+                    })
                     .map(|(key, value)| (key.to_owned(), edge_config::serialized(key, value)))
                     .collect();
                 config.sort();

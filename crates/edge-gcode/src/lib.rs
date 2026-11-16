@@ -2658,6 +2658,7 @@ impl Writer<'_> {
             self.timelapse(layer.z)?;
         }
         if let Some(template) = &s.layer_change_gcode {
+            self.mass_so_far();
             self.custom("layer_change_gcode", template)?;
         }
         // Where the reference's cooling sets the layer's fan; a marker in
@@ -3094,6 +3095,51 @@ impl Writer<'_> {
         }
         self.fan_over_air(false)?;
         Ok(())
+    }
+
+    /// What a bed-slinger's layer change G-code is told of the mass on
+    /// its bed (GCode.cpp `process_layer`, Bambu Studio's; the A2L's sets
+    /// `M201 N1 Y[curr_y_acceleration_limit]`): the grams extruded so far
+    /// (`curr_accumulated_mass`), what the last layer added
+    /// (`curr_layer_mass`) and the Y acceleration that mass allows
+    /// ([`bambu_vars::y_acceleration_limit`]). The reference counts the
+    /// whole print's prime tower filament in from the first layer on
+    /// (`update_print_stats_and_format_filament_stats` with the finished
+    /// tower's figures); not copied: here what is extruded so far counts,
+    /// tower included as it is printed.
+    fn mass_so_far(&mut self) {
+        let printed: f64 = (self.state.used.iter().zip(self.all))
+            .map(|((_, mm3), filament)| mm3 * filament.filament_density.unwrap_or(0.0) * 0.001)
+            .filter(|grams| *grams > 0.0)
+            .fold(0.0, |sum, grams| sum + grams);
+        let number = |name: &str| {
+            self.variables
+                .value(name)
+                .and_then(|value| value.to_string().trim().parse::<f64>().ok())
+                .unwrap_or(0.0)
+        };
+        let before = number("curr_accumulated_mass");
+        let limit_y = (self
+            .variables
+            .list("machine_max_acceleration_y")
+            .unwrap_or(&[]))
+        .iter()
+        .filter_map(|value| value.to_string().trim().parse::<f64>().ok())
+        .fold(1e10, f64::min);
+        let limit = bambu_vars::y_acceleration_limit(
+            number("machine_max_force_Y"),
+            number("machine_bed_mass_Y"),
+            printed,
+            limit_y,
+        );
+        let layer = printed - before;
+        let v = &mut self.variables;
+        v.set("curr_y_acceleration_limit", Value::Float(limit));
+        v.set("curr_accumulated_mass", Value::Float(printed));
+        v.set(
+            "curr_layer_mass",
+            Value::Float(if layer <= 1e-4 { 0.0 } else { layer }),
+        );
     }
 
     /// The printer's timelapse G-code (GCode.cpp `process_layer`,

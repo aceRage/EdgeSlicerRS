@@ -2067,6 +2067,25 @@ PLA cube the H2S's 306 and the P2S's 268 lines of start G-code are now
 the reference's; `main` refused both (`cooling_filter_enabled`,
 `initial_no_support_filament_id`).
 
+The layer change G-code is told the mass on a bed-slinger's bed, as the
+reference tells it (GCode.cpp `mass_load_limited_machine_acceleration`,
+Bambu Studio's): `curr_accumulated_mass` (grams extruded so far),
+`curr_layer_mass` (what the last layer added) and
+`curr_y_acceleration_limit`, `machine_max_force_Y` (N) over
+`machine_bed_mass_Y` plus that mass, at most the lowest
+`machine_max_acceleration_y`; that lowest alone where either is 0. The
+A2L writes it at each layer (`M201 N1 Y[curr_y_acceleration_limit]`),
+and the two settings are listed in the file's settings when either is
+set, as there. Not copied: the reference counts the whole print's prime
+tower filament in from the first layer on; here what is extruded so far
+counts. On the A2L cube with `machine_max_force_Y` lowered to 21.5 N
+(so the limit falls below 8000) the 100 layers' limits are the
+reference's to the sixth digit, 25 of them one in the last digit lower
+(this engine's mass 3.4 mg higher from the second layer on); `main`
+refused the A2L (`hold_chamber_temp_for_flat_print`, then
+`curr_y_acceleration_limit`), and now its 268 lines of start G-code are
+the reference's.
+
 Projects made with `tools/make_project.py` from the BBL profiles, the
 part centred where the reference's command line moves it and the
 flushing volumes set to those it works out; lines of template G-code

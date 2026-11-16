@@ -4409,3 +4409,63 @@ fn copies_printed_object_by_object_are_each_finished_before_the_next() {
     settings.acceleration_form = AccelerationForm::Klipper;
     assert_eq!(beds(&settings), ["M140 S60 ; set bed temperature"]);
 }
+
+/// A bed-slinger's layer change is told the mass printed so far and the
+/// Y acceleration it allows (GCode.cpp `mass_load_limited_machine_acceleration`):
+/// the motor's force over the bed and the part, at most the machine's Y
+/// limit; that limit alone on the first layer, with nothing printed.
+#[test]
+fn the_layer_change_is_told_the_mass_on_the_bed() {
+    let mut settings = profile(&[(
+        "after",
+        "M201 N1 Y[curr_y_acceleration_limit] ; {curr_accumulated_mass} {curr_layer_mass}",
+    )]);
+    settings.filament_density = Some(1.25);
+    for (key, value) in [
+        ("machine_max_force_Y", "21.5"),
+        ("machine_bed_mass_Y", "2700"),
+    ] {
+        settings.variables.set(key, Value::text(value));
+    }
+    settings.variables.set_list(
+        "machine_max_acceleration_y",
+        vec![Value::text("8000"), Value::text("9000")],
+    );
+    let text = printed(3, &settings);
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| line.starts_with("M201 N1"))
+        .collect();
+    assert_eq!(lines.len(), 3, "{text}");
+    assert_eq!(lines[0], "M201 N1 Y8000 ; 0 0");
+    let read = |line: &str| -> Vec<f64> {
+        line.split([' ', 'Y'])
+            .filter_map(|word| word.parse::<f64>().ok())
+            .collect()
+    };
+    let (second, third) = (read(lines[1]), read(lines[2]));
+    // Y limit, grams so far, grams the layer added; six digits each.
+    assert!(
+        second[1] > 0.0 && (second[1] - second[2]).abs() < 1e-6,
+        "{lines:?}"
+    );
+    assert!((third[1] - second[1] - third[2]).abs() < 1e-5, "{lines:?}");
+    for values in [&second, &third] {
+        let expected = 21.5e6 / (2700.0 + values[1]);
+        assert!(
+            values[0] < 8000.0 && (values[0] - expected).abs() < 0.01,
+            "{lines:?}"
+        );
+    }
+    // Without the model, the machine's lowest Y limit.
+    settings
+        .variables
+        .set("machine_max_force_Y", Value::text("0"));
+    let text = printed(3, &settings);
+    assert!(
+        text.lines()
+            .filter(|line| line.starts_with("M201 N1 Y8000 ;"))
+            .count()
+            == 3
+    );
+}
