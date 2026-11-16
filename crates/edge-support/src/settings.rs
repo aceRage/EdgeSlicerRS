@@ -42,6 +42,9 @@ pub struct SupportSettings {
     pub interface_top_layers: usize,
     /// Gap between the lines of the dense top.
     pub interface_spacing: f64,
+    /// Normal supports: the top contact edged with a loop where it faces
+    /// the overhang (`support_interface_loop_pattern`).
+    pub interface_loops: bool,
     /// How many layers at the foot of a support that stands on the part
     /// are dense, and the gap between their lines.
     pub interface_bottom_layers: usize,
@@ -109,6 +112,7 @@ impl Default for SupportSettings {
             angle: 0.0,
             interface_top_layers: 3,
             interface_spacing: 0.5,
+            interface_loops: false,
             interface_bottom_layers: 0,
             bottom_interface_spacing: 0.5,
             expansion: 0.0,
@@ -303,6 +307,7 @@ impl SupportSettings {
                 defaults.interface_top_layers,
             )?,
             interface_spacing: number("support_interface_spacing", defaults.interface_spacing)?,
+            interface_loops: flag("support_interface_loop_pattern", defaults.interface_loops)?,
             // -1 stands for "as many as at the top".
             interface_bottom_layers: match settings.integer("support_interface_bottom_layers")? {
                 Some(-1) => count(
