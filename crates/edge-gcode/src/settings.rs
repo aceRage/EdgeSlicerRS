@@ -1758,18 +1758,19 @@ fn variables(
 ) -> Variables {
     let mut variables = Variables::default();
     for (key, value) in settings.iter() {
+        let decimal = edge_config::float_number(key);
         match value {
             // A filament's option is a list in the reference, one entry
             // for each filament, even where only its default stands for
             // all of them: a template may ask for any filament's
             // (Prusa's MMU3 start G-code, `required_nozzle_HRC[4]`).
             Setting::One(text) if edge_config::filaments::is_per_filament(key) => {
-                variables.set_list(key, vec![setting_value(key, text)])
+                variables.set_list(key, vec![setting_value(text, decimal)])
             }
-            Setting::One(text) => variables.set(key, setting_value(key, text)),
+            Setting::One(text) => variables.set(key, setting_value(text, decimal)),
             Setting::Many(texts) => variables.set_list(
                 key,
-                texts.iter().map(|text| setting_value(key, text)).collect(),
+                texts.iter().map(|text| setting_value(text, decimal)).collect(),
             ),
         }
     }
@@ -1972,9 +1973,9 @@ fn variables(
 /// the reference declares as a decimal, which is a decimal even where it
 /// is written as a whole number ("21" of `filament_max_volumetric_speed`
 /// halves to 10.5, as in the reference, not 10).
-fn setting_value(key: &str, text: &str) -> Value {
-    match text.trim().parse::<f64>() {
-        Ok(number) if number.is_finite() && edge_config::float_number(key) => Value::Float(number),
+fn setting_value(text: &str, decimal: bool) -> Value {
+    match decimal.then(|| text.trim().parse::<f64>()) {
+        Some(Ok(number)) if number.is_finite() => Value::Float(number),
         _ => Value::text(text),
     }
 }

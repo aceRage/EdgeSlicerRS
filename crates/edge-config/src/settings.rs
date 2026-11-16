@@ -310,13 +310,15 @@ pub fn plain_number(key: &str) -> bool {
 /// `ConfigOptionFloats` read with `set_d`).
 const FLOAT_NUMBERS: &str = include_str!("float_numbers.txt");
 
-/// Whether the reference reads `key` as a decimal number.
+/// Whether the reference reads `key` as a decimal number. Asked for every
+/// setting each time a filament's or a region's template names are made,
+/// so the list is read once.
 pub fn float_number(key: &str) -> bool {
-    FLOAT_NUMBERS
-        .lines()
-        .collect::<Vec<_>>()
-        .binary_search(&key)
-        .is_ok()
+    static FLOATS: std::sync::OnceLock<std::collections::HashSet<&'static str>> =
+        std::sync::OnceLock::new();
+    FLOATS
+        .get_or_init(|| FLOAT_NUMBERS.lines().collect())
+        .contains(key)
 }
 
 /// A plain number written with a `%` after it, as some profiles write
