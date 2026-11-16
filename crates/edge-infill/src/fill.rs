@@ -1014,13 +1014,27 @@ pub fn fill_within(
             _ => false,
         };
         if wanted && !no_overlap.is_empty() {
+            // The gap lines of a surface whose lines may be reordered are
+            // of its part, to be ordered with them; those of a surface
+            // laid in turn (the reference's `no_sort`) are a part of
+            // their own, numbered past the surfaces.
+            let in_turn = match lay {
+                Lay::Turned { ordered, .. } => ordered,
+                Lay::Spiral => params.flow_calib_order,
+                _ => false,
+            };
+            let gap_part = if in_turn {
+                (surfaces.len() + number + 1) as u32
+            } else {
+                part
+            };
             let gaps = gap_fill(
                 surface,
                 &paths[first_path..],
                 &flow,
                 params,
                 no_overlap,
-                part,
+                gap_part,
             )?;
             paths.extend(gaps);
         }
@@ -1276,10 +1290,10 @@ const INSET_OVERLAP_TOLERANCE: f64 = 0.4;
 /// leave bare of the surface's share of `no_overlap`, each as wide as the
 /// gap it fills (FillBase.cpp `_create_gap_fill`).
 ///
-/// Different from the reference in where they come in the order: there,
-/// the gap lines of a surface swept from side to side are slipped in
-/// among its lines wherever that saves travel (`insert_gap_fill`); here
-/// they follow the surface's lines as a group of their own.
+/// They are given `part`. Different from the reference where the
+/// surface's lines are laid in turn: there its gap lines are slipped in
+/// among them wherever that saves travel (`insert_gap_fill`); here they
+/// are a part of their own, ordered with the layer's other parts.
 fn gap_fill(
     surface: &Surface,
     laid: &[ExtrusionPath],
@@ -2217,10 +2231,11 @@ mod tests {
         };
         let found = gaps(SurfaceKind::Top, GapFillTarget::TopBottom, true);
         assert!(!found.is_empty());
-        // In the wedge, thinner than the fill's own lines, and laid with
-        // the surface they belong to.
+        // In the wedge, thinner than the fill's own lines, and, the
+        // surface's lines being laid in turn, a part of their own after
+        // the surface's.
         for line in &found {
-            assert_eq!(line.part, 1);
+            assert_eq!(line.part, 2);
             assert!(line.flow.width < 0.4, "{}", line.flow.width);
             assert!(line.points.iter().all(|point| {
                 point.x >= 0
@@ -2228,6 +2243,18 @@ mod tests {
                     && point.y as f64 <= 4e6 - point.x as f64 * 4.0 / 30.0 + 1e3
             }));
         }
+        // Where the surface's lines may be reordered, they are of its
+        // part, to be ordered with them.
+        let swept = FillParams {
+            gap_fill: GapFillTarget::TopBottom,
+            top_ordered: false,
+            ..params(Pattern::Lines, 0.2)
+        };
+        let surface = wedge(SurfaceKind::Top);
+        let inside = [surface.area.clone()];
+        let swept = fill_within(&[surface], 0, &swept, &frame, &inside).unwrap();
+        assert!(swept.iter().any(|path| path.role == Role::GapFill));
+        assert!(swept.iter().all(|path| path.part == 1));
         // The plain fill is what it is without.
         let plain = |target| {
             let asked = FillParams {

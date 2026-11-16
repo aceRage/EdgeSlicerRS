@@ -3345,8 +3345,18 @@ impl Writer<'_> {
         for stage in
             paths.chunk_by(|a, b| (fill(a) && fill(b)) || a.role == b.role && a.part == b.part)
         {
+            // The gap fill of an area is one more of its lines, chained
+            // with the rest (FillBase.cpp `_create_gap_fill` adds it to
+            // the area's collection, which `extrude_infill` chains
+            // whole). The gap fill of an area laid in turn comes as a
+            // part of its own (`edge_infill`).
+            let own_gap =
+                |a: &ExtrusionPath, b: &ExtrusionPath| a.part != 0 && b.role == Role::GapFill;
             let mut parts: Vec<Part<'_>> = stage
-                .chunk_by(|a, b| a.role == b.role && a.part == b.part && (a.part != 0 || b.in_turn))
+                .chunk_by(|a, b| {
+                    a.part == b.part
+                        && ((a.role == b.role && (a.part != 0 || b.in_turn)) || own_gap(a, b))
+                })
                 .filter_map(Part::new)
                 .collect();
             let ends: Vec<[Point2; 2]> = parts.iter().map(Part::ends).collect();

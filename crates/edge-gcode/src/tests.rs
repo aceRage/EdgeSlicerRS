@@ -963,6 +963,40 @@ fn lines_laid_in_turn_keep_their_order_and_direction() {
 }
 
 #[test]
+fn an_areas_own_gap_fill_is_chained_with_its_lines() {
+    // Two bottom lines far apart and, given after them, a gap line of the
+    // same area beside the first: it is laid between the two, where it
+    // lies, not after both (FillBase.cpp `_create_gap_fill` puts it in the
+    // area's collection, which is chained whole).
+    let area = [1.0, 30.0].map(|x| ExtrusionPath {
+        part: 1,
+        ..line((x, 1.0), (x, 9.0), Role::BottomSurface)
+    });
+    let gap = ExtrusionPath {
+        part: 1,
+        ..line((2.0, 9.5), (2.0, 1.5), Role::GapFill)
+    };
+    let fill = [area[0].clone(), area[1].clone(), gap.clone()];
+    let (text, _) = print(&one_layer(&[], &[], &fill), &basic());
+    assert_eq!(
+        features(&text),
+        ["Bottom surface", "Gap infill", "Bottom surface"]
+    );
+    // Of another area (laid in turn, and so a part of its own) it is
+    // ordered as an area by itself: after the two lines it is given after.
+    let apart = [
+        area[0].clone(),
+        ExtrusionPath {
+            in_turn: true,
+            ..area[1].clone()
+        },
+        ExtrusionPath { part: 2, ..gap },
+    ];
+    let (text, _) = print(&one_layer(&[], &[], &apart), &basic());
+    assert_eq!(features(&text), ["Bottom surface", "Gap infill"]);
+}
+
+#[test]
 fn fill_is_laid_area_by_area_whatever_its_kind() {
     // Three areas in a row: top fill on the left and on the right, solid
     // fill between them, two lines each. Given kind by kind.
