@@ -256,7 +256,6 @@ const NO_MOBILE_HUB: &str = "not yet: there is no Mobile Hub";
 const NO_THEMES: &str = "not yet: the app follows the system's dark or light";
 const NO_COSTS: &str = "not yet: no prices or rates of your own are kept";
 const NO_LAYOUT: &str = "not yet: the sidebar's layout is not reset";
-const NO_CALIBRATION: &str = "not yet: calibration models are not built";
 const NO_FOLDER: &str = "not yet: folders are not shown in the system's file manager";
 const NO_LOGS: &str = "not yet: the app keeps no logs";
 const NO_TIPS: &str = "not yet: there are no tips";
@@ -781,9 +780,8 @@ static CALIBRATION: &[Node] = &[
         "calibration.ironing",
         "Ironing flow",
         "Ironing flow calibration",
-        When::Always,
-    )
-    .waits(NO_CALIBRATION)),
+        When::Prepare,
+    )),
     I(item(
         "calibration.tutorial",
         "Tutorial",

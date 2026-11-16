@@ -1567,6 +1567,11 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                     )
                 })
                 .collect();
+            // The ironing flow calibration's least and most flow.
+            let ramp_flows = calibration
+                .as_ref()
+                .filter(|params| params.mode == crate::calib::CalibMode::IroningFlow)
+                .map(|params| (params.start, params.end));
             for (filament, fills) in fills_by.iter_mut().enumerate() {
                 let ironing = &stages[filament].ironing;
                 if !ironing.enabled() {
@@ -1616,17 +1621,45 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                             &own,
                         )
                         .map_err(|e| e.to_string())?;
-                        edge_infill::iron(
-                            &areas,
-                            index,
-                            &own,
-                            &|area| {
-                                frame_of(&middles, area.contour.points.first().copied())
-                                    .map_or(middle, |frame| frame.origin)
-                            },
-                            // Numbered on from the layer's surfaces.
-                            surfaces[index].len() as u32 + 1,
-                        )
+                        let origin_of = |area: &ExPolygon| {
+                            frame_of(&middles, area.contour.points.first().copied())
+                                .map_or(middle, |frame| frame.origin)
+                        };
+                        // Numbered on from the layer's surfaces.
+                        let first_part = surfaces[index].len() as u32 + 1;
+                        // The ironing flow calibration: the flow ramped
+                        // from 5 mm inside the left of the object to 5 mm
+                        // inside its right (Fill.cpp `make_ironing`), at its
+                        // own layer height. The reference takes each
+                        // object's own box; here the object of the layer's
+                        // first area, the test's project holding one.
+                        let ramp = ramp_flows.and_then(|(start, end)| {
+                            let at = areas.first()?.contour.points.first().copied()?;
+                            let (low, high, _) = lasts
+                                .iter()
+                                .filter(|(low, high, _)| {
+                                    at.x >= low.x
+                                        && at.x <= high.x
+                                        && at.y >= low.y
+                                        && at.y <= high.y
+                                })
+                                .min_by_key(|(low, high, _)| {
+                                    i128::from(high.x - low.x) * i128::from(high.y - low.y)
+                                })?;
+                            Some(edge_infill::FlowRamp {
+                                start,
+                                end,
+                                x_start: low.x + scaled(5.0),
+                                x_end: high.x - scaled(5.0),
+                                layer_height,
+                            })
+                        });
+                        match ramp {
+                            Some(ramp) => edge_infill::iron_ramped(
+                                &areas, index, &own, &origin_of, first_part, &ramp,
+                            ),
+                            None => edge_infill::iron(&areas, index, &own, &origin_of, first_part),
+                        }
                         .map_err(|e| e.to_string())
                     })
                     .collect::<Result<Vec<Vec<ExtrusionPath>>, String>>()?;

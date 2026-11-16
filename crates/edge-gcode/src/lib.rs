@@ -5024,6 +5024,14 @@ impl Writer<'_> {
                 )?;
                 self.state.height = Some(sloping.z);
             }
+            // GCodeWriter.cpp `extrude_to_xy`: a move that feeds nothing
+            // (the ironing flow calibration's 0 %) says no E.
+            (None, None) if feed.abs() <= f64::EPSILON => writeln!(
+                self.out,
+                "G1 X{:.3} Y{:.3}{feed_word}",
+                self.gcode_x(to),
+                self.gcode_y(to)
+            )?,
             (None, None) => writeln!(
                 self.out,
                 "G1 X{:.3} Y{:.3} E{feed:.5}{feed_word}",

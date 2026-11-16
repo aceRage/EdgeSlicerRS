@@ -409,6 +409,7 @@ dependencies = [
  "edge-perimeter",
  "edge-slice",
  "edge-support",
+ "edge-text",
  "edge-tower",
  "rayon",
  "tempfile",

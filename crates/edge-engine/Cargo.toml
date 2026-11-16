@@ -21,6 +21,7 @@ edge-paint.workspace = true
 edge-perimeter.workspace = true
 edge-slice.workspace = true
 edge-support.workspace = true
+edge-text.workspace = true
 edge-tower.workspace = true
 rayon.workspace = true
 

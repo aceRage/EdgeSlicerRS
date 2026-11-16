@@ -29,6 +29,7 @@ replaces it until output matches on the printers we care about.
 | `crates/edge-gcode` | Print order, seams, travel, retraction, wipe and lift, cooling, overhangs, and extrusion, written as G-code |
 | `crates/edge-visibility` | How much of a part's outside can be seen from each place on its surface, which is where a seam shows least: points scattered over the mesh, rays cast from each, and the measure at any place taken from the points round it (a port of the visibility measure of the reference's SeamPlacer); and where the parts of an object meet, points on each part's surface that touch another part, which seams are moved to (its `gather_part_joints`) |
 | `crates/edge-infill` | Top, bottom, bridge, solid, bridged-over-infill and sparse surfaces, and the lines that fill them, with loops for the narrow parts of solid fill; and ironing: which areas are gone over again, and the lines that do it |
+| `crates/edge-text` | Text as flat shapes from a TrueType font, as the reference's embosser makes them (Emboss.cpp `text2shapes`): outlines read with `ttf-parser` and flattened as the pin's stb_truetype flattens them (checked point for point against it), laid out by advance widths with no kerning, united and healed; a character the font lacks taken from the fallback symbol font, else left out. For the ironing flow calibration's labels, and a Text tool later |
 | `crates/edge-template` | The placeholder language of custom G-code: `{expression}`, `{if}`, `[variable]`, and scripts |
 | `crates/edge-time` | How long a G-code file takes, with acceleration: the file is read as a printer reads it and planned as the reference's estimator plans, or as Klipper does |
 | `crates/edge-tower` | The prime tower a nozzle is primed on after a tool change |
@@ -249,7 +250,8 @@ stepped block by block), Input Shaping (frequency and damping: Klipper
 `M205 X Y`), and EdgeSlicer's own Stringing (temp × retraction): a row
 of two-pillar columns, each retracting its own length, printed in bands
 of falling temperature (`M109` at each band, the column's length set as
-its copy starts, printed copy by copy). The reference's command line cannot make them, so each is
+its copy starts, printed copy by copy), and Ironing flow (its ironing's
+flow ramped along two bands). Every item of the menu is built. The reference's command line cannot make them, so each is
 checked by reading its G-code back against the reference's formulas,
 layer by layer, on a Klipper and a Marlin printer (and a Bambu Lab one
 where its form differs); the flow rate tiles and the vase-mode projects,
@@ -257,9 +259,15 @@ saved here, were also sliced by the reference as plain prints, with the
 same layers and extruded lengths. Max flowrate's model is the
 reference's STEP file as the pin's own reader tessellates it (this engine
 reads no STEP), kept in `crates/edge-engine/calib`. The stringing grid is
-made of boxes as the reference makes it. Ironing flow is not built yet:
-its model is text cut from a TrueType font (the filament's name and the
-flows), which this engine cannot make.
+made of boxes as the reference makes it. Ironing flow (`calib/ironing_flow.rs`)
+is a plate with two raised bands, a ruler marked with the flows and the
+filament's name, the text cut from the reference's own font
+(`resources/fonts/HarmonyOS_Sans_SC_Bold.ttf`, found beside the profiles as
+the calibration models are) by `edge-text`; its ironing ramps the flow
+along each band (`edge_infill::iron_ramped`, Fill.cpp
+`extrusion_entities_append_calib_ironing_paths`), the band behind the
+other way. Its project, sliced by the reference as a plain print, has the
+same layers and every ironing line where the reference lays it.
 
 ## Status
 
@@ -3292,8 +3300,9 @@ loops of a `concentric` area fall into several nests each is taken
 nearest first; `solid_infill_rotate_template` and
 `align_infill_direction_to_model` are noted and not followed;
 ironing the dense top of a support (`support_ironing`) is noted by the
-supports and not done; and the reference's ironing flow calibration
-and its dithering of ironing through an image are not here.
+supports and not done; and the reference's dithering of ironing
+through an image is not here. The ironing flow calibration's ramp is
+`iron_ramped`.
 
 Sparse patterns. Nineteen of the reference's twenty-seven are laid:
 `grid`, `rectilinear`, `alignedrectilinear`,

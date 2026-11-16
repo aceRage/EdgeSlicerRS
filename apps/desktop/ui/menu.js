@@ -440,6 +440,7 @@ const Menu = (() => {
       case 'calibration.max_flowrate': return go(Calib.maxFlowrate);
       case 'calibration.vfa': return go(Calib.vfa);
       case 'calibration.stringing': return go(Calib.stringing);
+      case 'calibration.ironing': return go(Calib.ironingFlow);
       case 'calibration.cornering': return go(Calib.cornering);
       case 'calibration.shaping_frequency': return go(() => Calib.inputShaping(false));
       case 'calibration.shaping_damping': return go(() => Calib.inputShaping(true));

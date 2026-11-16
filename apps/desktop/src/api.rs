@@ -2087,6 +2087,15 @@ impl Session {
         // is not there is said at once.
         let basis = self.basis(&choices, Some(&file))?;
         let mut overrides = settings::overrides(&choices, &basis);
+        // The ironing flow test named after its filament (`calib.rs`).
+        let file = self.name_ironing_tests(
+            id,
+            file,
+            calibration.as_ref(),
+            &basis.chosen,
+            &overrides,
+            bed.as_ref(),
+        )?;
         overrides.calibration = calibration;
         let chosen = basis.chosen;
 

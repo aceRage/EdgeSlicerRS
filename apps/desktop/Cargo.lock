@@ -1239,6 +1239,7 @@ dependencies = [
  "edge-perimeter",
  "edge-slice",
  "edge-support",
+ "edge-text",
  "edge-tower",
  "rayon",
 ]
@@ -1374,6 +1375,16 @@ name = "edge-template"
 version = "0.0.0"
 dependencies = [
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "edge-text"
+version = "0.0.0"
+dependencies = [
+ "edge-clip",
+ "edge-geom",
+ "thiserror 2.0.21",
+ "ttf-parser",
 ]
 
 [[package]]
@@ -4995,6 +5006,12 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "ttf-parser"
+version = "0.25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 
 [[package]]
 name = "tungstenite"

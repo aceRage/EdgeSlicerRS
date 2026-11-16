@@ -61,6 +61,7 @@ fn params(args: &Value) -> Result<CalibParams, String> {
         Some("shaping_damping") => CalibMode::InputShapingDamping,
         Some("cornering") => CalibMode::Cornering,
         Some("stringing") => CalibMode::StringingGrid,
+        Some("ironing_flow") => CalibMode::IroningFlow,
         Some(other) => return Err(format!("there is no calibration \"{other}\" yet")),
         None => return Err("test was not given".into()),
     };
@@ -140,6 +141,18 @@ fn params(args: &Value) -> Result<CalibParams, String> {
     }
     if mode == CalibMode::StringingGrid {
         return stringing_params(args);
+    }
+    if mode == CalibMode::IroningFlow {
+        // IroningFlow_Test_Dlg::on_start: three numbers (`ToDouble`), the
+        // band's length kept as the step; checked against the printer by
+        // `ironing_check`.
+        let (Ok(start), Ok(end), Ok(length)) = (number("start"), number("end"), number("length"))
+        else {
+            return Err(super::i18n::tr(
+                "Please input valid values:\n0 <= minimum < maximum <= 100\nlength >= 10 mm",
+            ));
+        };
+        return Ok(CalibParams::new(mode, start, end, length));
     }
     if mode == CalibMode::VfaTower {
         // VFA_Test_Dlg::on_start.
@@ -255,6 +268,47 @@ fn stringing_check(params: &CalibParams, bed_width: f64) -> Result<(), String> {
             Some(value) => super::i18n::fill(&said, &[&value]),
             None => said,
         }
+    })
+}
+
+/// The ironing flow dialog's checks (`IroningFlow_Test_Dlg::on_start`)
+/// against the printer's nozzle and bed, in the reference's words.
+fn ironing_check(params: &CalibParams, settled: &edge_config::Settings) -> Result<(), String> {
+    use edge_engine::calib::ironing_flow;
+    let nozzle = settled
+        .floats("nozzle_diameter")
+        .ok()
+        .flatten()
+        .and_then(|values| values.first().copied().flatten())
+        .unwrap_or(0.4);
+    let bed = super::bed_of(settled).ok_or("the printer has no printable_area")?;
+    ironing_flow::check(params.start, params.end, params.step, nozzle, bed).map_err(|error| {
+        let said = match error.message {
+            "Please input valid values:\n0 <= minimum < maximum <= 100\nlength >= 10 mm" => {
+                super::i18n::tr(
+                    "Please input valid values:\n0 <= minimum < maximum <= 100\nlength >= 10 mm",
+                )
+            }
+            "Marks every 20%% would be less than 10 mm apart: use a length of at least %1% mm." => {
+                super::i18n::tr(
+                    "Marks every 20%% would be less than 10 mm apart: use a length of at least %1% mm.",
+                )
+            }
+            "A band %1% mm long makes a test %2% mm long, which does not fit on the bed. Use at most %3% mm." => {
+                super::i18n::tr(
+                    "A band %1% mm long makes a test %2% mm long, which does not fit on the bed. Use at most %3% mm.",
+                )
+            }
+            "The two-band ironing flow test does not fit on the bed in Y. Use a printer with a deeper bed." => {
+                super::i18n::tr(
+                    "The two-band ironing flow test does not fit on the bed in Y. Use a printer with a deeper bed.",
+                )
+            }
+            other => super::i18n::tr(other),
+        };
+        let values: Vec<&dyn std::fmt::Display> =
+            error.values.iter().map(|v| v as &dyn std::fmt::Display).collect();
+        super::i18n::fill(&said, &values)
     })
 }
 
@@ -428,6 +482,61 @@ impl Session {
         })
     }
 
+    /// The ironing flow tests of project `id` named after their filaments
+    /// before it is sliced (Plater.cpp `update_ironing_flow_names`, as
+    /// slicing calls it): the file to slice, a new one when a test changed,
+    /// which the project then shows too (as the reference sets the volume's
+    /// mesh, with no step to undo).
+    pub(super) fn name_ironing_tests(
+        &self,
+        id: u32,
+        file: Arc<File>,
+        calibration: Option<&CalibParams>,
+        chosen: &edge_engine::Chosen,
+        overrides: &edge_engine::Overrides,
+        bed: Option<&edge_engine::Bed>,
+    ) -> Result<Arc<File>, String> {
+        let Some(params) = calibration.filter(|params| params.mode == CalibMode::IroningFlow)
+        else {
+            return Ok(file);
+        };
+        let fonts_dir = {
+            let state = lock(&self.state);
+            state
+                .library
+                .as_ref()
+                .and_then(|library| library.dir().parent().map(|dir| dir.join("fonts")))
+                .ok_or("there are no profiles, so no fonts either")?
+        };
+        let settled = edge_engine::settled(chosen, overrides, None).map_err(|e| e.to_string())?;
+        let names: Vec<String> = chosen
+            .filaments
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect();
+        let mut model = file.model.clone();
+        let changed = edge_engine::calib::ironing_flow::name_for_slice(
+            &mut model, bed, params, &settled, &names, &fonts_dir,
+        )
+        .map_err(|e| e.to_string())?;
+        if !changed {
+            return Ok(file);
+        }
+        let named = Arc::new(File::of(model));
+        let mut state = lock(&self.state);
+        if let Some(at) = state.index_of(id) {
+            let project = &mut state.projects[at];
+            if project
+                .file
+                .as_ref()
+                .is_some_and(|now| Arc::ptr_eq(now, &file))
+            {
+                project.file = Some(named.clone());
+            }
+        }
+        Ok(named)
+    }
+
     /// The settings a calibration made now would start from: the shown
     /// project's presets and what is set over them.
     fn calibration_settings(&self) -> Result<(super::Choices, edge_config::Settings), String> {
@@ -554,7 +663,7 @@ impl Session {
         };
         // What the new project starts from: the presets of the one shown
         // and what was set over them.
-        let (choices, calib_dir) = {
+        let (choices, calib_dir, fonts_dir) = {
             let state = lock(&self.state);
             let shown = &state.projects[state.active_index()];
             let blank = shown.blank();
@@ -569,7 +678,9 @@ impl Session {
                 .as_ref()
                 .and_then(|library| library.dir().parent().map(|dir| dir.join("calib")))
                 .ok_or("there are no profiles, so no calibration models either")?;
-            (choices, calib_dir)
+            // The reference's fonts, beside its calibration models.
+            let fonts_dir = calib_dir.with_file_name("fonts");
+            (choices, calib_dir, fonts_dir)
         };
         if choices.machine.is_none() {
             return Err("choose a printer first: the test is made for it".into());
@@ -610,6 +721,15 @@ impl Session {
                     let width = edge_engine::calib::stringing::bed_width(&settled);
                     stringing_check(params, width)?;
                     edge_engine::calib::stringing::stringing_grid(params, &settled, bed.as_ref())
+                }
+                CalibMode::IroningFlow => {
+                    ironing_check(params, &settled)?;
+                    edge_engine::calib::ironing_flow::ironing_flow(
+                        params,
+                        &settled,
+                        &fonts_dir,
+                        bed.as_ref(),
+                    )
                 }
             },
             (None, None) => return Err("test was not given".into()),
@@ -1258,6 +1378,86 @@ mod tests {
         ask(&session, "undo", json!({ "project": id }));
         let objects = ask(&session, "plate_view", json!({ "project": id }));
         assert_eq!(objects["objects"].as_array().map_or(0, Vec::len), 0);
+    }
+
+    /// The ironing flow test's mesh in project `id`: its corners.
+    fn ironing_mesh(session: &Arc<Session>, id: u64) -> usize {
+        let state = lock(&session.state);
+        let at = state.index_of(id as u32).unwrap();
+        let model = &state.projects[at].file.as_ref().unwrap().model;
+        let object = model.objects()[0].id();
+        model.mesh_of_part(object, None).unwrap().1.vertices.len()
+    }
+
+    #[test]
+    fn the_ironing_flow_test_is_checked_made_named_at_the_slice_and_sliced() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = Arc::new(Session::new(None));
+        choose_presets(&session);
+        let args = |start: f64, end: f64, length: f64| json!({"test": "ironing_flow", "start": start, "end": end, "length": length});
+        for (bad, said) in [
+            (
+                args(-1.0, 70.0, 140.0),
+                "Please input valid values:\n0 <= minimum < maximum <= 100\nlength >= 10 mm",
+            ),
+            (
+                args(0.0, 100.0, 40.0),
+                "Marks every 20% would be less than 10 mm apart: use a length of at least 50 mm.",
+            ),
+            (
+                args(0.0, 70.0, 300.0),
+                "A band 300 mm long makes a test 310 mm long, which does not fit on the bed. Use at most 250 mm.",
+            ),
+        ] {
+            assert_eq!(session.call("calibrate", &bad).unwrap_err(), said);
+        }
+        assert!(
+            session
+                .call("calibrate", &json!({"test": "ironing_flow", "start": 0}))
+                .is_err()
+        );
+        let listing = ask(&session, "calibrate", args(0.0, 70.0, 140.0));
+        let id = listing["id"].as_u64().unwrap();
+        let detail = ask(&session, "project", json!({}));
+        assert_eq!(detail["name"], "Ironing flow test");
+        let over = &detail["choices"]["over"];
+        assert_eq!(over["ironing_type"], "topmost", "{over}");
+        assert_eq!(over["ironing_pattern"], "rectilinear");
+        assert_eq!(over["ironing_angle_fixed"], "1");
+        assert_eq!(over["ironing_angle"], "90");
+        let placeholder = ironing_mesh(&session, id);
+        let gcode = slice_and_read(&session, id, dir.path());
+        // Named after the U1's filament at the slice: another mesh.
+        assert_ne!(ironing_mesh(&session, id), placeholder);
+        assert!(gcode.contains("; total layer number: 10"), "layers");
+        assert!(gcode.contains(";TYPE:Ironing"));
+        dump(&session, id, "ironing_flow.3mf");
+        ask(&session, "undo", json!({ "project": id }));
+        let objects = ask(&session, "plate_view", json!({ "project": id }));
+        assert_eq!(objects["objects"].as_array().map_or(0, Vec::len), 0);
+
+        // A Marlin printer, on a bed of 220 mm: 140 mm fits.
+        let session = Arc::new(Session::new(None));
+        let machine = "Creality Ender-3 V3 SE 0.4 nozzle";
+        let presets = ask(
+            &session,
+            "presets",
+            json!({ "vendor": "Creality", "machine": machine }),
+        );
+        ask(
+            &session,
+            "project_set",
+            json!({
+                "source": "presets", "vendor": "Creality", "machine": machine,
+                "process": presets["processes"][0],
+                "filaments": [presets["filaments"][0]], "initial": true,
+            }),
+        );
+        let listing = ask(&session, "calibrate", args(0.0, 70.0, 140.0));
+        let id = listing["id"].as_u64().unwrap();
+        let gcode = slice_and_read(&session, id, dir.path());
+        assert!(gcode.contains(";TYPE:Ironing"));
+        dump(&session, id, "ironing_flow_marlin.3mf");
     }
 
     #[test]
