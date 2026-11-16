@@ -945,3 +945,32 @@ fn an_enforcer_holds_up_what_needs_no_support() {
         );
     }
 }
+
+/// With `support_interface_loop_pattern` the mushroom's contact gets its
+/// loop (round the stem and under the cap's edge) and less fill; without
+/// it, none.
+#[test]
+fn the_contact_loop_is_laid_only_when_asked() {
+    let plain = supports(&mushroom(), &on());
+    let looped = supports(
+        &mushroom(),
+        &SupportSettings {
+            interface_loops: true,
+            ..on()
+        },
+    );
+    let length = |layer: &[ExtrusionPath]| -> f64 {
+        layer
+            .iter()
+            .filter(|path| path.role == Role::SupportInterface)
+            .flat_map(|path| path.points.windows(2))
+            .map(|pair| unscaled(pair[1].x - pair[0].x).hypot(unscaled(pair[1].y - pair[0].y)))
+            .sum()
+    };
+    assert_ne!(plain[8], looped[8]);
+    assert!(length(&looped[8]) > 0.0 && length(&plain[8]) > 0.0);
+    // Only the contact layer changes.
+    for layer in (0..15).filter(|layer| *layer != 8) {
+        assert_eq!(plain[layer], looped[layer], "layer {layer}");
+    }
+}

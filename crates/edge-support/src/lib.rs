@@ -10,6 +10,8 @@
 //! - the gap above a support, a whole number of layers, and the dense
 //!   interface layers under it;
 //! - the gaps beside and below a support wherever it passes the part;
+//! - the loop round a top contact where it faces the overhang
+//!   (`support_interface_loop_pattern`, `loops.rs`);
 //! - support enforcers and blockers, and supports painted on or off
 //!   ([`Annotations`]), with the "(manual)" types that hold up nothing
 //!   else.
@@ -25,6 +27,7 @@
 //! styles, bridges left unsupported, rafts, an outline round each normal
 //! support, and support in a filament of its own.
 
+mod loops;
 mod settings;
 mod tree;
 
@@ -666,11 +669,17 @@ fn normal(
     let cell = scaled(flow.spacing + settings.base_spacing);
     let mut contacts: Vec<Vec<ExPolygon>> = vec![Vec::new(); count];
     let mut dense: Vec<Vec<ExPolygon>> = vec![Vec::new(); count];
+    // What each contact holds up, as it is (the reference's snug
+    // `overhang_polygons`), for the contact's loop.
+    let mut held: Vec<Vec<ExPolygon>> = vec![Vec::new(); count];
     for (layer, overhang) in overhangs.into_iter().enumerate() {
         // An overhang too near the bed for a support to fit under is left.
         let Some(at) = layer.checked_sub(1 + gap_above) else {
             continue;
         };
+        if settings.interface_loops {
+            held[at].extend(overhang.whole.iter().cloned());
+        }
         contacts[at].extend(snap(&overhang.whole, cell)?);
         dense[at].extend(snap(&overhang.dense, cell)?);
     }
@@ -778,6 +787,29 @@ fn normal(
                 )?
             };
             let base = edge_clip::difference(&edge_clip::difference(&area, &interface)?, &foot)?;
+            // The top contact edged with a loop where it faces the
+            // overhang (SupportCommon.cpp `LoopInterfaceProcessor`, with
+            // dense tops only, as there), its fill kept off the loop.
+            let mut interface = interface;
+            if settings.interface_loops
+                && settings.interface_top_layers > 0
+                && !contacts[index].is_empty()
+                && !held[index].is_empty()
+            {
+                let contact = edge_clip::intersection(
+                    &area,
+                    &edge_clip::offset(
+                        &edge_clip::union_ex(&contacts[index])?,
+                        reach,
+                        Join::MITER,
+                    )?,
+                )?;
+                let (loops, covered) = loops::contact_loops(&contact, &held[index], &flow)?;
+                if !loops.is_empty() {
+                    interface = edge_clip::difference(&interface, &covered)?;
+                    paths.extend(loops);
+                }
+            }
             fill(
                 &foot,
                 flow.spacing + settings.bottom_interface_spacing,

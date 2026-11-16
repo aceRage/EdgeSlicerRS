@@ -131,6 +131,16 @@ fn the_plain_numbers_are_those_the_reference_declares() {
             "{key} is declared {kind}"
         );
     }
+    let floats = include_str!("../src/float_numbers.txt");
+    let floats: Vec<&str> = floats.lines().collect();
+    assert!(floats.windows(2).all(|pair| pair[0] < pair[1]), "sorted");
+    let float = |kind: &str| matches!(kind, "coFloat" | "coFloats");
+    for key in &floats {
+        assert!(
+            edge_config::plain_number(key),
+            "{key} is not a plain number"
+        );
+    }
     let list = include_str!("../src/plain_numbers.txt");
     let lines: Vec<&str> = list.lines().collect();
     assert!(lines.windows(2).all(|pair| pair[0] < pair[1]), "sorted");
@@ -147,6 +157,16 @@ fn the_plain_numbers_are_those_the_reference_declares() {
             declared.get(key).is_some_and(|kind| plain(kind)) || made || filament,
             "{key} is not a plain number in the reference"
         );
+        // Decimal where it is declared so, or made of one that is.
+        let decimal = match declared.get(key) {
+            Some(kind) => float(kind),
+            None if made => true,
+            None => key
+                .strip_prefix("filament_")
+                .and_then(|own| declared.get(own))
+                .is_some_and(|kind| float(kind)),
+        };
+        assert_eq!(edge_config::float_number(key), decimal, "{key}: decimal");
     }
 }
 

@@ -12,6 +12,7 @@
 
 mod arc;
 mod avoid;
+mod bambu_vars;
 pub mod calib;
 mod calib_draw;
 mod chain;
@@ -553,6 +554,12 @@ pub fn write_timed(
         .min()
         .unwrap_or(0);
     variables.set("min_vitrification_temperature", Value::Int(softening));
+    // Bambu Studio 2.x's worked-out names: flushing, and one nozzle's.
+    bambu_vars::flush(&mut variables, settings.len());
+    let by_layer = variables
+        .value("print_sequence")
+        .is_none_or(|sequence| sequence.to_string() != "by object");
+    bambu_vars::single_nozzle(&mut variables, settings.len(), first, &used, by_layer);
     for (index, [x, y]) in change_path(&settings[first]).into_iter().enumerate() {
         variables.set(format!("travel_point_{}_x", index + 1), Value::Float(x));
         variables.set(format!("travel_point_{}_y", index + 1), Value::Float(y));
@@ -1411,6 +1418,10 @@ struct State {
     framing: bool,
     /// Whether the layer being written has had its timelapse picture.
     pictured: bool,
+    /// With a farthest-point timelapse, where the layer reaches farthest
+    /// from the camera, while its picture is still to be taken there
+    /// ([`Writer::farthest_timelapse`]).
+    farthest: Option<Point2>,
     /// How many times a tool has been taken up, the first included.
     swaps: usize,
     /// Which layer of the print is being written, and how its next
@@ -1794,6 +1805,13 @@ impl Writer<'_> {
                 }
                 writeln!(self.out, "M109 S{:.0}", s.nozzle_temperature_initial_layer)?;
             }
+        }
+        // The first filament, where the reference groups filaments by
+        // nozzle (GCode.cpp `_do_export`).
+        if s.machine_start_gcode.is_some()
+            && bambu_vars::nozzle_grouping(&self.variables, s.plate.by_object.len())
+        {
+            writeln!(self.out, ";VT{} H-1", self.state.tool)?;
         }
         // The exhaust fan as the print's filaments ask, after the start
         // G-code (GCode.cpp `_do_export`).
@@ -2660,9 +2678,14 @@ impl Writer<'_> {
         self.variables.set("layer_num", Value::Int(index as i64));
         self.state.pictured = false;
         if let Some((_, Timelapse::LayerStart { .. })) = &s.time_lapse {
-            self.timelapse(layer.z)?;
+            // A farthest-point picture waits until the layer's farthest
+            // point is known ([`Self::body`]).
+            if !self.farthest_timelapse() {
+                self.timelapse(layer.z)?;
+            }
         }
         if let Some(template) = &s.layer_change_gcode {
+            self.mass_so_far();
             self.custom("layer_change_gcode", template)?;
         }
         // Where the reference's cooling sets the layer's fan; a marker in
@@ -2908,6 +2931,17 @@ impl Writer<'_> {
             .iter()
             .any(|part| !part.tower.is_empty() || part.wipe.is_some());
         let traditional = matches!(&self.settings.time_lapse, Some((_, Timelapse::Traditional)));
+        // A farthest-point picture is taken the moment the nozzle gets
+        // there ([`Self::lay`]); on a layer with nothing to measure from,
+        // before anything is laid (GCode.cpp `process_layer`).
+        if self.farthest_timelapse() && !self.state.pictured && !parts.is_empty() {
+            self.variables
+                .set("farthest_point_timelapse_enabled", Value::Bool(true));
+            self.state.farthest = bambu_vars::farthest_point(parts);
+            if self.state.farthest.is_none() {
+                self.timelapse(parts[0].z)?;
+            }
+        }
         for (offset, layer) in parts.iter().enumerate() {
             if traditional
                 && !self.state.pictured
@@ -3097,8 +3131,58 @@ impl Writer<'_> {
         if traditional && !towered_layer && !self.state.pictured {
             self.timelapse(parts[0].z)?;
         }
+        // The farthest point missed (nothing laid ended within 0.5 mm of
+        // it): the picture at the layer's end, as there.
+        if self.state.farthest.take().is_some() && !self.state.pictured {
+            self.timelapse(parts[0].z)?;
+        }
         self.fan_over_air(false)?;
         Ok(())
+    }
+
+    /// What a bed-slinger's layer change G-code is told of the mass on
+    /// its bed (GCode.cpp `process_layer`, Bambu Studio's; the A2L's sets
+    /// `M201 N1 Y[curr_y_acceleration_limit]`): the grams extruded so far
+    /// (`curr_accumulated_mass`), what the last layer added
+    /// (`curr_layer_mass`) and the Y acceleration that mass allows
+    /// ([`bambu_vars::y_acceleration_limit`]). The reference counts the
+    /// whole print's prime tower filament in from the first layer on
+    /// (`update_print_stats_and_format_filament_stats` with the finished
+    /// tower's figures); not copied: here what is extruded so far counts,
+    /// tower included as it is printed.
+    fn mass_so_far(&mut self) {
+        let printed: f64 = (self.state.used.iter().zip(self.all))
+            .map(|((_, mm3), filament)| mm3 * filament.filament_density.unwrap_or(0.0) * 0.001)
+            .filter(|grams| *grams > 0.0)
+            .fold(0.0, |sum, grams| sum + grams);
+        let number = |name: &str| {
+            self.variables
+                .value(name)
+                .and_then(|value| value.to_string().trim().parse::<f64>().ok())
+                .unwrap_or(0.0)
+        };
+        let before = number("curr_accumulated_mass");
+        let limit_y = (self
+            .variables
+            .list("machine_max_acceleration_y")
+            .unwrap_or(&[]))
+        .iter()
+        .filter_map(|value| value.to_string().trim().parse::<f64>().ok())
+        .fold(1e10, f64::min);
+        let limit = bambu_vars::y_acceleration_limit(
+            number("machine_max_force_Y"),
+            number("machine_bed_mass_Y"),
+            printed,
+            limit_y,
+        );
+        let layer = printed - before;
+        let v = &mut self.variables;
+        v.set("curr_y_acceleration_limit", Value::Float(limit));
+        v.set("curr_accumulated_mass", Value::Float(printed));
+        v.set(
+            "curr_layer_mass",
+            Value::Float(if layer <= 1e-4 { 0.0 } else { layer }),
+        );
     }
 
     /// The printer's timelapse G-code (GCode.cpp `process_layer`,
@@ -3124,6 +3208,63 @@ impl Writer<'_> {
         self.flush_labels()?;
         self.variables.set("layer_z", Value::Float(z));
         let text = self.custom("time_lapse_gcode", template)?;
+        self.after_timelapse(&text, z, bambu)?;
+        // The template moves the head, so where it is after is not known.
+        if bambu {
+            self.state.position = None;
+        }
+        Ok(())
+    }
+
+    /// Whether the printer takes its timelapse picture where each layer
+    /// reaches farthest from the camera (`farthest_point_timelapse`,
+    /// Bambu Studio 2.8; GCode.cpp `process_layer`): a Bambu Lab printer
+    /// of one nozzle that is not a bed-slinger, in the traditional
+    /// timelapse (`timelapse_type` 0). Two-nozzle printers, the only
+    /// others the reference does it on, are refused here; a smooth
+    /// timelapse's tower is not done.
+    fn farthest_timelapse(&self) -> bool {
+        let on = |name: &str| {
+            self.variables
+                .value(name)
+                .is_some_and(|value| matches!(value.to_string().trim(), "1" | "true"))
+        };
+        let traditional = self
+            .variables
+            .value("timelapse_type")
+            .is_none_or(|kind| matches!(kind.to_string().trim(), "0" | "traditional"));
+        matches!(
+            &self.settings.time_lapse,
+            Some((_, Timelapse::LayerStart { bambu: true }))
+        ) && on("farthest_point_timelapse")
+            && traditional
+    }
+
+    /// The timelapse picture taken in passing, where the nozzle has just
+    /// reached the layer's farthest point (GCode.cpp
+    /// `check_and_insert_inline_timelapse`, `generate_timelapse_gcode`
+    /// with the spot not picked): nothing pulled back, the template told
+    /// `timelapse_inline_photo`, the head left where it is.
+    fn inline_timelapse(&mut self) -> Result<(), GcodeError> {
+        let s = self.settings;
+        let Some((template, _)) = &s.time_lapse else {
+            return Ok(());
+        };
+        self.state.farthest = None;
+        self.state.pictured = true;
+        let z = self.state.z;
+        self.variables.set("layer_z", Value::Float(z));
+        self.variables
+            .set("timelapse_inline_photo", Value::Bool(true));
+        let text = self.custom("time_lapse_gcode", template);
+        self.variables
+            .set("timelapse_inline_photo", Value::Bool(false));
+        self.after_timelapse(&text?, z, true)
+    }
+
+    /// What follows the timelapse G-code: its time, and the nozzle put
+    /// back at its height where the template leaves it elsewhere.
+    fn after_timelapse(&mut self, text: &str, z: f64, bambu: bool) -> Result<(), GcodeError> {
         // Its moves count towards the layer's time for cooling, as the
         // reference's cooling counts every move of the layer after its
         // first line (CoolingBuffer.cpp `parse`).
@@ -3132,7 +3273,7 @@ impl Writer<'_> {
             .position
             .map_or([0.0, 0.0], |at| [unscaled(at.x), unscaled(at.y)]);
         let seconds = template_seconds(
-            &text,
+            text,
             from,
             self.state.height.unwrap_or(z),
             self.state.feedrate,
@@ -3157,7 +3298,6 @@ impl Writer<'_> {
                 self.state.height = Some(last_z);
             }
         }
-        self.state.position = None;
         Ok(())
     }
 
@@ -5404,6 +5544,14 @@ impl Writer<'_> {
         }
         self.state.summary.seconds += moved / speed;
         self.state.position = Some(to);
+        if self
+            .state
+            .farthest
+            .is_some_and(|farthest| distance(to, farthest) < 0.5)
+        {
+            self.inline_timelapse()
+                .map_err(|error| io::Error::other(error.to_string()))?;
+        }
         Ok(())
     }
 

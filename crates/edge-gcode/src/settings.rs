@@ -627,6 +627,7 @@ impl PrintSettings {
                 .map(|text| unescaped(text))
         };
         let mut unsupported = Vec::new();
+        unsupported.extend(crate::bambu_vars::fixed_note(settings));
 
         let wall_order = match settings
             .texts("wall_sequence")
@@ -1277,7 +1278,10 @@ impl PrintSettings {
                 // and what only names the preset a setting came from.
                 let mut config: Vec<(String, String)> = settings
                     .iter()
-                    .filter(|(key, _)| edge_config::reference_knows(key))
+                    .filter(|(key, _)| {
+                        edge_config::reference_knows(key)
+                            || crate::bambu_vars::listed_mass_model(settings, key)
+                    })
                     .map(|(key, value)| (key.to_owned(), edge_config::serialized(key, value)))
                     .collect();
                 config.sort();
@@ -1778,18 +1782,23 @@ fn variables(
 ) -> Variables {
     let mut variables = Variables::default();
     for (key, value) in settings.iter() {
+        let decimal = edge_config::float_number(key);
         match value {
             // A filament's option is a list in the reference, one entry
             // for each filament, even where only its default stands for
             // all of them: a template may ask for any filament's
             // (Prusa's MMU3 start G-code, `required_nozzle_HRC[4]`).
             Setting::One(text) if edge_config::filaments::is_per_filament(key) => {
-                variables.set_list(key, vec![Value::text(text)])
+                variables.set_list(key, vec![setting_value(text, decimal)])
             }
-            Setting::One(text) => variables.set(key, Value::text(text)),
-            Setting::Many(texts) => {
-                variables.set_list(key, texts.iter().map(Value::text).collect())
-            }
+            Setting::One(text) => variables.set(key, setting_value(text, decimal)),
+            Setting::Many(texts) => variables.set_list(
+                key,
+                texts
+                    .iter()
+                    .map(|text| setting_value(text, decimal))
+                    .collect(),
+            ),
         }
     }
     filament_retraction_overrides(settings, &mut variables);
@@ -1985,6 +1994,17 @@ fn variables(
         }
     }
     variables
+}
+
+/// A setting's value as a template reads it: as text, except a setting
+/// the reference declares as a decimal, which is a decimal even where it
+/// is written as a whole number ("21" of `filament_max_volumetric_speed`
+/// halves to 10.5, as in the reference, not 10).
+fn setting_value(text: &str, decimal: bool) -> Value {
+    match decimal.then(|| text.trim().parse::<f64>()) {
+        Some(Ok(number)) if number.is_finite() => Value::Float(number),
+        _ => Value::text(text),
+    }
 }
 
 /// The settings that are lists of choices (`coEnums` in PrintConfig.cpp),
@@ -2384,6 +2404,16 @@ mod tests {
         assert_eq!(expand("{outer_wall_volumetric_speed}"), "12");
         assert_eq!(expand("{overall_chamber_temperature}"), "45");
         assert_eq!(expand("{chamber_cooling_mode}"), "0");
+        // A decimal setting written as a whole number halves as a decimal
+        // (the P2S start G-code's `filament_max_volumetric_speed[..]/2`); a
+        // whole-number one as a whole number.
+        assert_eq!(expand("{filament_max_volumetric_speed[0]/8}"), "1.5");
+        assert_eq!(expand("[filament_max_volumetric_speed]"), "12");
+        let whole = read(r#"{"nozzle_temperature": ["215"]}"#);
+        assert_eq!(
+            edge_template::expand("{nozzle_temperature[0]/2}", &whole.variables).unwrap(),
+            "107"
+        );
         let slots = read(
             r#"{"filament_type": ["PLA", "PLA", "PETG"], "filament_volume_type": ["standard", "high_flow"]}"#,
         );

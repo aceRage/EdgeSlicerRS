@@ -2054,6 +2054,72 @@ estimate reads what the reference's does: `G28` as a move home, Bambu's
 commands (`T1000`, `T255`) as nothing, and the waits of a Bambu Lab
 printer's end G-code as after the print.
 
+The A2L, H2S and P2S (Bambu Studio 2.x templates) are given the names
+the reference works out for them (2026-11-16; `crates/edge-gcode/src/bambu_vars.rs`):
+`flush_temperatures` and `flush_volumetric_speeds` (each filament's
+`filament_flush_temp`, or `_fast` with `prime_volume_mode` Fast, the top
+of its `nozzle_temperature_range_high` where 0; its
+`filament_flush_volumetric_speed`, its `filament_max_volumetric_speed`
+where 0), and what the reference gives a printer of one nozzle:
+`filament_map` all on nozzle 1, `nozzle_diameter_at_nozzle_id`,
+`initial_filament_id`, `initial_no_support_filament_id`, the nozzle ids
+0 and hotend ids -1, `is_all_bbl_filament`, the auxiliary fan ramp off,
+and fixed values the reference gives where Bambu Studio works them out
+(`has_tpu_in_first_layer`, `cooling_filter_enabled`,
+`hold_chamber_temp_for_flat_print` false, `max_print_z` 0, so the
+check for obstacles under the bed is never written), listed in a note
+where the start G-code uses them. The spot Bambu Studio's picker chooses
+for a timelapse (`has_timelapse_safe_pos`, `timelapse_pos_x`/`_y`) is
+not given, nor `clear_to_x0` printing object by object, so a template
+that needs them is refused. A printer whose `extruder_variant_list`
+names more than one variant (H2S, P2S) has its first filament marked
+after the start G-code (`;VT0 H-1`), as the reference's grouping does.
+A setting the reference declares as a decimal reads as one in a template
+even when written as a whole number (`edge_config::float_number`): the
+P2S's `filament_max_volumetric_speed[…]/2` of 21 is 10.5, not 10. On a
+PLA cube the H2S's 306 and the P2S's 268 lines of start G-code are now
+the reference's; `main` refused both (`cooling_filter_enabled`,
+`initial_no_support_filament_id`).
+
+The layer change G-code is told the mass on a bed-slinger's bed, as the
+reference tells it (GCode.cpp `mass_load_limited_machine_acceleration`,
+Bambu Studio's): `curr_accumulated_mass` (grams extruded so far),
+`curr_layer_mass` (what the last layer added) and
+`curr_y_acceleration_limit`, `machine_max_force_Y` (N) over
+`machine_bed_mass_Y` plus that mass, at most the lowest
+`machine_max_acceleration_y`; that lowest alone where either is 0. The
+A2L writes it at each layer (`M201 N1 Y[curr_y_acceleration_limit]`),
+and the two settings are listed in the file's settings when either is
+set, as there. Not copied: the reference counts the whole print's prime
+tower filament in from the first layer on; here what is extruded so far
+counts. On the A2L cube with `machine_max_force_Y` lowered to 21.5 N
+(so the limit falls below 8000) the 100 layers' limits are the
+reference's to the sixth digit, 25 of them one in the last digit lower
+(this engine's mass 3.4 mg higher from the second layer on); `main`
+refused the A2L (`hold_chamber_temp_for_flat_print`, then
+`curr_y_acceleration_limit`), and now its 268 lines of start G-code are
+the reference's.
+
+`farthest_point_timelapse` (Bambu Studio 2.8, set on the H2S, P2S and
+the two-nozzle Bambu printers) is followed on a Bambu Lab printer of one
+nozzle that is not a bed-slinger, in the traditional timelapse
+(GCode.cpp `compute_farthest_point`, `check_and_insert_inline_timelapse`):
+each layer's picture is taken the moment an extruding move ends within
+0.5 mm of where the layer reaches farthest from the bed's origin (an
+outer wall's point, or with none the sparse, solid and top fill's or the
+support's), with nothing pulled back and the template told
+`timelapse_inline_photo` and `farthest_point_timelapse_enabled`; on a
+layer with nothing to measure from, before anything is laid; and where
+no move gets there, at the layer's end. The two-nozzle half (the picture
+from a safe spot with the other nozzle when the farthest point is not
+the photo nozzle's) goes with those printers, refused here, and nothing
+of it needs the prime tower. On the H2S and P2S PLA cubes all 100
+pictures now come after the same move as the reference's (none did:
+they were taken as each layer started), and the template lines that
+differ fell from 2615 to 514 (H2S) and from 2520 to 513 (P2S), what is
+left being the objects' labels, `G17` and the order of a feature's tag
+and its `M204`.
+
 Projects made with `tools/make_project.py` from the BBL profiles, the
 part centred where the reference's command line moves it and the
 flushing volumes set to those it works out; lines of template G-code
@@ -2427,6 +2493,24 @@ Normal support lines come as close to the part as the reference's
 (0.54 mm). They put support on the same layers as the reference,
 with the same layers of air above and below. Tree supports are compared
 below.
+
+`support_interface_loop_pattern` (set by Bambu's "0.20mm Bambu Support W"
+process) edges a normal support's top contact with a loop where it faces
+the overhang, as the reference's `LoopInterfaceProcessor` does with one
+loop (Support/SupportCommon.cpp; 2026-11-16, `crates/edge-support/src/loops.rs`):
+hexagons 1.5 line widths across are set along each outline of the
+contact that comes within half a line of the overhang, three radii
+apart and at most one a stretch of outline, cut out of it, and what is
+left within 1.5 mm of the overhang is laid as interface before the
+contact's fill, which keeps 1.1 radii off it. With dense tops only, as
+there; tree supports have none (the reference's trees carry no
+overhang outline for it). On the X1 Carbon `mushroom` with that
+process, both lay the loop round the stem on the contact layer
+(z 10.2) with the same extents (x 122.44 to 133.56, y 120.44 to
+131.56); the hexagons fall at other places (4 notches here, 6 there),
+as the contact's outline is this engine's own, not the reference's.
+Support interface length: reference 8.66 m with the loop, 8.73 m
+without; here 8.70 m before (setting ignored), 8.64 m now.
 
 On `mcbrim_test.3mf`, printed in up to six filaments, tools are taken in
 the reference's order on every layer of plates 1 and 2 (plate 2 sets its

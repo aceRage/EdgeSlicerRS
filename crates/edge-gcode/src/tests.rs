@@ -4450,3 +4450,141 @@ fn copies_printed_object_by_object_are_each_finished_before_the_next() {
     settings.acceleration_form = AccelerationForm::Klipper;
     assert_eq!(beds(&settings), ["M140 S60 ; set bed temperature"]);
 }
+
+/// A bed-slinger's layer change is told the mass printed so far and the
+/// Y acceleration it allows (GCode.cpp `mass_load_limited_machine_acceleration`):
+/// the motor's force over the bed and the part, at most the machine's Y
+/// limit; that limit alone on the first layer, with nothing printed.
+#[test]
+fn the_layer_change_is_told_the_mass_on_the_bed() {
+    let mut settings = profile(&[(
+        "after",
+        "M201 N1 Y[curr_y_acceleration_limit] ; {curr_accumulated_mass} {curr_layer_mass}",
+    )]);
+    settings.filament_density = Some(1.25);
+    for (key, value) in [
+        ("machine_max_force_Y", "21.5"),
+        ("machine_bed_mass_Y", "2700"),
+    ] {
+        settings.variables.set(key, Value::text(value));
+    }
+    settings.variables.set_list(
+        "machine_max_acceleration_y",
+        vec![Value::text("8000"), Value::text("9000")],
+    );
+    let text = printed(3, &settings);
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| line.starts_with("M201 N1"))
+        .collect();
+    assert_eq!(lines.len(), 3, "{text}");
+    assert_eq!(lines[0], "M201 N1 Y8000 ; 0 0");
+    let read = |line: &str| -> Vec<f64> {
+        line.split([' ', 'Y'])
+            .filter_map(|word| word.parse::<f64>().ok())
+            .collect()
+    };
+    let (second, third) = (read(lines[1]), read(lines[2]));
+    // Y limit, grams so far, grams the layer added; six digits each.
+    assert!(
+        second[1] > 0.0 && (second[1] - second[2]).abs() < 1e-6,
+        "{lines:?}"
+    );
+    assert!((third[1] - second[1] - third[2]).abs() < 1e-5, "{lines:?}");
+    for values in [&second, &third] {
+        let expected = 21.5e6 / (2700.0 + values[1]);
+        assert!(
+            values[0] < 8000.0 && (values[0] - expected).abs() < 0.01,
+            "{lines:?}"
+        );
+    }
+    // Without the model, the machine's lowest Y limit.
+    settings
+        .variables
+        .set("machine_max_force_Y", Value::text("0"));
+    let text = printed(3, &settings);
+    assert!(
+        text.lines()
+            .filter(|line| line.starts_with("M201 N1 Y8000 ;"))
+            .count()
+            == 3
+    );
+}
+
+/// With `farthest_point_timelapse` a Bambu Lab printer of one nozzle takes
+/// its picture the moment the nozzle reaches where the layer is farthest
+/// from the camera at the bed's origin (GCode.cpp
+/// `compute_farthest_point`, `check_and_insert_inline_timelapse`): here
+/// the wall's corner at (10, 10), with nothing pulled back; without it, as
+/// the layer starts.
+#[test]
+fn the_timelapse_picture_is_taken_at_the_farthest_point() {
+    let mut settings = PrintSettings {
+        time_lapse: Some((
+            "; TIMELAPSE inline={timelapse_inline_photo} far={farthest_point_timelapse_enabled}"
+                .into(),
+            Timelapse::LayerStart { bambu: true },
+        )),
+        ..bambu(&[("start", "PRINT_START"), ("after", "; LAYER CHANGE")])
+    };
+    settings
+        .variables
+        .set("farthest_point_timelapse", Value::text("1"));
+    let text = printed(2, &settings);
+    let second = text.split("; CHANGE_LAYER").nth(2).unwrap();
+    let lines: Vec<&str> = second.lines().collect();
+    let photo = lines
+        .iter()
+        .position(|line| line.starts_with("; TIMELAPSE"))
+        .unwrap_or_else(|| panic!("{second}"));
+    assert_eq!(lines[photo], "; TIMELAPSE inline=true far=true");
+    assert!(
+        lines[photo - 1].starts_with("G1 X10.000 Y10.000 E"),
+        "{second}"
+    );
+    assert!(second.find("; LAYER CHANGE").unwrap() < second.find("; TIMELAPSE").unwrap());
+    assert_eq!(second.matches("; TIMELAPSE").count(), 1);
+    // Smooth timelapse, or the setting off: as the layer starts.
+    for (key, value) in [("timelapse_type", "1"), ("farthest_point_timelapse", "0")] {
+        let mut settings = settings.clone();
+        settings.variables.set(key, Value::text(value));
+        let text = printed(2, &settings);
+        let second = text.split("; CHANGE_LAYER").nth(2).unwrap();
+        assert!(
+            second.contains("; TIMELAPSE inline=false far=false"),
+            "{second}"
+        );
+        assert!(second.find("; TIMELAPSE").unwrap() < second.find("; LAYER CHANGE").unwrap());
+    }
+}
+
+/// The farthest point is an outer wall's; on a layer with none, the
+/// sparse, solid or top fill's or the support's; never a bridge's or the
+/// bottom surface's.
+#[test]
+fn the_farthest_point_prefers_the_outer_wall() {
+    let loops = [wall(0.0, 0.0, 10.0, 0), wall(1.0, 1.0, 8.0, 1)];
+    let fill = [
+        line((2.0, 2.0), (30.0, 2.0), Role::SparseInfill),
+        line((2.0, 2.0), (50.0, 2.0), Role::BridgeInfill),
+    ];
+    let layer = Layer {
+        paths: &fill,
+        ..one_layer(&loops, &[0..2], &[])[0]
+    };
+    assert_eq!(
+        bambu_vars::farthest_point(&[layer]),
+        Some(Point2::from_mm(10.0, 10.0))
+    );
+    let inner = [wall(1.0, 1.0, 8.0, 1)];
+    let layer = Layer {
+        paths: &fill,
+        ..one_layer(&inner, &[0..1], &[])[0]
+    };
+    assert_eq!(
+        bambu_vars::farthest_point(&[layer]),
+        Some(Point2::from_mm(30.0, 2.0))
+    );
+    let layer = one_layer(&inner, &[0..1], &[])[0];
+    assert_eq!(bambu_vars::farthest_point(&[layer]), None);
+}

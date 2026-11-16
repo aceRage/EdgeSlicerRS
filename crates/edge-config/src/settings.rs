@@ -303,6 +303,24 @@ pub fn plain_number(key: &str) -> bool {
         .is_ok()
 }
 
+/// The plain numbers the reference declares as decimals (`coFloat`,
+/// `coFloats`, and those made of them), one to a line, sorted: a template
+/// reads such a setting as a decimal even where it is written as a whole
+/// number, so `21 / 2` is 10.5 there, not 10 (PlaceholderParser.cpp, a
+/// `ConfigOptionFloats` read with `set_d`).
+const FLOAT_NUMBERS: &str = include_str!("float_numbers.txt");
+
+/// Whether the reference reads `key` as a decimal number. Asked for every
+/// setting each time a filament's or a region's template names are made,
+/// so the list is read once.
+pub fn float_number(key: &str) -> bool {
+    static FLOATS: std::sync::OnceLock<std::collections::HashSet<&'static str>> =
+        std::sync::OnceLock::new();
+    FLOATS
+        .get_or_init(|| FLOAT_NUMBERS.lines().collect())
+        .contains(key)
+}
+
 /// A plain number written with a `%` after it, as some profiles write
 /// speeds: the reference reads the number and ignores the rest, so "50%"
 /// is 50 (Config.cpp `deserialize_float_value`, for whole numbers the
