@@ -550,6 +550,11 @@ pub fn write_timed(
                 .take_while(|layer| layer.z == layers[0].z)
                 .filter_map(|layer| settings[layer.filament].bed_temperature_initial_layer)
                 .reduce(f64::max),
+            other_layers_bed: layers
+                .iter()
+                .take_while(|layer| layer.z == layers[0].z)
+                .filter_map(|layer| settings[layer.filament].bed_temperature)
+                .reduce(f64::max),
             widths: {
                 // Above the first layer, the first line of each kind;
                 // and whatever the first layer starts with.
@@ -1234,6 +1239,8 @@ struct FileInfo {
     estimate_at: Option<usize>,
     /// The hottest bed any filament of the first layer asks for.
     first_layer_bed: Option<f64>,
+    /// The hottest bed the same filaments ask for above the first layer.
+    other_layers_bed: Option<f64>,
     /// How long the copies' definitions are that follow the start of
     /// the executable block, which the first progress line comes after.
     defines: usize,
@@ -2423,11 +2430,24 @@ impl Writer<'_> {
                     writeln!(self.out, "M104 S{:.0}", s.nozzle_temperature)?;
                 }
             }
-            if let Some(bed) = s
-                .bed_temperature
-                .filter(|bed| Some(*bed) != s.bed_temperature_initial_layer)
-            {
-                writeln!(self.out, "M140 S{bed:.0}")?;
+            // The bed for the rest of the print: the hottest any filament
+            // of the first layer asks for on this plate, written unless it
+            // is what the bed was last set to (GCode.cpp `process_layer`,
+            // `get_bed_temperature_max`; GCodeWriter.cpp
+            // `set_bed_temperature`). For Klipper the reference sets no
+            // bed before the start G-code and so has none on record: the
+            // line is always written there, the printer's own start macro
+            // having heated the bed (`_do_export` skips
+            // `_print_first_layer_bed_temperature` for Klipper). A plate
+            // type the filament has no temperature for counts as 0, as
+            // there.
+            let other = self.file.other_layers_bed.unwrap_or(0.0);
+            let on_record = match s.klipper {
+                true => 0.0,
+                false => self.file.first_layer_bed.unwrap_or(0.0),
+            };
+            if other != on_record {
+                writeln!(self.out, "M140 S{other:.0} ; set bed temperature")?;
             }
         }
         // What the person set at this layer, after the layer change and
@@ -2976,6 +2996,13 @@ impl Writer<'_> {
         laid
     }
 
+    /// The islands `chosen`, nearest first from the nozzle.
+    /// Not as the reference, on purpose: it takes an object's islands in
+    /// the order of the layer's `lslices` ("FIXME order islands?"), a
+    /// chain of their outlines' first points that does not start from the
+    /// nozzle (Layer.cpp `make_slices`), so on the U1's stringing grid it
+    /// prints the back pillar of each column first wherever the nozzle
+    /// is, 113.4 m of travel against 93.3 m here, retractions the same.
     fn islands(
         &mut self,
         layer: &Layer<'_>,
@@ -3325,8 +3352,18 @@ impl Writer<'_> {
         for stage in
             paths.chunk_by(|a, b| (fill(a) && fill(b)) || a.role == b.role && a.part == b.part)
         {
+            // The gap fill of an area is one more of its lines, chained
+            // with the rest (FillBase.cpp `_create_gap_fill` adds it to
+            // the area's collection, which `extrude_infill` chains
+            // whole). The gap fill of an area laid in turn comes as a
+            // part of its own (`edge_infill`).
+            let own_gap =
+                |a: &ExtrusionPath, b: &ExtrusionPath| a.part != 0 && b.role == Role::GapFill;
             let mut parts: Vec<Part<'_>> = stage
-                .chunk_by(|a, b| a.role == b.role && a.part == b.part && (a.part != 0 || b.in_turn))
+                .chunk_by(|a, b| {
+                    a.part == b.part
+                        && ((a.role == b.role && (a.part != 0 || b.in_turn)) || own_gap(a, b))
+                })
                 .filter_map(Part::new)
                 .collect();
             let ends: Vec<[Point2; 2]> = parts.iter().map(Part::ends).collect();
