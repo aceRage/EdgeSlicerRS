@@ -22,6 +22,7 @@ pub mod lines;
 mod narrow;
 mod rectilinear;
 mod settings;
+mod smooth;
 mod surfaces;
 
 pub use counterbore::bridge_counterbores;

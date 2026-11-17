@@ -334,8 +334,6 @@ const SILENT: &[Silent] = &[
     // Print.cpp l.6727.
     silent("combine_brims", Is("0")),
     // Fill.
-    // Fill.cpp l.1523.
-    silent("sparse_infill_smooth_factor", Is("0%")),
     // PrintObject.cpp l.2289: with top surface expansion on.
     with(
         "top_surface_expansion_margin",

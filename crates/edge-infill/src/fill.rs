@@ -69,6 +69,13 @@ pub struct FillParams {
     /// fill. None lays it as all solid fill inside the part is. See
     /// [`fill_under_tops`].
     pub under_top: Option<(bool, bool)>,
+    /// How much the corners of a sparse pattern are rounded, from 0 to
+    /// 1, and the G-code resolution in mm the rounded corners keep to
+    /// (`sparse_infill_smooth_factor`, `resolution`): only for the
+    /// patterns the reference rounds (PrintConfig.hpp
+    /// `is_smoothable_infill_pattern`: Hilbert curve, octagram spiral,
+    /// honeycomb, 3D honeycomb and cross hatch). None leaves them sharp.
+    pub smooth: Option<(f64, f64)>,
     /// Whether lines laid in the fill's own direction turn a quarter on
     /// odd layers, as they do unless Z contouring keeps them steady
     /// ([`crate::InfillSettings::steady_direction`]).
@@ -738,7 +745,19 @@ pub fn fill_within(
                             },
                         )
                     });
-                    let pattern = match params.pattern {
+                    // Corners rounded as the pattern is made, before it is
+                    // cut to the area, as there.
+                    let smoothing = params.smooth.filter(|_| {
+                        matches!(
+                            params.pattern,
+                            Pattern::Hilbert
+                                | Pattern::Octagram
+                                | Pattern::Honeycomb
+                                | Pattern::Honeycomb3D
+                                | Pattern::CrossHatch
+                        )
+                    });
+                    let mut pattern = match params.pattern {
                         Pattern::Gyroid => {
                             curves::gyroid(bounds, flow.spacing, params.density, params.z)
                         }
@@ -804,10 +823,23 @@ pub fn fill_within(
                                 Pattern::Archimedean => curves::Curve::Archimedean,
                                 _ => curves::Curve::Octagram,
                             };
-                            curves::plane_path(curve, over, flow.spacing, params.density)
+                            curves::plane_path(curve, over, flow.spacing, params.density, smoothing)
                         }
                         _ => curves::crosshatch(bounds, flow.spacing, params.density, params.z),
                     };
+                    // The plane paths are rounded as they are made, in
+                    // units of their pitch; the others here, in whole
+                    // units (FillHoneycomb.cpp, Fill3DHoneycomb.cpp,
+                    // FillCrossHatch.cpp).
+                    if let Some((factor, resolution)) = smoothing
+                        && !matches!(params.pattern, Pattern::Hilbert | Pattern::Octagram)
+                    {
+                        crate::smooth::smooth_lines(
+                            &mut pattern,
+                            factor,
+                            resolution * edge_geom::UNITS_PER_MM,
+                        );
+                    }
                     // Honeycomb's pieces are all kept; the others drop
                     // the scraps.
                     let least = match params.pattern {
@@ -1401,7 +1433,8 @@ fn spiral_chords(
                 y: high.y + SCALED_EPSILON,
             },
         );
-        let pattern = curves::plane_path(curves::Curve::Archimedean, bounds, spacing, density);
+        let pattern =
+            curves::plane_path(curves::Curve::Archimedean, bounds, spacing, density, None);
         if pattern.first().is_none_or(|line| line.len() < 2) {
             continue;
         }
@@ -1690,6 +1723,7 @@ mod tests {
             top_density: 1.0,
             bottom_density: 1.0,
             under_top: None,
+            smooth: None,
             alternate: true,
             sparse_link_max: 0.0,
             sparse_anchor: 0.0,
@@ -2625,6 +2659,43 @@ mod tests {
         let mut gaps: Vec<f64> = across.windows(2).map(|pair| pair[1] - pair[0]).collect();
         gaps.sort_by(f64::total_cmp);
         (gaps[gaps.len() / 2], across.len())
+    }
+
+    #[test]
+    fn the_corners_of_the_patterns_the_reference_rounds_are_rounded() {
+        let area = [surface(SurfaceKind::Sparse, 30.0)];
+        let points = |paths: &[ExtrusionPath]| paths.iter().map(|p| p.points.len()).sum::<usize>();
+        for pattern in [
+            Pattern::Honeycomb,
+            Pattern::Hilbert,
+            Pattern::Octagram,
+            Pattern::CrossHatch,
+            Pattern::Honeycomb3D,
+            Pattern::Gyroid,
+        ] {
+            let sharp = FillParams {
+                z: 2.3,
+                ..params(pattern, 0.2)
+            };
+            let round = FillParams {
+                smooth: Some((0.6, 0.01)),
+                ..sharp
+            };
+            let (before, after) = (
+                fill(&area, 3, &sharp).unwrap(),
+                fill(&area, 3, &round).unwrap(),
+            );
+            if pattern == Pattern::Gyroid {
+                // Not one the reference rounds.
+                assert_eq!(before, after);
+                continue;
+            }
+            // More vertices, cutting each corner: shorter (the octagram
+            // spiral, all short legs, by near a fifth, as there).
+            assert!(points(&after) > points(&before), "{pattern:?}");
+            let share = length(&after) / length(&before);
+            assert!(share < 1.0 && share > 0.75, "{pattern:?} {share}");
+        }
     }
 
     #[test]

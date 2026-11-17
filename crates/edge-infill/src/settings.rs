@@ -130,6 +130,11 @@ pub struct InfillSettings {
     /// The layers whose sparse fill is made solid (`extra_solid_infills`,
     /// read by [`extra_solid_layer`]); empty for none.
     pub extra_solid_infills: String,
+    /// How much a sparse pattern's corners are rounded, from 0 to 1
+    /// (`sparse_infill_smooth_factor`), and the G-code resolution in mm
+    /// (`resolution`) the curves keep to.
+    pub smooth_factor: f64,
+    pub resolution: f64,
     /// Whether the fill keeps one direction on every layer rather than
     /// turning a quarter on each odd one: Z contouring's
     /// `zaa_dont_alternate_fill_direction`, which counts only with
@@ -350,6 +355,8 @@ impl Default for InfillSettings {
             bottom_surface_density: 1.0,
             under_top: None,
             extra_solid_infills: String::new(),
+            smooth_factor: 0.0,
+            resolution: 0.01,
             steady_direction: false,
             lateral_lattice_angles: (-45.0, 45.0),
             infill_shift_step: 0.4,
@@ -751,6 +758,15 @@ impl InfillSettings {
                 .text("extra_solid_infills")
                 .unwrap_or_default()
                 .to_owned(),
+            // A percentage, 0 to 100 in the reference; the fills clamp
+            // what is outside (`sanitize_smooth_factor`).
+            smooth_factor: match settings.float_or_percent("sparse_infill_smooth_factor")? {
+                Some(FloatOrPercent::Percent(percent) | FloatOrPercent::Value(percent)) => {
+                    0.01 * percent
+                }
+                None => defaults.smooth_factor,
+            },
+            resolution: number("resolution", defaults.resolution)?,
             top_layer_direction: surface_direction("top_layer_direction")?,
             bottom_layer_direction: surface_direction("bottom_layer_direction")?,
             steady_direction: steady_direction(settings)?,
@@ -1101,6 +1117,18 @@ impl InfillSettings {
             top_density: self.top_surface_density,
             bottom_density: self.bottom_surface_density,
             under_top: self.under_top,
+            // Only where it rounds anything, so that two regions that
+            // differ in it alone are still filled as one (Fill.cpp).
+            smooth: (crate::smooth::sanitize(self.smooth_factor) > 0.0
+                && matches!(
+                    self.pattern,
+                    Pattern::Hilbert
+                        | Pattern::Octagram
+                        | Pattern::Honeycomb
+                        | Pattern::Honeycomb3D
+                        | Pattern::CrossHatch
+                ))
+            .then_some((self.smooth_factor, self.resolution)),
             alternate: !self.steady_direction,
             // Both are shares of the line spacing when given as percentages
             // (Fill.cpp), and an anchor is never longer than a join may be.
@@ -1467,6 +1495,29 @@ mod tests {
         .unwrap();
         assert_eq!(read.extra_solid_infills, "5#2");
         assert!(read.unsupported.is_empty());
+    }
+
+    #[test]
+    fn the_smoothing_factor_counts_for_the_patterns_it_rounds() {
+        let read = |json: &str| {
+            InfillSettings::from_settings(&Settings::from_json(json).unwrap())
+                .unwrap()
+                .params(0.2, false)
+                .unwrap()
+                .smooth
+        };
+        assert_eq!(
+            read(
+                r#"{"sparse_infill_pattern": "honeycomb", "sparse_infill_smooth_factor": "40%", "resolution": "0.012"}"#
+            ),
+            Some((0.4, 0.012))
+        );
+        assert_eq!(read(r#"{"sparse_infill_pattern": "honeycomb"}"#), None);
+        // Grid is not rounded in the reference: nothing to tell apart.
+        assert_eq!(
+            read(r#"{"sparse_infill_pattern": "grid", "sparse_infill_smooth_factor": "40%"}"#),
+            None
+        );
     }
 
     #[test]

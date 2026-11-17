@@ -528,11 +528,15 @@ const RESOLUTION: f64 = 0.01;
 /// One line over the whole of `bounds`, a pitch between its turns: a
 /// Hilbert curve from the least corner, or a spiral from the middle
 /// (FillPlanePath.cpp). `bounds` are of the object, turned as the area is.
+/// `smoothing`, the factor and the G-code resolution in mm, rounds the
+/// path's corners as it is made (`generate_path`), for the patterns the
+/// reference rounds.
 pub(crate) fn plane_path(
     curve: Curve,
     bounds: Bounds,
     spacing: f64,
     density: f64,
+    smoothing: Option<(f64, f64)>,
 ) -> Vec<Vec<Point2>> {
     let pitch = spacing * UNITS_PER_MM / density;
     if pitch <= 0.0 || !pitch.is_finite() {
@@ -605,13 +609,37 @@ pub(crate) fn plane_path(
             }
         }
     }
-    let line: Vec<Point2> = points
-        .into_iter()
-        .map(|(x, y)| Point2 {
-            x: (x * pitch + 0.5).floor() as Coord + shift.x,
-            y: (y * pitch + 0.5).floor() as Coord + shift.y,
-        })
-        .collect();
+    let snap = |(x, y): (f64, f64)| Point2 {
+        x: (x * pitch + 0.5).floor() as Coord,
+        y: (y * pitch + 0.5).floor() as Coord,
+    };
+    let mut line: Vec<Point2> = Vec::with_capacity(points.len());
+    match smoothing {
+        // The path runs in units of the pitch, and so does the tolerance;
+        // a rounded corner's points that come to the same whole unit as
+        // the one before are dropped (`SmoothingPolylineOutput`).
+        Some((factor, resolution)) if crate::smooth::sanitize(factor) > 0.0 => {
+            let mut smoother =
+                crate::smooth::Smoother::new(factor, resolution * UNITS_PER_MM / pitch);
+            let mut last: Option<Point2> = None;
+            let mut emit = |p: (f64, f64)| {
+                let snapped = snap(p);
+                if last != Some(snapped) {
+                    last = Some(snapped);
+                    line.push(snapped);
+                }
+            };
+            for p in points {
+                smoother.push(p, &mut emit);
+            }
+            smoother.flush(&mut emit);
+        }
+        _ => line.extend(points.into_iter().map(snap)),
+    }
+    for p in &mut line {
+        p.x += shift.x;
+        p.y += shift.y;
+    }
     vec![line]
 }
 
@@ -986,7 +1014,7 @@ mod tests {
         let pitch = 0.45e6 / 0.2;
         // Hilbert: every step one pitch along x or y, no point twice,
         // from the least corner to past the greatest.
-        let hilbert = plane_path(Curve::Hilbert, bounds(40.0), 0.45, 0.2);
+        let hilbert = plane_path(Curve::Hilbert, bounds(40.0), 0.45, 0.2, None);
         assert_eq!(hilbert.len(), 1);
         let line = &hilbert[0];
         assert_eq!(line[0], Point2::from_mm(0.0, 0.0));
@@ -1005,13 +1033,13 @@ mod tests {
         let middle = Point2::from_mm(20.0, 20.0);
         let out = |p: &Point2| ((p.x - middle.x) as f64).hypot((p.y - middle.y) as f64);
         for curve in [Curve::Archimedean, Curve::Octagram] {
-            let spiral = plane_path(curve, bounds(40.0), 0.45, 0.2);
+            let spiral = plane_path(curve, bounds(40.0), 0.45, 0.2, None);
             assert_eq!(spiral.len(), 1);
             assert_eq!(spiral[0][0], middle);
             let furthest = spiral[0].iter().map(out).fold(0.0, f64::max);
             assert!(furthest > 20e6 * 2f64.sqrt(), "{curve:?} stops short");
         }
-        let chords = &plane_path(Curve::Archimedean, bounds(40.0), 0.45, 0.2)[0];
+        let chords = &plane_path(Curve::Archimedean, bounds(40.0), 0.45, 0.2, None)[0];
         assert!(
             chords[1..]
                 .windows(2)
@@ -1029,7 +1057,7 @@ mod tests {
                 .windows(2)
                 .all(|pair| ((pair[1] - pair[0]) / pitch - 1.0).abs() < 0.05)
         );
-        assert!(plane_path(Curve::Hilbert, bounds(40.0), 0.45, 0.0).is_empty());
+        assert!(plane_path(Curve::Hilbert, bounds(40.0), 0.45, 0.0, None).is_empty());
     }
 
     #[test]
