@@ -334,10 +334,6 @@ const SILENT: &[Silent] = &[
     // Print.cpp l.6727.
     silent("combine_brims", Is("0")),
     // Fill.
-    // Fill.cpp l.1527: set from 0 degrees up.
-    silent("bottom_layer_direction", Below(0.0, "-1")),
-    // Fill.cpp l.1494.
-    silent("bottom_surface_fill_order", Is("default")),
     // PrintObject.cpp l.5727.
     silent("extra_solid_infills", Blank),
     // Fill.cpp l.1523.

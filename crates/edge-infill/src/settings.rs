@@ -112,6 +112,12 @@ pub struct InfillSettings {
     /// Degrees counter-clockwise from +x.
     pub infill_direction: f64,
     pub solid_infill_direction: f64,
+    /// The direction of top surfaces' lines and of bottom surfaces',
+    /// in degrees, where it is set (`top_layer_direction`,
+    /// `bottom_layer_direction`, from 0 up; -1, the default, leaves
+    /// them to `solid_infill_direction`).
+    pub top_layer_direction: Option<f64>,
+    pub bottom_layer_direction: Option<f64>,
     /// Whether the fill keeps one direction on every layer rather than
     /// turning a quarter on each odd one: Z contouring's
     /// `zaa_dont_alternate_fill_direction`, which counts only with
@@ -247,6 +253,8 @@ impl Default for InfillSettings {
             unsupported_pattern: None,
             infill_direction: 45.0,
             solid_infill_direction: 45.0,
+            top_layer_direction: None,
+            bottom_layer_direction: None,
             steady_direction: false,
             lateral_lattice_angles: (-45.0, 45.0),
             infill_shift_step: 0.4,
@@ -369,6 +377,11 @@ impl InfillSettings {
         };
         let flag = |key: &str, default: bool| -> Result<bool, ConfigError> {
             Ok(settings.flag(key)?.unwrap_or(default))
+        };
+        // Set from 0 degrees up; below that the solid fill's direction is
+        // kept (Fill.cpp `group_fills`, `>= 0.`).
+        let surface_direction = |key: &str| -> Result<Option<f64>, ConfigError> {
+            Ok(settings.float(key)?.filter(|degrees| *degrees >= 0.0))
         };
         // Asked for and not done: said, never passed over.
         let mut unsupported = Vec::new();
@@ -494,6 +507,30 @@ impl InfillSettings {
             "internal_solid_infill_pattern",
             (defaults.solid_joined, defaults.solid_ordered),
         );
+        // The order a bottom surface is laid in, from the middle out or
+        // from the edge in, is followed by the reference only for the
+        // patterns laid about the middle of the surface (Fill.cpp
+        // `group_fills`: concentric, spiral inset, Archimedean chords
+        // and the octagram spiral); with any other it changes nothing.
+        // None of those is laid on a bottom here (the pattern itself is
+        // said above), so with one of them the order is said too.
+        if let Some(order) = settings
+            .text("bottom_surface_fill_order")
+            .filter(|order| *order != "default")
+            && settings
+                .texts("bottom_surface_pattern")
+                .and_then(|pattern| pattern.first())
+                .is_some_and(|pattern| {
+                    matches!(
+                        pattern.as_str(),
+                        "concentric" | "spiralinset" | "archimedeanchords" | "octagramspiral"
+                    )
+                })
+        {
+            unsupported.push(format!(
+                "bottom_surface_fill_order \"{order}\": the bottom surface's lines are laid in the order travel is least"
+            ));
+        }
         unsupported.extend(spiral_notes);
         // The reference has a different way of laying shells for each
         // other value; only this one is ported. Bambu Studio's projects
@@ -565,6 +602,8 @@ impl InfillSettings {
             solid_infill_direction: settings
                 .float("solid_infill_direction")?
                 .unwrap_or(defaults.solid_infill_direction),
+            top_layer_direction: surface_direction("top_layer_direction")?,
+            bottom_layer_direction: surface_direction("bottom_layer_direction")?,
             steady_direction: steady_direction(settings)?,
             minimum_sparse_infill_area: settings
                 .float("minimum_sparse_infill_area")?
@@ -908,6 +947,8 @@ impl InfillSettings {
             pattern: self.pattern,
             sparse_angle: self.infill_direction.to_radians(),
             solid_angle: self.solid_infill_direction.to_radians(),
+            top_angle: self.top_layer_direction.map(f64::to_radians),
+            bottom_angle: self.bottom_layer_direction.map(f64::to_radians),
             alternate: !self.steady_direction,
             // Both are shares of the line spacing when given as percentages
             // (Fill.cpp), and an anchor is never longer than a join may be.
@@ -1165,6 +1206,34 @@ mod tests {
         )
         .unwrap();
         assert!(calibration.flow_calib_order);
+    }
+
+    #[test]
+    fn surface_directions_and_the_bottom_fill_order_are_read() {
+        let read = |json: &str| InfillSettings::from_settings(&Settings::from_json(json).unwrap());
+        // From 0 up they are set; below, the solid fill's is kept.
+        let set = read(r#"{"top_layer_direction": "0", "bottom_layer_direction": "30"}"#).unwrap();
+        assert_eq!(
+            (set.top_layer_direction, set.bottom_layer_direction),
+            (Some(0.0), Some(30.0))
+        );
+        let params = set.params(0.2, false).unwrap();
+        assert_eq!(params.bottom_angle, Some(30f64.to_radians()));
+        let unset =
+            read(r#"{"top_layer_direction": "-1", "bottom_layer_direction": "-1"}"#).unwrap();
+        assert_eq!(unset.params(0.2, false).unwrap().top_angle, None);
+        assert!(set.unsupported.is_empty() && unset.unsupported.is_empty());
+        // The bottom's order changes nothing with lines, as in the
+        // reference; with a pattern laid about the middle, which is not
+        // laid here, it is said with the pattern.
+        let lines = read(r#"{"bottom_surface_fill_order": "inward"}"#).unwrap();
+        assert!(lines.unsupported.is_empty());
+        let centred = read(
+            r#"{"bottom_surface_pattern": "concentric", "bottom_surface_fill_order": "inward"}"#,
+        )
+        .unwrap();
+        assert_eq!(centred.unsupported.len(), 2);
+        assert!(centred.unsupported[1].starts_with("bottom_surface_fill_order \"inward\""));
     }
 
     #[test]

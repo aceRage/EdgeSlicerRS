@@ -44,6 +44,17 @@ pub struct FillParams {
     pub sparse_angle: f64,
     /// Direction of solid lines on even layers; odd layers are turned 90°.
     pub solid_angle: f64,
+    /// The direction set for the lines of top surfaces and of bottom
+    /// surfaces, radians counter-clockwise from +x (`top_layer_direction`,
+    /// `bottom_layer_direction`), the same on every layer; none keeps
+    /// them to the solid fill's (Fill.cpp `group_fills`, "optional
+    /// absolute direction for the top / bottom surfaces", which marks
+    /// the angle a template angle so that it is not turned from layer
+    /// to layer). A bottom's direction is a bridge's too where the
+    /// bridge has no direction of its own: the reference counts a bridge
+    /// over air as a bottom surface.
+    pub top_angle: Option<f64>,
+    pub bottom_angle: Option<f64>,
     /// Whether lines laid in the fill's own direction turn a quarter on
     /// odd layers, as they do unless Z contouring keeps them steady
     /// ([`crate::InfillSettings::steady_direction`]).
@@ -500,7 +511,7 @@ pub fn fill_within(
                 Role::TopSolidInfill,
                 params.top.spacing,
                 Lay::Spiral,
-                &[params.solid_angle + FRAC_PI_2],
+                &[params.top_angle.unwrap_or(params.solid_angle) + FRAC_PI_2],
             ),
             SurfaceKind::Top => (
                 params.top,
@@ -512,7 +523,7 @@ pub fn fill_within(
                     placed: Placed::Fitted,
                     density: 1.0,
                 },
-                &[params.solid_angle + turned],
+                &[params.top_angle.unwrap_or(params.solid_angle + turned)],
             ),
             // From support to support where that is known. A bridge is
             // laid as solid lines are (Fill.cpp `group_fills`: the
@@ -532,7 +543,10 @@ pub fn fill_within(
                     placed: Placed::Grid,
                     density: params.bridge.spacing / params.bridge_spacing,
                 },
-                &[surface.angle.unwrap_or(params.solid_angle + turned)],
+                &[surface
+                    .angle
+                    .or(params.bottom_angle)
+                    .unwrap_or(params.solid_angle + turned)],
             ),
             // Across the sparse lines beneath, unless the surface has a
             // direction of its own: a second layer of bridge is laid
@@ -562,7 +576,7 @@ pub fn fill_within(
                     placed: Placed::Fitted,
                     density: 1.0,
                 },
-                &[params.solid_angle + turned],
+                &[params.bottom_angle.unwrap_or(params.solid_angle + turned)],
             ),
             // Solid fill inside the part is fitted to its area as top
             // and bottom surfaces are: FillRectilinear.cpp
@@ -825,7 +839,8 @@ pub fn fill_within(
                 let inside =
                     edge_clip::offset(std::slice::from_ref(&surface.area), -line / 2, Join::MITER)?;
                 // `_infill_direction` works the angle in single precision.
-                let angle = f64::from(params.solid_angle as f32 + std::f32::consts::FRAC_PI_2);
+                let along = params.top_angle.unwrap_or(params.solid_angle);
+                let angle = f64::from(along as f32 + std::f32::consts::FRAC_PI_2);
                 for chords in spiral_chords(&inside, angle, flow.spacing, params.flow_calib_order)?
                 {
                     for (index, points) in chords.into_iter().enumerate() {
@@ -1547,6 +1562,8 @@ mod tests {
             pattern,
             sparse_angle: 45f64.to_radians(),
             solid_angle: 45f64.to_radians(),
+            top_angle: None,
+            bottom_angle: None,
             alternate: true,
             sparse_link_max: 0.0,
             sparse_anchor: 0.0,
@@ -1610,6 +1627,52 @@ mod tests {
         let even = fill(&[surface(SurfaceKind::InternalSolid, 20.0)], 0, &params).unwrap();
         let odd = fill(&[surface(SurfaceKind::InternalSolid, 20.0)], 1, &params).unwrap();
         assert!(even.iter().all(rises) && !odd.iter().any(rises));
+    }
+
+    #[test]
+    fn a_direction_set_for_top_and_bottom_surfaces_holds_on_every_layer() {
+        // The direction of a path's longest stretch, in degrees from 0
+        // to 180.
+        let direction = |paths: &[ExtrusionPath]| -> f64 {
+            let mut best = (0.0, 0.0);
+            for path in paths {
+                for pair in path.points.windows(2) {
+                    let (dx, dy) = (
+                        (pair[1].x - pair[0].x) as f64,
+                        (pair[1].y - pair[0].y) as f64,
+                    );
+                    if dx.hypot(dy) > best.0 {
+                        best = (dx.hypot(dy), dy.atan2(dx).to_degrees().rem_euclid(180.0));
+                    }
+                }
+            }
+            best.1
+        };
+        let set = FillParams {
+            top_angle: Some(70f64.to_radians()),
+            bottom_angle: Some(30f64.to_radians()),
+            ..params(Pattern::Grid, 0.2)
+        };
+        for layer in [0, 1, 2, 3] {
+            let lay = |kind| fill(&[surface(kind, 20.0)], layer, &set).unwrap();
+            assert!((direction(&lay(SurfaceKind::Top)) - 70.0).abs() < 0.1);
+            assert!((direction(&lay(SurfaceKind::Bottom)) - 30.0).abs() < 0.1);
+            // A bridge over air with no direction of its own is laid as
+            // a bottom; solid fill inside keeps turning.
+            assert!((direction(&lay(SurfaceKind::Bridge)) - 30.0).abs() < 0.1);
+            let solid = 45.0 + if layer % 2 == 1 { 90.0 } else { 0.0 };
+            assert!((direction(&lay(SurfaceKind::InternalSolid)) - solid).abs() < 0.1);
+        }
+        // A bridge that has a direction keeps it.
+        let bridge = Surface {
+            angle: Some(0.0),
+            ..surface(SurfaceKind::Bridge, 20.0)
+        };
+        assert!(direction(&fill(&[bridge], 1, &set).unwrap()).abs() < 0.1);
+        // Unset, they turn with the solid fill.
+        let unset = params(Pattern::Grid, 0.2);
+        let bottom = fill(&[surface(SurfaceKind::Bottom, 20.0)], 1, &unset).unwrap();
+        assert!((direction(&bottom) - 135.0).abs() < 0.1);
     }
 
     #[test]
