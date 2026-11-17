@@ -838,11 +838,13 @@ impl Gauge<'_> {
             let next = own(index);
             let previous = points[points.len() - 1];
             if over(&previous) != over(&next) {
-                // The reference keeps `previous` by reference while it
-                // adds to the vector it is in (ExtrusionProcessor.hpp,
-                // `const ExtendedPoint &prev_point = points.back()`),
-                // and reads freed memory once the vector has grown; what
-                // it means to compare with is this point.
+                // Compared with this point, held as a copy, as in the
+                // reference since aceRage/EdgeSlicer#964
+                // (ExtrusionProcessor.hpp `estimate_points_properties`).
+                // Before it the reference kept it by reference while it
+                // added to the vector it is in (`const ExtendedPoint
+                // &prev_point = points.back()`) and read freed memory once
+                // the vector had grown.
                 for along in self
                     .below
                     .hits((previous.x, previous.y), (next.x, next.y), EPSILON)

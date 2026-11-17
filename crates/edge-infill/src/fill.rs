@@ -1045,14 +1045,10 @@ pub fn fill_within(
                     edge_clip::offset(&outer, -scaled(TURN_INSET * flow.spacing), Join::MITER)?;
                 // A join is no longer than three spacings above 80%
                 // density, and as long as it likes below that and for a
-                // bridge (Fill.cpp `link_max_length`). The reference
-                // means the same and does not do it: it works the limit
-                // out from the filler's spacing before that is set,
-                // while it is still zero, and zero is no limit, so a
-                // row parted by a hole is joined round the hole's side
-                // however long that is and a whole extra line is laid
-                // beside a fill line along a square hole. Not copied;
-                // fixed there in aceRage/EdgeSlicer#968.
+                // bridge (Fill.cpp `link_max_length`), as the reference
+                // keeps it since aceRage/EdgeSlicer#968 (before it, the
+                // limit was worked out from a spacing still zero, and
+                // zero is no limit).
                 let unlimited = edge_geom::Coord::MAX / 4;
                 let bridging = matches!(
                     surface.kind,

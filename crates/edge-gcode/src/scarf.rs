@@ -20,36 +20,39 @@
 //! circle compensation resized are, whatever any of those say, where
 //! `apply_scarf_seam_on_circles` is on.
 //!
-//! Where this is not the reference:
+//! Done as the reference does it since aceRage/EdgeSlicer#958, where
+//! the pinned reference before it went wrong:
 //!
 //! - A scarf of no length (`seam_slope_min_length` at 0) is a plain
-//!   seam. The reference lays such a loop whole, with neither a slope
-//!   nor the seam gap (GCode.cpp `extrude_loop`: `clip_length` is zero
-//!   once `enable_seam_slope` is set, whatever the slope's length).
+//!   seam (GCode.cpp `extrude_loop`). Before the fix such a loop was
+//!   laid whole, with neither a slope nor the seam gap.
 //! - An inner wall's slope starts two fifths of its length on from the
-//!   seam whatever the seam gap is. The reference tests the wrong
-//!   length before it clips (ExtrusionEntity.cpp `clip_front`: `while
-//!   (distance > 0 ...)` where `clip_dist` is meant), so with
-//!   `seam_gap` at 0 nothing is clipped. (It also asks the loop's kind
-//!   of what is left of the loop after the slope, `this->role()`, and
-//!   so takes an inner wall whose slope is the whole loop for no wall
-//!   at all and starts it two seam gaps on, as an outer wall. That is
-//!   kept, on purpose here: two fifths of a loop left out of its first
-//!   time round would leave the whole wall a fifth short of plastic.
-//!   Where the loop goes on flat past its slope the wall's own kind is
-//!   asked, not that of the flat part's first stretch, which the
-//!   reference takes for no inner wall where it hangs over air.)
+//!   seam whatever the seam gap is (ExtrusionEntity.cpp `clip_front`,
+//!   which before the fix tested the seam gap where the length left to
+//!   clip was meant, so with `seam_gap` at 0 nothing was clipped).
+//!   The loop's kind is asked of what is left of the loop after the
+//!   slope, `this->role()`, as the reference still does, so an inner
+//!   wall whose slope is the whole loop is taken for no wall at all and
+//!   starts two seam gaps on, as an outer wall. That is kept, on purpose
+//!   here: two fifths of a loop left out of its first time round would
+//!   leave the whole wall a fifth short of plastic. Not as the
+//!   reference: where the loop goes on flat past its slope the wall's
+//!   own kind is asked, not that of the flat part's first stretch,
+//!   which the reference takes for no inner wall where it hangs over
+//!   air.
 //! - `scarf_joint_speed` holds the slope's speed on a small loop too,
-//!   a percentage being of the wall's own speed there as anywhere.
-//!   The reference only looks at it where no speed was handed down
-//!   (GCode.cpp `_extrude`, `if (speed == -1)`), and a small loop's is.
+//!   a percentage being of the wall's own speed there as anywhere
+//!   (GCode.cpp `_extrude`, `cap_scarf_joint_speed`; before the fix it
+//!   was only looked at where no speed was handed down, and a small
+//!   loop's is).
 //! - The share of the wall's width a seam may hang out by before it
-//!   gets no scarf is of the wall's own width. The reference takes the
-//!   width as set (GCode.cpp `extrude_loop`, `_line_width`), which is 0
-//!   where it is left to follow the nozzle.
-//! - The nozzle goes down to the foot of the slope after the travel
-//!   there, as its own move; the reference makes the last leg of an
-//!   unretracted travel the way down.
+//!   gets no scarf is of the wall's own width (GCode.cpp
+//!   `extrude_loop`, `_line_width`; before the fix the width as set,
+//!   which is 0 where it is left to follow the nozzle).
+//!
+//! Not as the reference: the nozzle goes down to the foot of the slope
+//! after the travel there, as its own move; the reference makes the
+//! last leg of an unretracted travel the way down.
 
 use std::io;
 
@@ -176,10 +179,12 @@ impl Scarf {
         if joint_speed.resolve(1.0) < 0.0 {
             return Err(bad("scarf_joint_speed", "a speed or a percentage"));
         }
-        // The reference prints a joint with no speed as fast as the hot
-        // end can melt: a speed of nothing is taken for one not set
-        // (GCode.cpp `_extrude`, "if not set the speed"). That is not
-        // what anyone asking for a slow joint means.
+        // A joint speed of nothing is the wall's own speed, as the
+        // reference has it since aceRage/EdgeSlicer#958 (GCode.cpp
+        // `_extrude`, `cap_scarf_joint_speed`); before it the reference
+        // took it for a speed not set and printed the joint as fast as
+        // the hot end can melt, which is not what anyone asking for a
+        // slow joint means.
         if joint_speed.resolve(1.0) == 0.0 {
             if kind != ScarfSeam::None {
                 notes.push(
@@ -734,12 +739,11 @@ impl Writer<'_> {
     /// at 50, not at 30. A joint speed of nothing or less is no speed
     /// of its own. Elsewhere the speed as given.
     ///
-    /// This is the rule the reference is being mended to
-    /// (aceRage/EdgeSlicer#958, GCode.cpp `_extrude`,
-    /// `cap_scarf_joint_speed`). The pinned reference only looks at the
-    /// joint's speed where no speed was handed down (`if (speed ==
-    /// -1)`), so there a small loop's joint goes at the small loop's
-    /// speed whatever was asked.
+    /// This is the reference's rule since aceRage/EdgeSlicer#958
+    /// (GCode.cpp `_extrude`, `cap_scarf_joint_speed`). Before it the
+    /// joint's speed was only looked at where no speed was handed down
+    /// (`if (speed == -1)`), so a small loop's joint went at the small
+    /// loop's speed whatever was asked.
     pub(crate) fn scarf_speed(&self, speed: f64, own: f64) -> f64 {
         match self.state.slope {
             Some(_) => {
@@ -890,13 +894,12 @@ impl Writer<'_> {
         let s = self.settings;
         let scarf = s.scarf;
         // A wall contoured in height has a height of its own at every
-        // point, and no scarf: it is closed with the seam gap. Not as
-        // the reference, which keeps both (ContourZ.cpp's guard against
-        // a scarf, "scarf-joint seams already own the Z of their path",
-        // never meets one, contouring coming before the scarf is made):
-        // GCode.cpp `_extrude` lays a contoured path by its contour first,
-        // so both the scarf's way up and its way down go flat along the
-        // contour at the wall's full flow, the joint's stretch laid twice.
+        // point, and no scarf: it is closed with the seam gap, as the
+        // reference does since aceRage/EdgeSlicer#974 (GCode.cpp
+        // `extrude_loop`). Before it the reference kept both: `_extrude`
+        // lays a contoured path by its contour first, so both the scarf's
+        // way up and its way down went flat along the contour at the
+        // wall's full flow, the joint's stretch laid twice.
         if path.len() < 3 || self.contouring() {
             return Ok(false);
         }

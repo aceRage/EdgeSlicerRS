@@ -228,13 +228,12 @@ fn nearby<'a>(regions: &'a [ExPolygon], area: &[ExPolygon], reach: Coord) -> Vec
 ///    under them.
 ///
 /// Different from the reference, where it does not do what it means to:
-/// - Two patches on a layer may be run out over the same ground. The
-///   reference then lays both, one over the other, unless they run the
-///   same way; here the first to be made keeps it.
-/// - It looks for sparse fill 0.81 of a thread deep where it means 0.9
-///   (see `bridges_on`).
-/// - Its vote on the direction takes the two ends of its range as one
-///   at the low end only (`anchored.rs`, `bridging_angle`).
+/// two patches on a layer may be run out over the same ground. The
+/// reference then lays both, one over the other, unless they run the
+/// same way; here the first to be made keeps it. (Sparse fill looked for
+/// 0.9 of a thread deep, see `bridges_on`, and the vote on the direction
+/// taking both ends of its range round, `anchored.rs`, are as in the
+/// reference since aceRage/EdgeSlicer#969.)
 ///
 /// And where it is followed but cannot be matched: the vote samples each
 /// outline from where it starts, which is taken as the reference's
@@ -504,11 +503,9 @@ fn bridges_on(
     let at = |share: f64| (share * spacing as f64) as Coord;
     // Sparse fill deep enough for a thread to sink into: sparse on every
     // layer it reaches, nothing else on any of them, the layer beneath
-    // always counted. Not as the reference has it: it takes the share a
-    // thread sinks twice over here (the height it hands
-    // `gather_areas_w_depth` has the share in it already, and the lambda
-    // takes it again), so it looks 0.81 of a thread deep where everywhere
-    // else in the function it looks 0.9; here it is 0.9 throughout.
+    // always counted. 0.9 of a thread deep throughout, as in the
+    // reference since aceRage/EdgeSlicer#969 (before it,
+    // `gather_areas_w_depth` took the share twice and looked 0.81 deep).
     let sunk = SINKS * over.thread_height;
     let bottom = tops[layer] - sunk - EPSILON;
     let (mut sparse, mut dense) = (Vec::new(), Vec::new());
@@ -786,12 +783,11 @@ fn cut_in(
 /// where a layer's bridges are not all laid the same way the second
 /// layer is laid square to the last of them.
 ///
-/// Not as the reference has it: there, of a surface that gets a patch
-/// of second bridge, whatever is not that patch is put through the same
-/// sieve, and what is narrower than two lines is dropped from the layer
-/// altogether and nothing is printed in its place. That is an error in
-/// the reference (it means to drop bridges too small to matter, not
-/// fill); here everything that is not the patch stays what it was.
+/// Of a surface that gets a patch of second bridge, everything that is
+/// not the patch stays what it was, as in the reference since
+/// aceRage/EdgeSlicer#952 (before it, that rest went through the
+/// bridges' sieve, and what was narrower than two lines was dropped from
+/// the layer with nothing printed in its place).
 pub fn second_internal_bridges(
     surfaces: &[Vec<Vec<Surface>>],
     params: &FillParams,
@@ -1307,7 +1303,8 @@ mod tests {
         let layer = &found[1];
         assert!((area(layer, InternalBridge) - 200.0).abs() < 1e-6);
         // The 0.6 mm of solid beside the bridge, narrower than two lines,
-        // is still solid: the reference drops it and prints nothing there.
+        // is still solid, as in the reference since aceRage/EdgeSlicer#952
+        // (before it, dropped with nothing printed there).
         assert!((area(layer, InternalSolid) - 12.0).abs() < 1e-6);
         assert!((area(layer, Sparse) - 388.0).abs() < 1e-6);
         // What was left alone comes first, in its own order, then what

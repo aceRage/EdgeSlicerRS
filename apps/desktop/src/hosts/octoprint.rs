@@ -29,9 +29,11 @@ impl OctoPrint {
 }
 
 /// `GET api/version`: an answer with `api`, and a `text` (when there is
-/// one) that starts "OctoPrint". The reference fails an answer without
-/// `api` and says nothing about why (OctoPrint.cpp l.264: an empty
-/// message, so "Could not connect to OctoPrint: "); here it is said.
+/// one) that starts "OctoPrint". An answer without `api` is said to be
+/// another host's. The reference says so too since aceRage/EdgeSlicer#982,
+/// in its own words ("Mismatched type of print host: %s"); before it,
+/// "Could not connect to OctoPrint: " with nothing after it. Here the
+/// words are still this app's.
 pub fn version(http: &Http) -> Result<(), String> {
     let answer = http.get("api/version")?;
     if !answer.ok() {

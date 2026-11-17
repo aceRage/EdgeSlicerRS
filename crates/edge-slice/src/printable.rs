@@ -32,13 +32,12 @@ use crate::LayerRegions;
 /// Layers are taken one after another, each from the one above as it was
 /// left, so the result does not depend on how many threads there are.
 ///
+/// The margin is `tan(angle)` times the height of the layer that
+/// overhangs, as in the reference since aceRage/EdgeSlicer#955 (before it,
+/// the `layer_height` setting for every layer).
+///
 /// Not as the reference:
 ///
-/// - The margin is `tan(angle)` times the height of the layer that
-///   overhangs. The reference takes the `layer_height` setting for every
-///   layer, so where layers are thinner or thicker than that (variable
-///   layer height, `precise_z_height`) its slope is not at the angle
-///   asked for.
 /// - The reference works object by object and here everything on the
 ///   plate is one stack of layers. The two differ only where a part
 ///   floats over nothing: the reference adds nothing to a layer on which

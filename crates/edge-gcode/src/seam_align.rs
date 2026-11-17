@@ -9,18 +9,17 @@
 //! Geometry/Curves.hpp (`fit_cubic_bspline`) and the kernel of
 //! Geometry/Bicubic.hpp.
 //!
-//! Not as the reference:
-//! - A string is looked for upward from its first seam and then
-//!   downward. Where the way up ends short of the top layer, the
-//!   reference turns round and steps down once more before it looks, so
-//!   the layer just beneath the first seam is passed over and its seam
-//!   left out of the line (`find_seam_string`: `reverse_lookup_direction`
-//!   sets the layer beneath, and the loop's own step then moves on from
-//!   it). Here that layer is looked at like any other.
-//! - The curve is fitted in double precision by the normal equations,
-//!   where the reference solves the same least squares in single
-//!   precision by a QR decomposition; the two agree to what single
-//!   precision holds.
+//! A string is looked for upward from its first seam and then downward.
+//! Where the way up ends short of the top layer, the layer just beneath
+//! the first seam is looked at like any other, as the reference does
+//! since aceRage/EdgeSlicer#965 (`find_seam_string`: before it, the
+//! loop's own step moved on from the layer `reverse_lookup_direction`
+//! had set, and that layer's seam was left out of the line).
+//!
+//! Not as the reference: the curve is fitted in double precision by the
+//! normal equations, where the reference solves the same least squares
+//! in single precision by a QR decomposition; the two agree to what
+//! single precision holds.
 
 use crate::seam_plan::{
     Candidate, Comparator, LayerSeams, Paint, angle_penalty, find_next_seam_in_layer,

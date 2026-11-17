@@ -188,7 +188,8 @@ fn an_inner_walls_way_up_starts_two_fifths_of_the_slope_on() {
     );
     // The way down is the whole slope less two seam gaps, as an outer wall's.
     assert!((stretches_mm(&made.ends) - (20.0 - 2.0 * gap)).abs() < 1e-5);
-    // Whatever the seam gap: the reference clips nothing here at none.
+    // Whatever the seam gap, as the reference has it since
+    // aceRage/EdgeSlicer#958 (before it, it clipped nothing here at none).
     assert!((stretches_mm(&inner(0.0, 15.0).starts) - 12.0).abs() < 1e-5);
     // Not where the slope is the whole loop, which would leave two
     // fifths of the wall out of its first time round.
@@ -613,7 +614,8 @@ fn which_loops_are_joined_so_is_as_asked() {
     assert!(sloped_moves(&printed(&inner, &[], &with(ScarfSeam::All, true))) > 0);
 
     // A slope of no length is a plain seam: the loop stops a seam gap
-    // short of its start, where the reference would close it.
+    // short of its start, as in the reference since
+    // aceRage/EdgeSlicer#958 (before it, the reference closed it).
     let no_length = PrintSettings {
         scarf: Scarf {
             min_length: 0.0,
@@ -741,7 +743,8 @@ fn the_joint_has_its_own_speed_and_flow() {
     };
     assert_eq!(speeds(&with(half, &|_| {})), (vec![30.0], vec![60.0]));
     // A small loop's speed does not let the joint go faster than its
-    // own (the reference leaves the joint's speed out there).
+    // own (as in the reference since aceRage/EdgeSlicer#958, which left
+    // the joint's speed out there before it).
     let small = |s: &mut PrintSettings| {
         s.small_perimeter_threshold = 15.0;
         s.small_perimeter_speed = FloatOrPercent::Value(40.0);

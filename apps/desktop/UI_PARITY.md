@@ -144,9 +144,9 @@ runs, is section 8.
 | **Another printer, the bed**: the plate takes the printer's bed and height, objects are moved to keep their place on it, every plate's slice is dropped | Plater.cpp l.18554–18703, `on_config_change` l.29200 | **added**: the bed and height (`plate_view`), fitted to the stage anew; the slices are dropped (**had**). **not yet**: moving the objects; they stay where the file puts them |
 | "Bed type", a label that opens the wiki page on bed types, and a list: the six plates ("Smooth Cool Plate", "Engineering Plate", "Smooth High Temp Plate", "Textured PEI Plate", "Textured Cool Plate", "Cool Plate (SuperTack)"); a Snapmaker U1's own four ("Textured PEI Plate", "Smooth PEI Plate", "Graphic Effect Plate", "Cool Plate"); or a U1's seven with `support_multi_bed_types` | l.2725–2786, `update_all_preset_comboboxes` l.4464–4487, `libslic3r/PrintConfig.cpp` l.1284–1327 | **had**: the same lists and labels (`settled`, `bed_types`). **added**: "Graphic Effect Plate" (the engine reads its `graphic_effect_plate_temp`). **not yet**: the link (the page loads nothing from the network) |
 | The list is enabled for a Bambu printer, a U1, or `support_multi_bed_types`. Any other printer is on its own default, shown greyed | l.4503, l.4555–4559 | **had** the rule. **added**: such a printer is put on its default when it is selected |
-| A printer's default bed type: the preset's `default_bed_type`, by name or number; else by model: Cool Plate for `BL-P001`, `BL-P002`, `C13`, Textured PEI Plate for `SM_U1`, else High Temp Plate | `Preset::get_default_bed_type` Preset.cpp l.1168 | **added**. **differs**: the model's own file is read for `default_bed_type` too, after the preset. That is where Bambu's profiles give it and the C++ never looks, so its Bambu printers start on the High Temp Plate whatever the profile says (reported as an error of the C++) |
+| A printer's default bed type: the preset's `default_bed_type`, by name or number; else by model: Cool Plate for `BL-P001`, `BL-P002`, `C13`, Textured PEI Plate for `SM_U1`, else High Temp Plate | `Preset::get_default_bed_type` Preset.cpp l.1168 | **added**: the model's own file is read for `default_bed_type` too, after the preset, as the C++ does for Bambu machines since aceRage/EdgeSlicer#949 (before it, never, so its Bambu printers started on the High Temp Plate). **differs**: here for every vendor's model; the C++ leaves the key unread in the twenty model files of other vendors that carry it |
 | The bed type is remembered for each printer preset, by its name (`orca_presets[].curr_bed_type` in the app's config, and once more under `app`): saved when it is picked and whenever the selection is written; read when a printer is selected, unless a project is being loaded, whose own bed type then holds. The first time a printer is used its default is saved at once | l.4508–4554, `on_select_bed_type` l.18515, `PresetBundle::export_selections` l.2718, `load_selections` l.2566 | **added**: kept for each printer preset in the app's settings (section 8), read back when the printer is selected, in this run or a later one; a project opened with its own settings keeps its own. Before: not remembered. **differs**: kept by name ("Cool Plate"), not by the number of the C++ list; no second copy under `app`, which the C++ keeps for what reads it elsewhere; a default is not written until the printer is selected by hand |
-| A bed type remembered for a U1 that is not one of its four is brought to one of them: Cool Plate for the SuperTack, Textured PEI Plate for the rest | l.4531–4537 | **added**. For any other printer a remembered plate that is not in its list gives the printer's default; the C++ shows the first row and slices with the plate that is not listed |
+| A bed type remembered for a U1 that is not one of its four is brought to one of them: Cool Plate for the SuperTack, Textured PEI Plate for the rest | l.4531–4537 | **added**. For any other printer a remembered plate that is not in its list gives the printer's default, as the C++ does since aceRage/EdgeSlicer#949 (before it, it showed the first row and sliced with the plate that is not listed) |
 | Picking a bed type marks the project modified and drops the slices of the plates without one of their own | `Plater::priv::on_select_bed_type` l.18465 | **had** (`project_set`): every slice is dropped, a plate having no bed type of its own here |
 | A bed type for one plate ("Same as Global Plate Type" and the printer's plates), reset with a notice when another printer does not take it ("Plate bed types reset") | `PartPlate::get_bed_type` PartPlate.cpp l.196, PlateSettingsDialog.cpp l.394, `Plater::normalize_bed_types` l.21433 | **added** (tenth pass): "Bed type" in "Plate Settings" (section 13, "Plates"), its bed temperatures and `curr_bed_type` the plate's in its slice. Another printer takes away what it does not take (PlateBedTypes.cpp: any type on a Bambu printer or one with `support_multi_bed_types`, a U1's own four on a U1, none on the rest), with the reference's box and words. **differs**: the reset is a step of the undo history ("Plate bed types reset"); the reference takes no snapshot for it |
 | Nozzles. One nozzle: "Nozzle" with "Diameter", a list of the sizes the model has presets for ("0.4mm"), which picks the preset; off with fewer than two. Two: "Left Nozzle" / "Right Nozzle". "Flow": "Standard" / "High Flow". "Rack": "Edit" / "Add", "Sync" | `update_nozzle_settings` l.11606–11959 | **added**: "Nozzle", "Diameter" with the sizes of the model's presets, picking among them (`printer_select` with `variant`); off with fewer than two, and for a project's own printer. Before: the size as text. **not yet**: "Flow", "Rack" |
@@ -160,10 +160,10 @@ runs, is section 8.
 | Section "Filament Management" ("Pellet Configuration" for pellet printers), sub-title "Filaments" | l.2882, l.3515, l.4450 | **added** |
 | One row for each filament of the project: a numbered colour swatch ("Click to select filament color"), the filament preset list, the tool badge, the row menu ("Edit", "Delete", "Merge with", "Print on nozzle", "Rack slot"…) | `init_filament_combo` l.4135, `GUI_Factories.cpp::create_filament_action_menu` l.2600 | **added**: a row for each filament the project has: as many as its settings describe, at least the highest anything prints in (`Model::filament_count`; before: up to the highest the file printed in), its number on its colour, its preset list (with the project's own settings, the saved names). The row's edit icon ("Click to edit preset", sixth pass). **added** (thirteenth pass): the swatch is a button, "Click to select filament color", opening a picker of the page's own (the reference's palette with white, greys and black, a square of saturation and brightness over a strip of hue, the colour typed; OK / Cancel); the row menu on the right button or the menu key: "Edit", "Delete" ("Delete this filament", off with one filament), "Merge with" (the other filaments, each by its preset's name and colour). **differs**: the reference's colour dialog also takes several colours to a filament, their make-up and a filament library's colours; one colour here. **not yet**: the tool badge, "Print on nozzle", "Rack nozzle size", "Print on", "Rack slot" (the engine has no assignment of a filament to a nozzle of the person's choosing) |
 | "Add one filament" (at most 64, `MAXIMUM_FILAMENT_NUMBER`), "Remove last filament" (shown with more than one) | l.3508–3600, `Sidebar::add_filament`, `delete_filament` l.10223 | **added**, in the list's head, the same words (`filament_edit` `add`, `remove_last`). The new filament is the last one again: its preset (`filament_presets.back()`), what is set over it, and with the project's own settings all its values; its colour the next of the reference's sixteen (`get_next_color_for_filament`, one counter for the window as the reference's is static); what is flushed to and from it worked out from the colours (below). Nothing is asked, as in the reference (it asks only about mixed filaments, which are not read here). A printer with fewer tools takes a fifth filament as the reference does: `T4` is written, with the engine's warning |
-| "Delete" of any filament; "Merge with" | `Sidebar::delete_filament` with an index, `change_filament` l.10069, `Plater::on_filaments_delete` l.28076, `PartPlate::on_filament_deleted` l.6798, MixedFilamentConfigRemap.hpp | **added** (`delete`, `merge`): the filaments after it are numbered one less wherever they are named: a part's and an object's filament, the colours painted on (`paint_color`, the triangles' codes rewritten), an object's, a part's and a height range's feature filaments (`wall_filament`, `support_filament`…), the project's own process settings that name one, a plate's first-layer and later-layers orders (the filament taken out of them) and its `filament_maps` entry, a filament change at a layer (one to it taken out; merged, to the filament merged into). What was in it prints in its object's filament (a part), filament 1 (an object), unpainted (a colour); merged, in the filament merged into. Its flushing volumes go with it. **differs**: the flushing volumes are taken out by row and column, where the reference keeps the first n − 1 (see "Errors found in the C++"); a filament change merged goes to the right filament (ditto); a range of later layers whose order is left empty is taken away, where the reference keeps it empty and its dialog then refuses it. **not yet**: a feature filament set by hand over a process preset (`process_set`) is not renumbered |
+| "Delete" of any filament; "Merge with" | `Sidebar::delete_filament` with an index, `change_filament` l.10069, `Plater::on_filaments_delete` l.28076, `PartPlate::on_filament_deleted` l.6798, MixedFilamentConfigRemap.hpp | **added** (`delete`, `merge`): the filaments after it are numbered one less wherever they are named: a part's and an object's filament, the colours painted on (`paint_color`, the triangles' codes rewritten), an object's, a part's and a height range's feature filaments (`wall_filament`, `support_filament`…), the project's own process settings that name one, a plate's first-layer and later-layers orders (the filament taken out of them) and its `filament_maps` entry, a filament change at a layer (one to it taken out; merged, to the filament merged into). What was in it prints in its object's filament (a part), filament 1 (an object), unpainted (a colour); merged, in the filament merged into. Its flushing volumes go with it. The flushing volumes are taken out by row and column, and a filament change merged goes to the right filament, as in the reference since aceRage/EdgeSlicer#983 (before it, see "Errors found in the C++"). **differs**: a range of later layers whose order is left empty is taken away, where the reference keeps it empty and its dialog then refuses it. **not yet**: a feature filament set by hand over a process preset (`process_set`) is not renumbered |
 | "Apply All" with "Filament preset to apply to all filaments", "Set all filaments to the selected preset" | l.3624 | **added** while presets are chosen here (a project on its own settings has none to choose), its list starting at filament 1's preset. **differs** (the owner's choice): it stands above the list of filaments, between the list's head and its first row, where the reference has it under the list; behaviour, undo step and words are the reference's. **differs**: on a printer whose heads carry nozzles of different sizes the reference lists families and gives each slot the variant for its nozzle; the engine has one nozzle size for all tools, so the plain list is offered |
 | Each filament's preset list in the reference's groups ("User presets", then "System presets"), compatible filaments only, "* " before one with something set over it | `PlaterPresetComboBox::update`, Preset.cpp `is_compatible_with_printer` l.943 | **added** (sixteenth pass): the person's filament presets that go with the printer (their `compatible_printers` name it or a printer it is made from; none named and no condition: every printer) before the vendor's made for it. Picking another with something set over the slot's preset asks first (above, "Sidebar: Printer"). Saving one from the slot's pages ("Save current Filament") puts the slot on it, and every other slot on the same preset with nothing of its own set, as `update_presets_from_to` moves the plater's slots. **differs**: a preset with a `compatible_printers_condition` and no list is offered where the system preset it is made from is offered: the condition is not worked out, as the vendor's own lists here go by `compatible_printers` alone |
-| "Flushing volumes" (shown with more than one filament): `WipingDialog` ("Flushing volumes for filament change") with the matrix, "Re-calculate", the multiplier | l.2903, `WipeTowerDialog.cpp` | **added** (`flush_volumes`, `flush_calc`, `filament_edit` `flush`): in the list's head with more than one filament; a box for each pair from a row's filament to a column's, numbered swatches in the filaments' colours, "From"/"To" in the corner; boxes show the volume times the multiplier, cut to a whole number, as there; "Re-calculate" from the colours; "Flushing volume (mm³) for each filament pair.", "Suggestion: Flushing Volume in range [%d, %d]" (the least any filament flushes, 800); "Multiplier" with two decimals, from 0 to 3, put back with "The multiplier should be in range [%.2f, %.2f]." ("Warning"); a box under its least or over 20000, and the suggestion, in the danger colour. OK is one step ("Flushing volumes"), saved (`flush_volumes_matrix`, `flush_multiplier`), lets the slices go; a project's own volumes and multiplier come over a printer profile's (`project_config`). A project that names its filaments' colours but holds no flushing volumes is shown the volumes a slice works out from the colours and the multiplier 1 (`edge_engine::prepare`, as the reference's command line, Snapmaker_Orca.cpp l.3785); an edit of its filaments starts from them (a colour changed recalculates its own row and column), OK on them unchanged is no step, and a save writes them; session test `a_project_without_flushing_volumes_shows_slices_and_saves_those_worked_out`. **differs** there: the reference's window gives such a project the defaults when it opens it (`project_config` from `FullPrintConfig::defaults()`, PresetBundle.cpp l.5305: 280 mm³ each way at 0.3) and shows, slices and saves those until a colour changes, a filament is added (`auto_calc_flushing_volumes`, Plater.cpp l.3592, l.19798) or "Re-calculate" is pressed: an under-purge, not followed. Seen at 900 × 560 with seven filaments, dark and light, English and German. **differs**: a box not touched keeps its volume, the multiplier at 0 makes the boxes read-only and keeps the volumes, and a box is measured against the least of the filament flushed out (see "Errors found in the C++"). **not yet**: the tip about re-calculating on a change of colour and its preference; multi-colour filaments' several colours in "Re-calculate" (AMS) |
+| "Flushing volumes" (shown with more than one filament): `WipingDialog` ("Flushing volumes for filament change") with the matrix, "Re-calculate", the multiplier | l.2903, `WipeTowerDialog.cpp` | **added** (`flush_volumes`, `flush_calc`, `filament_edit` `flush`): in the list's head with more than one filament; a box for each pair from a row's filament to a column's, numbered swatches in the filaments' colours, "From"/"To" in the corner; boxes show the volume times the multiplier, cut to a whole number, as there; "Re-calculate" from the colours; "Flushing volume (mm³) for each filament pair.", "Suggestion: Flushing Volume in range [%d, %d]" (the least any filament flushes, 800); "Multiplier" with two decimals, from 0 to 3, put back with "The multiplier should be in range [%.2f, %.2f]." ("Warning"); a box under its least or over 20000, and the suggestion, in the danger colour. OK is one step ("Flushing volumes"), saved (`flush_volumes_matrix`, `flush_multiplier`), lets the slices go; a project's own volumes and multiplier come over a printer profile's (`project_config`). A project that names its filaments' colours but holds no flushing volumes is shown the volumes a slice works out from the colours and the multiplier 1 (`edge_engine::prepare`, as the reference's command line, Snapmaker_Orca.cpp l.3785); an edit of its filaments starts from them (a colour changed recalculates its own row and column), OK on them unchanged is no step, and a save writes them; session test `a_project_without_flushing_volumes_shows_slices_and_saves_those_worked_out`. **differs** there: the reference's window gives such a project the defaults when it opens it (`project_config` from `FullPrintConfig::defaults()`, PresetBundle.cpp l.5305: 280 mm³ each way at 0.3) and shows, slices and saves those until a colour changes, a filament is added (`auto_calc_flushing_volumes`, Plater.cpp l.3592, l.19798) or "Re-calculate" is pressed: an under-purge, not followed. Seen at 900 × 560 with seven filaments, dark and light, English and German. A box not touched keeps its volume and a box is measured against the least of the filament flushed out, as the C++ does since aceRage/EdgeSlicer#998 (see "Errors found in the C++"). **differs**: the multiplier at 0 makes the boxes read-only and keeps the volumes; the C++ since that fix keeps the stored volumes and never divides by 0. **not yet**: the tip about re-calculating on a change of colour and its preference; multi-colour filaments' several colours in "Re-calculate" (AMS) |
 | "Color Mixing Match", "Synchronize filament list from AMS", "Sync Filament Information", "Spool Manager", "Manage filament presets" | l.2936, l.3404, l.3508 | **not yet** |
 | "Mixed Filaments": "Add Gradient", "Add Pattern", "Add Color" | l.3794 | **not yet** |
 
@@ -1032,7 +1032,7 @@ Read from `WebGuideDialog.cpp/.hpp` (`GuideFrame`), the pages under
 | --- | --- | --- |
 | Title "Printer Selection"; one table, a row for each printer model of every vendor, all its nozzles together; the body is drawn only where it is in sight | `24/index.html`, `js/printer_table.js` | **added**: the table, every row built at once (393 of them), the pictures fetched as their rows come into sight |
 | The rows come from every vendor's `machine_model_list`: `model` (the name in the list), `name` (the model file's), `vendor`, `nozzle_diameter` ("0.2;0.4;0.6"), `cover` (`<model>_cover.png` in the vendor's folder), `materials`; a model whose file is missing is left out | `GuideFrame::LoadProfileFamily` l.1389–1435 | **added**: `Library::models` in `edge-engine` reads the same, and `printer_catalogue` hands it to the page |
-| Vendors: the filament library, Snapmaker, then the user's installed vendors and the rest in the order the folder is read in | `GuideFrame::LoadProfileData` l.1169–1273; `VENDOR_PRIORITY` in printer_table.js | **differs**: Snapmaker's, then the others by vendor name: the same list, in the same order on every machine |
+| Vendors: the filament library, Snapmaker, then the user's installed vendors and the rest in the order the folder is read in | `GuideFrame::LoadProfileData` l.1169–1273; `VENDOR_PRIORITY` in printer_table.js | **differs**: Snapmaker's, then the others by vendor name: the same list, in the same order on every machine. The C++ reads the vendor files by name since aceRage/EdgeSlicer#949 (before it, in the order the folder lists them) |
 | Columns "Enabled", the picture, "Brand" (`BBL` is "Bambu Lab", `Custom` "Custom Printer", `Other` "Orca colosseum"), "Model", "X mm", "Y mm", "Z mm", "Toolheads"; a value that is not known is "—" | printer_table.js l.23–77 | **added** |
 | X, Y, Z and toolheads are those of the model's preset for a 0.4 nozzle, else for the first nozzle it lists, the shortest name among several ("Bed width, from the printer's default (0.4 mm nozzle) preset", "Bed depth, …", "Printable height, …", "Number of extruders / toolheads") | `MachinePresetIndex::specs_for_model`, `libslic3r/PrinterModelSpecs.cpp` l.135; WebGuideDialog.cpp l.1509 | **added** (`Library::models`: `bed`, `height`, `nozzles`), with the same tooltips |
 | A printer that is added is ticked when the page opens; one tick stands for every nozzle of the model | `SaveProfileData` l.1283–1313, printer_table.js l.104 | **added**; an added model's name is also in bold |
@@ -1137,7 +1137,7 @@ files laid out as `Preset::save` and `save_info` write them.
 | CreatePresetsDialog.cpp l.2890, l.2903 | The check that a filament or process for the printer is there already looks for `alias + " @ " + printer` (filament) and `alias + " @" + printer` (process), where `clone_presets_for_printer` names them "<prefix> @<printer>" (no space after "@") and the prefix is not the alias for a preset of one's own. Read from the code | Making a printer again over itself (Yes to overwrite) with no filament ticked says "You need to select at least one filament preset." though the printer's filaments are there |
 | CreatePresetsDialog.cpp l.3305 | `else if(m_create_type.create_nozzle)` tests a non-empty `wxString`, always true | Nothing seen: the branch before it covers the other case |
 | CreatePresetsDialog.cpp l.333–353 (`get_exist_vendor_choices`) | A clash of vendors, not of model names: the person's own printers that stand alone are gathered as a vendor of their own (`get_custom_vendor_models`) and stored as `vendors[users_models.name]`, whose name is "Custom", the key of the profiles' own "Custom" vendor (resources/profiles/Custom.json), which the whole entry replaces. Read from the code; confirmed on the C++ side, fix PR aceRage/EdgeSlicer#1028 | Once one printer of one's own stands alone, Create Printer's "Custom" lists only those: the profiles' Generic Klipper, Marlin, RRF, Repetier and ToolChanger printers can no longer be a template. Here (setup pass 3, as the fix does) one's own models are added to that vendor, a model of a name it has gaining only the nozzles it lacks, and a nozzle the profiles have is made from their printer (`add_custom_models`, test `the_profiles_custom_printers_stay_templates_beside_ones_own`); before, a same-named model was listed twice and one's own printer was taken first |
-| resources/web/guide/22/22.js l.449 with l.433, l.459 (`ChooseDefaultFilament`) | The name up to the "@" of a filament's presets (`GetFilamentShortname` of the whole list) is looked for among the models' `default_materials`, which list full preset names ("Generic PLA @U1 0.4 nozzle"). Measured with the page's own `GetFilamentShortname` on the U1's data (node, `~/Dev/EdgeSlicerRS-baselines/work/setup/js/measure22.js`): compared `["Generic PLA"]`, never found | On a first run with a U1 or an A1 mini nothing is ticked; "Do you want to use default filament ?" "yes" ticks nothing either |
+| resources/web/guide/22/22.js l.449 with l.433, l.459 (`ChooseDefaultFilament`) | The name up to the "@" of a filament's presets (`GetFilamentShortname` of the whole list) is looked for among the models' `default_materials`, which list full preset names ("Generic PLA @U1 0.4 nozzle"). Measured with the page's own `GetFilamentShortname` on the U1's data (node, `~/Dev/EdgeSlicerRS-baselines/work/setup/js/measure22.js`): compared `["Generic PLA"]`, never found | On a first run with a U1 or an A1 mini nothing is ticked; "Do you want to use default filament ?" "yes" ticks nothing either. Fixed since aceRage/EdgeSlicer#953 (the row's whole names compared) |
 | Tab.cpp l.10043–10049 with l.9136–9155, l.9348–9370; Preset.cpp l.970, l.3345–3366 | Deleting a printer of one's own that stands alone counts, and then deletes, every filament and process preset `is_compatible && !is_default`. `is_compatible_with_printer` (Preset.cpp l.970) is true for a preset that names no printer and has no condition, and for any whose condition the printer meets: the vendor's generic presets, and the person's own made "for every printer", are counted and deleted with it. `PresetCollection::delete_preset` skips `remove_files` for a system preset but still erases it from the collection; a user preset's files are removed. Also l.9152 marks a process preset's sync info through `filaments`, the wrong collection. Read from the code, not run (it needs the reference's window) | The question gives a count that includes the vendor's generic presets; they are gone from the lists until the next start; the person's presets made for every printer are deleted from the disk. Fix for a C++ PR: count and delete only `preset.is_user()` presets whose `compatible_printers` name this printer and no other; take the process presets' sync info through `prints` |
 
 ### Filament Selection and the Filament manager
@@ -1158,7 +1158,7 @@ are in `ui/setup.js`.
 | The guide's "Back" on the filament page (its text.js `t8`, "Zurück" in German) | 22/index.html | **added**: "Back" in English; elsewhere the catalogs' "Return" ("Zurück"), the catalogs' "Back" being a model's back side ("Rückseite") |
 | "Filament Selection" (the guide's last page): every filament preset of the vendors' `filament_list` that is cut (`compatible_printers`) for a printer ticked on the printer page, one box for each vendor (`filament_vendor`), type (`filament_type`) and name up to the "@"; a filament made for no printer is left out ("Orca: hide"); Generic first | `LoadProfileFamily` l.1520–1610, 22.js `SortUI` | **added**: the same boxes (`filament_selection`), from the printers ticked on the page before (Printer Selection's ticks, which are not saved until "Finish") and every nozzle of each |
 | Lines to tick by: "Printer" (each model ticked; hidden with one), "Filament type" (PLA, ABS, PET, TPU, PC first) and "Vendor" (Generic first), each with "all"; a filament is shown when its type and vendor are ticked and it is cut for a printer ticked; "All" / "Clear all" tick every filament | 22.js `SortFilament`, `SelectAllFilament` | **added**. **differs**: the count of filaments ticked and shown, this app's own |
-| What is enabled comes ticked; with none, the models' usual filaments (`default_materials`) are ticked | 22.js `ChooseDefaultFilament` l.420–466 | **added**. **differs**: a filament counts as usual when one of its presets, or its name up to the "@", is listed; the reference compares only the name up to the "@" with the full names listed, so it ticks nothing for a model that lists full names (the U1, the A1 mini: errors, below) |
+| What is enabled comes ticked; with none, the models' usual filaments (`default_materials`) are ticked | 22.js `ChooseDefaultFilament` l.420–466 | **added**. **differs**: a filament counts as usual when one of its presets, or its name up to the "@", is listed; the reference compares the row's whole preset names since aceRage/EdgeSlicer#953, so the name up to the "@" is this app's alone (before that fix the reference compared only the name up to the "@" with the full names listed, and ticked nothing for a model that lists full names: the U1, the A1 mini; errors, below) |
 | "Finish" with nothing ticked: "error", "At least one filament must be selected.", "Do you want to use default filament ?" with "yes" (ticks the usual ones) and "no" | 22.js `FinishGuide`, `ShowNotice`, index.html | **added**, over the page, as there |
 | "Finish" keeps every preset of each filament ticked, shown or not, as the `filaments` section, which then lists the presets shown | `ResponseFilamentResult`, `SaveProfile` l.703 | **added** (`filament_selection_save`), after the printers (`printers_save`) |
 | A filament list shows the vendors' presets enabled, the person's always; a preset a project names that is not enabled is made visible for the run as the project is loaded | Preset.cpp l.1072–1085, l.2794, PresetComboBoxes.cpp l.1600 | **added** (`offered`, `shown_filaments`): a vendor's filament is offered while enabled or while an open project is on it; the deleted-preset fallback (`next_after`) passes over one not shown. **differs**: shown while a project is open on it rather than for the rest of the run |
@@ -1306,7 +1306,7 @@ reference's own numbers; each is named in `scene.js` with where it is from.
 | The background turns (0.753, 0.192, 0.039) while an object is off its plate | GLCanvas3D.cpp l.10727 | **not yet** |
 | What is selected: an outline and a faint grey over it, and the corners of its box (a fifth of each edge, white); "glow" (the default) or "thin" (`selection_highlight_style`) | GLCanvas3D.cpp l.2060–2740, `resources/shaders/140/selection_composite.fs`, Selection.cpp l.2779 | **added**: the "thin" style and the corners. **not yet**: the glow, and the lighter colours of a painted object that is selected |
 | A mirrored copy is drawn inside out | 3DScene.cpp `is_left_handed` | **added** |
-| "Show Labels" (Ctrl+E): each object's name over it, a thicker border when selected | GLCanvas3D.cpp l.1120 | **added**, as the page's own text. **differs**: placed by the object's top as it is seen; the C++ places a label without dividing by depth, so it drifts (listed with the errors found). **not yet**: "Sequence#" |
+| "Show Labels" (Ctrl+E): each object's name over it, a thicker border when selected | GLCanvas3D.cpp l.1120 | **added**, as the page's own text. **differs**: placed by the object's top as it is seen. The C++ placed a label without dividing by depth, so it drifted (listed with the errors found); it divides since aceRage/EdgeSlicer#954. **not yet**: "Sequence#" |
 | "Show 3D Navigator": a cube that turns with the camera, "Front", "Back", "Top", "Bottom", "Left", "Right"; a click on a face goes to that view | `_render_3d_navigator` l.8189 (ImGuizmo) | **added**: a cube of the page's own with the six faces. **not yet**: its edges and corners, the axes' letters |
 | A round "Fit in all view" button beside it | l.8300 | **added** |
 | "View options": "X-Ray", "Realistic View", "Center of Mass"; wireframe; ambient occlusion and FXAA; shadows | l.8300–8445 | **not yet** |
@@ -1955,10 +1955,9 @@ height) when ticked; over the process `enable_overhang_speed` 0,
 sized `initial_layer_print_height` the layer height; over the first
 filament `slow_down_layer_time` 0; over the printer `resonance_avoidance`
 0; on the object `layer_height` (when sized), `brim_type` outer_only,
-`brim_width` 3, `brim_object_gap` 0. **Ahead of the pin**: EdgeSlicer
-`5c07d87e33` (on the fork's main), `bottom_shell_thickness` 0 beside the
-one bottom layer, the option being at the pin and the vase's bottom
-following it there. At every layer the outer wall's speed is the
+`brim_width` 3, `brim_object_gap` 0. `bottom_shell_thickness` 0 beside
+the one bottom layer, as the reference since EdgeSlicer `5c07d87e33` (a
+vase's bottom follows that option). At every layer the outer wall's speed is the
 stepped value (`calib_stepped_layer_value`: `lround((end - start) / step)
 + 1` bands over the layers, layers 0 and 1 at the start, single
 precision), `std::round`ed, laid over every region's settings as Max
@@ -1971,11 +1970,12 @@ both at the same heights (the vase's last layer twice in both), extruded
 path 246.88 m in both, outer wall 241.75 m in both, wall length per layer
 within 0.00% on average; gap fill 0.07 m here and 0.05 m there and
 retractions 118 here and 86 there, all on the first, solid layer: most
-of them the pin's own error, fixed on the fork's main (EdgeSlicer #968):
-its monotonic bottom joins line to line round the hole's edge however
-far that is (`link_max_length` worked out while the spacing is still
-zero), where this engine joins no further than three spacings, so here
-the lines end apart and more slivers are left for gap fill; with the
+of them an error of the reference at the old pin, fixed since
+aceRage/EdgeSlicer#968: its monotonic bottom joined line to line round
+the hole's edge however far that was (`link_max_length` worked out while
+the spacing was still zero), where this engine joins no further than
+three spacings, as the reference now does, so here the lines ended apart
+and more slivers were left for gap fill; with the
 joins unlimited here as there (tried, not kept) it is 91 against 86 and
 travel 0.93 against 0.92 m. That
 comparison found a difference in the walls of every print with no sparse
@@ -2024,8 +2024,8 @@ rectilinear, `outer_wall_speed` the slower of X's and Y's top speed and
 `default_acceleration` and `outer_wall_acceleration` the printing
 acceleration (`calib_machine_motion_limits`, 200 mm/s and 20000 mm/s²
 where unset); on the object `brim_type` outer_only, `brim_width` 3,
-`brim_object_gap` 0. **Ahead of the pin**: EdgeSlicer `5c07d87e33`,
-`bottom_shell_thickness` 0. At every layer, after the fan marker
+`brim_object_gap` 0. `bottom_shell_thickness` 0 as well, as the
+reference since EdgeSlicer `5c07d87e33`. At every layer, after the fan marker
 (GCode.cpp `process_layer`; GCodeWriter.cpp `set_input_shaping`): the
 frequency test's second layer the type and damping on both axes, every
 other the frequency of both axes (or of each, when their ranges differ),
@@ -2079,8 +2079,8 @@ over the first filament `slow_down_layer_time`, `slow_down_min_speed` 0,
 200 and pressure advance on at 0 where off; over the process as the input
 shaping tests but the speed and acceleration (`calib_machine_motion_limits`
 with 200 mm/s and 2000 mm/s² where unset) and no `accel_to_decel`; on
-the object the brim. **Ahead of the pin**: EdgeSlicer `5c07d87e33`,
-`bottom_shell_thickness` 0. At every layer (GCode.cpp `process_layer`):
+the object the brim. `bottom_shell_thickness` 0 as well, as the
+reference since EdgeSlicer `5c07d87e33`. At every layer (GCode.cpp `process_layer`):
 Marlin 2 with a junction deviation `M205 J` to three places, held to the
 machine's (`set_junction_deviation`), else the jerk
 (`set_jerk_xy`): Klipper `SET_VELOCITY_LIMIT SQUARE_CORNER_VELOCITY=`,
@@ -2356,9 +2356,9 @@ undo history.
 | `part_add` | `object`, `kind`, and `path` (a file, "Load...") or `shape` (`Cube`), `copy?` | adds a part; `part` in the answer is its number | "Load Part" / "Load Modifier", "Add primitive" |
 | `plate_rename` | `plate?`, `name` (empty: none; at most 250 characters) | names a plate; the same name again is no step (`done` null) | "Rename Plate" |
 | `plate_lock` | `plate?`, `value` | locks or unlocks a plate | "lock partplate" |
-| `plate_settings` | `plate?` and, each null or left out for the project's, `bed_type` (one the printer takes), `print_sequence` (`by layer`, `by object`), `spiral_mode` (true, false), `first_layer_sequence` (filament numbers, each once), `other_layers_sequence` (`[{ begin, end (null: "End"), order }]`, layers from 2) | what the plate sets for itself ("Customize current plate"); refused, nothing changed, with "Please input layer value (>= 2)." and the like | "Plate Settings" (the reference takes no snapshot) |
+| `plate_settings` | `plate?` and, each null or left out for the project's, `bed_type` (one the printer takes), `print_sequence` (`by layer`, `by object`), `spiral_mode` (true, false), `first_layer_sequence` (filament numbers, each once), `other_layers_sequence` (`[{ begin, end (null: "End"), order }]`, layers from 2) | what the plate sets for itself ("Customize current plate"); refused, nothing changed, with "Please input layer value (>= 2)." and the like | "Plate Settings" (the reference takes no snapshot before aceRage/EdgeSlicer#978) |
 | `plate_front` | `plate?` | "Move plate to the front": the plate is plate 1 and the one shown, the others one back each | "move plate to the front" |
-| `plate_duplicate` | `plate?` | "Duplicate Current Plate": a plate after the last with a new object for each object with copies on the plate, each copy where it stood on its plate; the new plate is shown; `made` is its copies | "Duplicate Current Plate" (the reference takes no snapshot) |
+| `plate_duplicate` | `plate?` | "Duplicate Current Plate": a plate after the last with a new object for each object with copies on the plate, each copy where it stood on its plate; the new plate is shown; `made` is its copies | "Duplicate Current Plate" (the reference takes no snapshot before aceRage/EdgeSlicer#978) |
 | `cut` | `copy`, `plane` (as `cut_section` takes it; the normal points into the upper part), `keep_upper`, `keep_lower`, `place_on_cut_upper`, `place_on_cut_lower`, `flip_upper`, `flip_lower`, `to_parts`, `thickness` (0 to 20 mm), `thickness_from` (`centred`, `above`, `below`), `sides` (a piece given to the other side), `groove` (a dovetail, with its `init`), `editable` ("Keep cut editable", on unless false), `amend` ("Edit cut": one step with putting the cut back), each left out as the tool starts | the copy's object cut by the plane (section 13, "Cut"); `made` is the copies of what it made; `note` says how many of the cut's outlines could not be closed on an open mesh. Refused, nothing changed: "Select at least one object to keep after cutting.", "Cut plane is placed out of object" (Cut to parts with nothing on either side), a plane that is not one | "Cut by Plane" |
 | `cut_edit` | `copy` | the halves of the cut that made the copy's object put back as the object was (section 13, "Cut"); `made` is its copy, `recipe` the cut as `cut_recipe` answers it with `missing` (fewer halves left than the cut made). Refused, nothing changed, for an object whose cut was not kept editable or cannot be made here | "Edit cut" |
 | `item_set` | `object`, `part?` or `range?`, `key`, `value` (null: given back to what is over it) | an object's, a part's or a height range's own setting (Tab.cpp `TabPrintModel::on_value_change`): checked as the global pages check it, kept in the shape the value over it has (a list for each nozzle flow stays one), written as the reference serializes it. Refused, nothing changed: a key that kind of item may not set (`layer_height` on a part: "layer_height cannot be set on a part"), a value the option does not take, a negative part, a support blocker or enforcer or a Precise Seam part. The same value again is no step | "Change Option `key`" |
@@ -2469,7 +2469,7 @@ Read from `GLCanvas3D.cpp` (`_init_main_toolbar` l.9376), `GUI_Factories.cpp`
 | The main toolbar's "Split to objects" and "Split to parts", after "Arrange" | `_init_main_toolbar` l.9376–9395 | **added**, with the same tooltips, after "Arrange" |
 | The object's menu: "Split" ("Split the selected object"), a sub-menu of "To objects" ("Split the selected object into multiple objects"), "To parts" ("Split the selected object into multiple parts"), "By painted colour"; before "Mirror" | `GUI_Factories.cpp` l.2404–2418 | **added**: "Split" with "To objects" and "To parts", the same words. **not yet**: "By painted colour" (it is not shown) |
 | On for one object selected (one row of the list): "Split to objects" when the object has more than one part (of any kind), or its one part's mesh is of several pieces; "Split to parts" when it has one part and that is of several pieces | `can_split`, `ObjectList::is_splittable` | **added**, the same rules (`split` in `scene`), the selection being copies of one object. The answer for a mesh is worked out once and kept with its shape, as the C++ caches `m_is_splittable` |
-| The pieces of a mesh: triangles joined across shared edges run the other way round (`create_face_neighbors_index`: an edge pairs with the first later triangle that runs it back and has it free); the pieces in the order of their first triangle, each walked from it as the reference walks it; a piece enclosing a negative volume turned the right way out | `MeshSplitImpl.hpp` `its_split`, `TriangleMesh::split` | **added** (`edge_mesh::split`), the same rule and order. **differs**: the pairs are worked out in one pass in order, where the C++ works them out on several threads at once (see "Errors found in the C++") |
+| The pieces of a mesh: triangles joined across shared edges run the other way round (`create_face_neighbors_index`: an edge pairs with the first later triangle that runs it back and has it free); the pieces in the order of their first triangle, each walked from it as the reference walks it; a piece enclosing a negative volume turned the right way out | `MeshSplitImpl.hpp` `its_split`, `TriangleMesh::split` | **added** (`edge_mesh::split`), the same rule and order. the pairs worked out in one pass in order, as the C++ does since aceRage/EdgeSlicer#965 (before it, on several threads at once: see "Errors found in the C++") |
 | Split to objects: an object of one part becomes an object for each piece of three triangles or more, named after the object with `_1`, `_2`…; an object of several parts an object for each printed part, named after the part, with its colour paint; modifiers and negative parts are dropped. Each new object takes every instance of the old one; the old one is removed; they are added at once, "kept where they stand", and dropped onto the bed (`ensure_on_bed`, "auto_drop_on_import" being on unless turned off); the new objects are selected; "The selected object couldn't be split." when one object would come of it | `ModelObject::split`, `split_object`, `load_model_objects` l.15569 | **added**, in that order in the list where the old object was, each copy on the plate its old copy was on. **differs**: a whole part keeps its seam paint as well as its colour paint, the geometry being the same (the C++ copies the colour only); dropping the modifiers says "All non-solid parts (modifiers) were deleted", the notice the C++ has commented out, rather than nothing |
 | Split to parts: the part becomes a part for each piece, named after it with `_1`, `_2`…, in its filament, its paint let go; a piece whose convex hull is flat is dropped; "The target object contains only one part and can not be split." | `ObjectList::split`, `ModelVolume::split` | **added**; the object stays where it is |
 | One snapshot: "Split to Objects", "Split to parts"; the slices of the plates the object is on let go | `split_object`, `ObjectList::split` | **added** |
@@ -2994,11 +2994,11 @@ The reference arranges with libnest2d (`deps_src/libnest2d`) driven by
 | --- | --- | --- |
 | Each object is the convex hull of its model parts on the ground; with the spacing at 0 ("auto") it keeps 1 mm round it, 6 mm with normal supports, 24 mm (half each with tree supports anywhere) with tree supports, supports counting only where an overhang or paint would make them; a spacing given is halved onto each; never more than the bed allows | ModelArrange.cpp `get_instance_arrange_poly`, `instance_may_get_support`, Arrange.cpp `update_selected_items_inflation` | **added** (`edge_arrange::outline`, `may_get_support`, `support_allowance`) |
 | The bed shrunk 1 mm (5 printing by object) and by the skirt's distance and loops; by object, grown back by half the clearance and every object kept the extruder's clearance radius apart (a nozzle's width for objects under the nozzle's height); the objects ordered and checked against the rod and lid heights | `update_arrange_params`, `seq_print_min_obj_distance`, `objfunc` l.612 | **added**, compared with the C++ on 8 parts of rising height: the same two plates, every part within 0.00 mm of the C++'s |
-| Items taken largest first (priority, hotter bed, first filament, area; by object shorter first); each tried on every bed open, the best score taken, a bed opened when none takes it; an item no empty bed takes put on none; a large one tried again against the bed's excluded areas alone | libnest2d `firstfit.hpp`, `selection_boilerplate.hpp` | **added**. **differs**: items alike in all of these keep the order they were given in (the C++ sorts unstably); a bed is opened at most once more for an item an empty bed did not take (the C++ can open beds without end: see the errors below) |
+| Items taken largest first (priority, hotter bed, first filament, area; by object shorter first); each tried on every bed open, the best score taken, a bed opened when none takes it; an item no empty bed takes put on none; a large one tried again against the bed's excluded areas alone | libnest2d `firstfit.hpp`, `selection_boilerplate.hpp` | **added**. Items alike in all of these keep the order they were given in, as the C++ does since aceRage/EdgeSlicer#1000 (`std::stable_sort`). **differs**: a bed is opened at most once more for an item an empty bed did not take; the C++ could open beds without end, and since aceRage/EdgeSlicer#999 stops once `MAX_NUM_PLATES` beds are open (see the errors below) |
 | The first item to the bed's corner; each next where the no-fit polygons of what is on the bed (and the bed's own inner fit) leave room, searched from every corner of the free region along its outline with NLopt's subplex, scored by `objfunc` (distance to the pile's middle and the bed's corner, the pack's density, lining up with a like neighbour, like heights near each other, filament changes few, materials not mixed when not allowed); with fixed items, scored from the bed's middle or the prime tower's (`fixed_overfit`); the four turns 0, 45, 90, 135° tried when turning is on, after the turn of the smallest box (rotating calipers) | `nfpplacer.hpp` `_trypack`, Arrange.cpp `objfunc`, `fill_config`, `rotcalipers.hpp` | **added**: the optimiser is NLopt 2.x's `sbplx`/`nldrmd` on one variable ported step for step (`edge_arrange::minimize`), the searches from the corners run side by side and the first best taken, so any thread count gives the same answer |
-| The pile put in the middle of the bed (or at `best_object_pos`), moved clear of fixed items to the nearest place they leave | `finalAlign` | **added**. **differs**: the box lined up is that of what was placed, and only that moves (the C++ counts fixed objects in it and moves them too: see the errors below) |
-| Every plate: all but the locked plates and those printed in their own sequence pooled; a prime tower's ground on each bed where the print will have one; the bed's excluded areas; plates added for what does not fit; the empty plates at the end taken away; the objects listed in the order placed | `prepare_all`, `prepare_wipe_tower`, `finalize`, `rebuild_plates_after_arrangement` | **added**. **differs**: the prime tower's ground is estimated from its width, the prime volume, the filaments, the layer height and the brim, for a box or rib wall (WipeTowerEstimate.cpp's Type 2 case), where the C++ takes the tower drawn in its scene or its own fuller estimate; a locked plate left empty is kept |
-| One plate: what is on it, every other plate left as it is; refused on a locked plate | `prepare_partplate` | **added**. **differs**: what the plate cannot hold goes on plates added after the last, one for each bed (see the errors below) |
+| The pile put in the middle of the bed (or at `best_object_pos`), moved clear of fixed items to the nearest place they leave | `finalAlign` | **added**: the box lined up is that of what was placed, and only that moves, as the C++ does since aceRage/EdgeSlicer#1000 (see the errors below). The C++ also keeps the pile where it was packed when centring it would put an item on a fixed one (`shiftOverlapsFixed`, at the pin), which is not here |
+| Every plate: all but the locked plates and those printed in their own sequence pooled; a prime tower's ground on each bed where the print will have one; the bed's excluded areas; plates added for what does not fit; the empty plates at the end taken away; the objects listed in the order placed | `prepare_all`, `prepare_wipe_tower`, `finalize`, `rebuild_plates_after_arrangement` | **added**. **differs**: the prime tower's ground is estimated from its width, the prime volume, the filaments, the layer height and the brim, for a box or rib wall (WipeTowerEstimate.cpp's Type 2 case), where the C++ takes the tower drawn in its scene or its own fuller estimate. A locked plate left empty is kept, as the C++ does since aceRage/EdgeSlicer#999 |
+| One plate: what is on it, every other plate left as it is; refused on a locked plate | `prepare_partplate` | **added**: what the plate cannot hold goes on plates added after the last, one for each bed, as the C++ does since aceRage/EdgeSlicer#999 (see the errors below) |
 | Not arranged: what is set not to print, what has no size, what is taller than the printer | `m_unprintable`, `check_unprintable` | **differs**: left where it stands; the C++ moves it past the last bed |
 | What no bed holds: past the last plate | `postprocess_arrange_polygon` | **added**, beside the plates, one after another, and said |
 
@@ -3071,7 +3071,7 @@ engine's side is `crates/edge-engine/src/plates.rs`; the page's
 | "Plate Settings": "Plate name"; "Bed type" ("Same as Global Plate Type" and the printer's plates; off for a printer without a choice); "Print sequence" ("Same as Global Print Sequence", "By Layer", "By Object"); "Spiral vase" ("Same as Global", "Enable", "Disable"); "First layer filament sequence" ("Auto" / "Customize" with the filaments to drag into order); "Other layer filament sequence" ("Auto" / "Customize": ranges "Layer" [from] "to" [to or "End"], each with its order, added and taken off by + and −); "Please input layer value (>= 2)." | PlateSettingsDialog.cpp l.371–520, `open_platesettings_dialog` Plater.cpp l.30400 | **added**, the same rows and words, the orders as chips of the filaments' colours dragged into place or moved with Left and Right. The ranges are put in order of their first layer, as the reference sorts them. **differs**: "Enable" asks nothing and changes no other setting, where the reference asks first and sets what vase mode needs ("Spiral mode only works when…", the same as the process page's, **not yet** in section 2); a range's end before its start is refused, where the reference moves the end |
 | What each setting does when sliced | BackgroundSlicingProcess.cpp `apply` (`new_config.apply(*plate->config())`) | the plate's own settings are laid over everything else for its slice, a plate read from a file's as much as one set here (`Loaded::plate_settings`). **Bed type**: followed: the plate's bed temperatures and `curr_bed_type`. **Print sequence**: read, but "by object" is not followed: the print says "print_sequence "by object": printing object by object is not followed; every object is printed together, layer by layer" (the same as for the project's own). **Spiral vase**: as the project's own: noted as not followed ("vase mode is not followed…") and turning off what it turns off (arc fitting, scarf seams). **First layer filament sequence**: followed (**had** for a file's). **Other layer filament sequence**: noted as not followed ("other_layers_print_sequence: above the first layer tools are taken in the order that wastes least") |
 | "Move plate to the front": the plate becomes the first with what stands on it, the others one back; it is then the one shown | `move_plate_to_index` l.4879 | **added**. Every plate's slice from the first to the one moved is let go, a plate's number being in what is sliced |
-| "Duplicate Current Plate": a new plate after the last with a copy of each object on the plate, where it stood | `PartPlateList::duplicate_plate` l.4461 | **added**, the plate shown afterwards. **differs**: an object with copies on other plates is copied with its copies on this plate only (see "Errors found in the C++"); one undo step |
+| "Duplicate Current Plate": a new plate after the last with a copy of each object on the plate, where it stood | `PartPlateList::duplicate_plate` l.4461 | **added**, the plate shown afterwards. an object with copies on other plates is copied with its copies on this plate only, and one undo step, as the C++ does since aceRage/EdgeSlicer#978 (see "Errors found in the C++") |
 | Another printer that does not take a plate's bed type: it is taken away, "Plate bed types reset" | `normalize_bed_types` l.21433 | **added** (section 2) |
 | Keys for plates | KBShortcutsDialog.cpp | Shift+A "Arrange objects on selected plates" (**had**); the reference has no other key for a plate. A plate is selected by a click on it, its tile or its row (**had**) |
 
@@ -3468,16 +3468,19 @@ session's scratch folder, `ui_plates/shots/`.
   box back and divides it by the multiplier, though each box holds the
   volume times the multiplier cut to a whole number, so a dialog opened
   and closed with OK changes every volume (418 at 0.3 is shown 125 and
-  saved 416.67). A person sees the purge creep down each time.
+  saved 416.67). A person sees the purge creep down each time. Fixed since
+  aceRage/EdgeSlicer#998.
 - WipeTowerDialog.cpp l.791–794 and l.448: with the multiplier at 0 OK
   saves a matrix of zeros, and a box typed in stores its value over 0
   (infinity). Raising the multiplier again does not bring the volumes back.
+  Fixed since aceRage/EdgeSlicer#998.
 - WipeTowerDialog.cpp l.688 (`update_warning_texts`): a box from filament
   j to filament i is measured against filament i's least flush
   (`m_min_flush_volume[i]`, the one flushed in), where "Re-calculate"
   (l.753) and the least's own meaning (Plater.cpp `get_min_flush_volumes`:
   what stays in the nozzle of the filament flushed out) take filament j's.
   With filaments whose least differs a box is marked wrong or right wrongly.
+  Fixed since aceRage/EdgeSlicer#998.
 
 Arranging (each left out of the port; none worked around):
 
@@ -3485,21 +3488,24 @@ Arranging (each left out of the port; none worked around):
   arrangement" the turn of the smallest box is measured on the outline as
   the object is already turned and then set as the item's whole turn,
   applied to the outline not turned: an object that was turned on the bed
-  is laid at a turn that does not give it its smallest box.
+  is laid at a turn that does not give it its smallest box. Fixed since
+  aceRage/EdgeSlicer#1000.
 - `Arrange.cpp` l.835 and l.849 (`AutoArranger::operator()`, `preload`):
   the count of items to place takes in the fixed items twice (the prime
   towers of all 36 beds, the excluded areas), so the share left to place,
   which weighs the pile's density, is far too small whenever a print has
   a prime tower: piles are laid out less tightly than the objective means.
+  Fixed since aceRage/EdgeSlicer#1000.
 - `Arrange.cpp` l.1079 and l.1154 (`process_arrangeable`, `arrange`): an
   outline of fewer than three corners is dropped from the list, and the
   results are then written back by position, so every object after it
-  gets the next one's place and plate.
+  gets the next one's place and plate. Fixed since aceRage/EdgeSlicer#999.
 - `Arrange.cpp` l.816 (`sortfunc`) with `std::sort`: two items with
   different filament lists starting with the same filament are neither
   before nor after each other whatever their areas, which is no strict
   order; items alike in everything land in an order the library chooses,
-  differently on each system.
+  differently on each system. Fixed since aceRage/EdgeSlicer#1000 (by the
+  first filament, `std::stable_sort`).
 - libnest2d `placers/nfpplacer.hpp` l.178 and l.222 (`EdgeCache`): a free
   region's outline is walked from its first corner to its last and not
   back, and its last corner is no starting point, so the places along one
@@ -3509,16 +3515,18 @@ Arranging (each left out of the port; none worked around):
   virtual ones) are counted in the box of the pile that is lined up and
   are moved with it, though their moves are thrown away: with objects
   that stay (placing loose objects from the hub) the arranged ones are
-  lined up as if those moved too, off the middle.
+  lined up as if those moved too, off the middle. Fixed since
+  aceRage/EdgeSlicer#1000.
 - libnest2d `selections/firstfit.hpp` l.120: the item itself is searched
   on each bed, and each search leaves it at the turn it found best, which
   the next bed's search starts from: with turning on, the turns tried on a
-  later plate depend on the plate before.
+  later plate depend on the plate before. Fixed since aceRage/EdgeSlicer#1000.
 - `firstfit.hpp` l.169–192: an item that fits an empty bed but not beside
   the prime tower every new bed carries (the check for what fits no bed,
   `remove_unpackable_items`, leaves the tower out) opens a new bed, fails,
   and opens another without end (`best_bed_id == MAX_NUM_PLATES` l.139 is
-  never true): arranging such a print never finishes.
+  never true): arranging such a print never finishes. Fixed since
+  aceRage/EdgeSlicer#999 (it stops once `MAX_NUM_PLATES` beds are open).
 - libnest2d `utils/rotcalipers.hpp` l.319 (`fitIntoBoxRotation`): the
   previous box is never moved along as the calipers turn, so the turn is
   always bisected from no turn at all; an object too long for the bed is
@@ -3527,9 +3535,11 @@ Arranging (each left out of the port; none worked around):
 - `slic3r/GUI/PartPlate.cpp` l.5647 (`postprocess_bed_index_for_current_plate`):
   arranging one plate, every bed beyond the first is given the one place
   after the last plate, so what two or more beds' worth did not fit is put
-  there piled on itself.
+  there piled on itself. Fixed since aceRage/EdgeSlicer#999 (a plate for
+  each bed).
 - `PartPlate.cpp` l.6180 (`rebuild_plates_after_arrangement`): an empty
-  plate at the end is taken away even when it is locked.
+  plate at the end is taken away even when it is locked. Fixed since
+  aceRage/EdgeSlicer#999.
 
 - `KBShortcutsDialog.cpp` l.260–262: the list of shortcuts names L "Gizmo
   SLA support points", the key that opens "Support Painting" in an FFF
@@ -3559,7 +3569,8 @@ Arranging (each left out of the port; none worked around):
   with sides shared by more than two triangles which pairs are made depends
   on the threads' timing, and paint can spread (or a split side be shared)
   differently from one opening of a tool to the next. Here the pairs are
-  made in one pass, in order (as `edge_mesh::split` already did).
+  made in one pass, in order (as `edge_mesh::split` already did). Fixed
+  since aceRage/EdgeSlicer#965.
 
 - `PartPlate.cpp` l.4461–4487 (`PartPlateList::duplicate_plate`): the
   objects to copy come from `get_objects_on_this_plate` (l.2423), which
@@ -3570,25 +3581,28 @@ Arranging (each left out of the port; none worked around):
   of two copies each, two on top of the other two; an object with a copy
   on another plate too has that copy moved by the offset, off any plate.
   Here a new object is made for each object, with its copies on the plate
-  only.
+  only. Fixed since aceRage/EdgeSlicer#978.
 - `Plater.cpp` l.30697 (`duplicate_plate`) and l.30428–30476 (the "Plate
   Settings" handler) take no snapshot, so neither can be undone, where
-  renaming, locking and moving a plate can.
+  renaming, locking and moving a plate can. Fixed since
+  aceRage/EdgeSlicer#978.
 - `GUI_Factories.cpp` l.3409–3412 (`append_menu_item_locked`): the menu's
   "Lock" / "Unlock" calls `plate->lock` directly: no snapshot and the
   project is not marked modified, where the icon's lock takes "lock
-  partplate" (Plater.cpp l.30617).
+  partplate" (Plater.cpp l.30617). Fixed since aceRage/EdgeSlicer#978.
 - `3DScene.cpp` l.351: `#ifdef ENABBLE_OUTSIDE_COLOR` (misspelt) opens a
   block whose `else {` is closed under `#ifdef ENABLE_OUTSIDE_COLOR` at
   l.360. Neither name is defined anywhere, so the colour for what is outside
   the plate is dead code today; defining the second, which is what a reader
-  would do to turn it on, leaves the braces unbalanced.
+  would do to turn it on, leaves the braces unbalanced. The spelling is
+  fixed since aceRage/EdgeSlicer#966.
 - `PartPlate.cpp` l.2514: `PartPlate::check_outside` works out the
   instance's convex hull (`Polygon hull = instance->convex_hull_2d();`) on
   every call and never uses it; the one that is used is worked out again at
   l.2535. It runs for every instance each time anything moves.
 - `GizmoObjectManipulation.cpp` l.1010: the tooltip reads "Holded down Ctrl
   key continuously and click by left mouse button…" (wording only).
+  Reworded since aceRage/EdgeSlicer#966.
 - `libslic3r/MeshSplitImpl.hpp` l.239–262: `create_face_neighbors_index`
   pairs triangles in `execution::for_each` on several threads, and each
   iteration writes the entry of the *other* triangle
@@ -3598,7 +3612,9 @@ Arranging (each left out of the port; none worked around):
   answer comes out the same; where three or more triangles share an edge,
   which of them are paired (and so how "Split to objects" and "Split to
   parts" divide the mesh) can change from one run to the next. Here the
-  pairs are worked out in one pass, in order.
+  pairs are worked out in one pass, in order. Fixed since
+  aceRage/EdgeSlicer#965 (each triangle writes only its own entries, the
+  shared edges paired after in one pass).
 - `GUI_Factories.cpp` l.2576–2577 (`create_bbl_part_menu`, the part menu
   the object list shows): the "Split" sub-menu is enabled by
   `can_split(true) || can_split_by_color()`, but for a part
@@ -3606,7 +3622,7 @@ Arranging (each left out of the port; none worked around):
   l.3496, `type == itVolume`), so unless the part is painted the whole
   sub-menu is off and its "To parts", enabled by `can_split(false)`, can
   never be reached from a part's menu. Here "Split" is on when "To parts"
-  can be done.
+  can be done. Fixed since aceRage/EdgeSlicer#976.
 - `GUI_ObjectList.cpp` l.2892–2903 (`del_subobject_from_object`): after the
   last volume's config is applied to the object it is reset, and only then
   is `last_volume->config.has("extruder")` asked, which is always false; the
@@ -3614,7 +3630,8 @@ Arranging (each left out of the port; none worked around):
 - `Model.cpp` l.3253–3262 (`ModelVolume::split`): the loop that drops
   volumes whose convex hull is degenerate runs over all of the object's
   volumes, not only the new pieces, so splitting one part can delete another,
-  unrelated flat part of the same object. Here only the pieces are checked.
+  unrelated flat part of the same object. Here only the pieces are checked,
+  as in the reference since aceRage/EdgeSlicer#976.
 - `libslic3r/Model.cpp` l.3014: `ModelVolume::center_geometry_after_creation`
   moves the part by the shift of its mesh as it is (`translate(shift)`),
   not by that shift turned and sized by the part's own transform. Called
@@ -3623,6 +3640,8 @@ Arranging (each left out of the port; none worked around):
   has a turn or a size of its own in the wrong place; a part as loaded
   (no turn of its own) is not affected. Here a part's pieces keep the
   part's transform and their own coordinates, so they stay where they were.
+  Fixed since aceRage/EdgeSlicer#975 (`ModelVolume::split` moves each
+  piece by the shift as the part's transform turns and sizes it).
 - `MainFrame.cpp` l.1407–1409: going to another project calls
   `reset_model_config()` on the object, part and range tabs to let go of
   the last project's selection, but that function (Tab.cpp l.5171) erases
@@ -3832,17 +3851,19 @@ screenshots are under `target/ui-shots/presets/`.
 
 - `Tab.cpp` l.6908: `toggle_line("chamber_temperatures", …)` names an option
   that does not exist (it is `chamber_temperature`), so the chamber's line
-  is never hidden for a printer without chamber control; the same name at
-  l.6144 never matches, so `check_chamber_temperature` never runs.
+  is never hidden for a printer without chamber control (still so at the
+  pin, l.7191); the same name at l.6144 never matched, so
+  `check_chamber_temperature` never ran, fixed since aceRage/EdgeSlicer#970.
 - `Tab.cpp` l.8471 and l.8493: `toggle_option("retract_length", …)` names an
   option that does not exist (`retraction_length`), so the length is never
   greyed under firmware retraction, which is what the comment above it says
-  it is for.
+  it is for. Fixed at the pin (`retraction_length`, l.8851).
 - `Tab.cpp` l.8545: `toggle_line("retraction_distances_when_cut#0", …)` is
-  extruder 1's line on every extruder's page.
+  extruder 1's line on every extruder's page. Fixed since
+  aceRage/EdgeSlicer#970.
 - `Tab.cpp` l.6860–6862: with several bed types, `cool_plate_temp` is shown
   twice and `supertack_plate_temp` not at all, so its half of the line keeps
-  whatever the last printer left it as.
+  whatever the last printer left it as. Fixed since aceRage/EdgeSlicer#970.
 - `TabPrinter::build_unregular_pages` (l.7663): "Multimaterial" goes in two
   from the end, which with "Motion ability" left out (a flavor not in
   `is_marlin_flavor`) puts it, and the extruder pages after it, before
@@ -4242,35 +4263,40 @@ run from here), Bambu Connect taking the URL, the window's `hand_off` (not click
   (index 6, past the six-long map) is reported on toolhead 0
   (`group_id="0"`) while `filament_maps` and the G-code put it on
   toolhead 3; measured on `mcbrim_test.3mf` plate 2. The map should be
-  as long as all the filaments. Here it is (`group_id="2"`).
+  as long as all the filaments. Here it is (`group_id="2"`), as in the
+  reference since aceRage/EdgeSlicer#1015 (`identity_filament_group`).
 - Plater.cpp l.20101–20112: the wipe tower's entry in `plate_N.json`
   reuses the last object's `BBoxData`, so it carries that object's area
-  (827.02 mm² on `mcbrim_test` plate 2) and layer height. Here its area is 0.
+  (827.02 mm² on `mcbrim_test` plate 2) and layer height. Here its area is 0,
+  as in the reference since aceRage/EdgeSlicer#1015
+  (`wipe_tower_first_layer_bbox_data`).
 - `bbs_3mf.cpp` l.8035: for a whole-project export the small cover's
   relationship is written without the line's leading space (cosmetic;
-  written with it here).
+  written with it here, and there since aceRage/EdgeSlicer#975).
 - `bbs_3mf.cpp` l.7954: the small thumbnail is checked with
   `if (png_data != nullptr)`, the large one's pointer (freed at l.7912),
   where `small_png_data` is meant; a small picture that failed to encode is
-  then written from a null pointer.
+  then written from a null pointer. Fixed since aceRage/EdgeSlicer#975.
 - `bbs_3mf.cpp` l.7945: the small thumbnail's pixel index is
   `i / sw * W + j / sh` with `i` stepping by `sh` and `j` by `sw`: rows and
   columns swapped. Harmless while the picture is square (512 to 128), wrong
-  for any other.
+  for any other. Fixed since aceRage/EdgeSlicer#975.
 - `bbs_3mf.cpp` l.8302: an object's file is named `3D/Objects/<name>_<id>.model`
   from its name as it is, so a `/` in a name makes a folder of it (and `..`
-  climbs one).
+  climbs one). Fixed since aceRage/EdgeSlicer#975 (`object_file_name`).
 - `bbs_3mf.cpp` l.9463 with l.6048–6052 and l.6151–6152: a part's
   `matrix` is written as `volume->get_matrix() * source.transform`, and
   read back into `source.transform` while the component's transform
   places the volume; so every save and open multiplies the part's
   placement into its `matrix` once more (a part at Z 11 is written at 22
   the next time). Only "Reload from disk" reads it. Found by reading; here
-  a moved part's `matrix` is where it stands.
+  a moved part's `matrix` is where it stands, as in the reference since
+  aceRage/EdgeSlicer#976.
 - `bbs_3mf.cpp` l.9274–9276: `_add_project_embedded_presets_to_archive`
-  builds a header line into `out` that is never used.
+  builds a header line into `out` that is never used. Taken out since
+  aceRage/EdgeSlicer#975.
 - `bbs_3mf.cpp` l.8039: the cover's `rel-5` line is written without the
-  space the others have (wording only).
+  space the others have (wording only). Fixed since aceRage/EdgeSlicer#975.
 - `Model::plates_custom_gcodes` is keyed by a plate's index and nothing
   renumbers it when a plate is deleted (`PartPlateList::delete_plate`;
   the only writers are Plater.cpp l.13536, l.22649 and the importer):
@@ -4292,6 +4318,7 @@ run from here), Bambu Connect taking the URL, the window's `hand_off` (not click
   went, so deleting filament 2 of 3 leaves filament 3 with filament 2's
   volumes (to it and from it). A person sees the wrong numbers in
   "Flushing volumes" and, on a printer that purges, the wrong purge.
+  Fixed since aceRage/EdgeSlicer#983.
 - Plater.cpp l.28187–28198 (`on_filaments_delete`, "update customize
   gcode"): merging a filament, only the first filament change to it (the
   element `std::remove_if` leaves at its new end) is given the target, the
@@ -4299,7 +4326,7 @@ run from here), Bambu Connect taking the URL, the window's `hand_off` (not click
   that first one down once more (the target's number is already the one
   after the deletion), so a "Change Filament" at a layer to a merged
   filament goes to the filament after the one meant, and others may be
-  lost or doubled.
+  lost or doubled. Fixed since aceRage/EdgeSlicer#983.
 - Plater.cpp l.13876 (`get_next_color_for_filament`): the colour counter is
   a function `static`, so the colour a new filament gets depends on how
   many were added before in the whole run, in any project (followed here,

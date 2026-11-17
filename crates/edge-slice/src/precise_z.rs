@@ -64,11 +64,9 @@ pub fn align_to_height(heights: &[f64], top: f64, wanted: f64, min: f64, max: f6
         let mut left = 0.0;
         for (height, open) in last.iter_mut().zip(&mut open) {
             // A layer already at the edge of the range takes no part in
-            // a later round. The reference's loop falls through to its
-            // last branch for such a layer and gives it a share all the
-            // same, which puts the layer out of the range and the stack
-            // past the height wanted, by that share for each such layer.
-            // That is not copied.
+            // a later round, as in the reference since
+            // aceRage/EdgeSlicer#955 (before it, such a layer was given a
+            // share all the same and put out of the range).
             if !*open {
                 continue;
             }

@@ -275,12 +275,14 @@ impl Boundary {
     /// The first point of a ring that is not at `point`, looking back
     /// from `from` or on from it.
     ///
-    /// Not as the reference, on purpose: its
-    /// `find_first_different_vertex<false>` takes its first step forward
-    /// whichever way it is looking, so for a point at the start of an
-    /// edge it finds the edge's far end on both sides, the two normals
-    /// cancel, and the point is left on the ring instead of stepped off
-    /// it.
+    /// The first step is to the neighbour on the side it looks to, as in
+    /// the reference since aceRage/EdgeSlicer#959
+    /// (`find_first_different_vertex`). Before it the reference's
+    /// `find_first_different_vertex<false>` took its first step forward
+    /// whichever way it was looking, so for a point at the start of an
+    /// edge it found the edge's far end on both sides, the two normals
+    /// cancelled, and the point was left on the ring instead of stepped
+    /// off it.
     fn other_point(&self, ring: usize, from: usize, point: Point2, back: bool) -> Point2 {
         let points = &self.rings[ring].points;
         let count = points.len();
@@ -331,12 +333,13 @@ impl Boundary {
     /// Whether the shorter way round a ring from `first` to `second` is
     /// the way the ring runs.
     ///
-    /// Not as the reference, on purpose: `get_shortest_direction` takes
-    /// from each way's length what lies between a meeting and the ends
-    /// of the edge it is on, a correction left from when a meeting was
-    /// placed at its edge's start; a meeting is now placed where it is,
-    /// so the lengths are already right and the correction sends some
-    /// moves the longer way about, by up to the length of the two edges.
+    /// The two lengths are taken as they are, as in the reference since
+    /// aceRage/EdgeSlicer#959 (`get_shortest_direction`). Before it the
+    /// reference took from each way's length what lies between a meeting
+    /// and the ends of the edge it is on, a correction left from when a
+    /// meeting was placed at its edge's start; a meeting is now placed
+    /// where it is, so that correction sent some moves the longer way
+    /// about, by up to the length of the two edges.
     fn forward_is_shorter(&self, first: &Meeting, second: &Meeting) -> bool {
         let whole = self.along[first.ring][self.rings[first.ring].points.len()];
         let forward = (second.along - first.along).rem_euclid(whole);

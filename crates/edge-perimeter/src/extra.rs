@@ -208,16 +208,11 @@ pub(crate) fn over_overhangs_counting(
                     region.reverse();
                 } else {
                     // The loop is begun at its point furthest onto the
-                    // layer below, and stays a loop.
-                    //
-                    // Not as the reference, on purpose: it means this
-                    // and writes `if (double d = distance < min_dist)`,
-                    // which gives `d` the outcome of the comparison and
-                    // not the distance, so it begins at the last point
-                    // that is over the layer below at all; and it turns
-                    // the points about without taking out the one that
-                    // closed the loop, which leaves that point twice in
-                    // the middle and the loop open where it starts.
+                    // layer below, and stays a loop, as in the reference
+                    // since aceRage/EdgeSlicer#946 (before it, `d` took
+                    // the outcome of the comparison and not the distance,
+                    // and the point that closed the loop was left twice
+                    // in the middle and the loop open where it starts).
                     let front = &mut region[0].points;
                     front.pop();
                     let mut start = 0;
@@ -510,9 +505,9 @@ fn unsupported_distance(to_cover: &[ExPolygon], anchors: &[ExPolygon]) -> Result
 /// Joins lines whose ends are nearer than `limit_distance`, as the pieces
 /// of an outline cut where it began are (`reconnect_polylines`).
 ///
-/// The reference keeps the lines in a hash map by their index and returns
-/// them in whatever order that map hands them out, which differs between
-/// standard libraries. Here they come back by index, lowest first.
+/// They come back by index, lowest first, as in the reference since
+/// aceRage/EdgeSlicer#946 (an ordered map; before it, a hash map handed
+/// them out in an order that differed between standard libraries).
 fn reconnect(lines: Vec<Line>, limit_distance: f64) -> Vec<Line> {
     let limit_sq = limit_distance * limit_distance;
     let mut connected: Vec<Option<Line>> = lines
@@ -874,8 +869,8 @@ mod tests {
         assert_eq!(lines.len(), 1);
         let first = &lines[0][0].points;
         assert!(unscaled(first[0].x) < 1.0);
-        // Still a loop, with no point in it twice: the reference's slip
-        // here is not copied.
+        // Still a loop, with no point in it twice, as in the reference
+        // since aceRage/EdgeSlicer#946.
         assert_eq!(first.len(), 5);
         assert!(first.windows(2).all(|pair| pair[0] != pair[1]));
         assert_eq!(first.first(), first.last());

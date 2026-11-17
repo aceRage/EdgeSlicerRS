@@ -11,8 +11,9 @@
 //! tolerances and the order things are tried in are the reference's, and
 //! so is every place a value is cut to a whole number.
 //!
-//! Where this differs from the reference on purpose, each said again at
-//! its place:
+//! Three things that differed from the reference on purpose are done as
+//! the reference does them since aceRage/EdgeSlicer#950 (Circle.cpp),
+//! each said again at its place:
 //!
 //! - the circle through the path's middle point is among those tried
 //!   when the first guess fails ([`circle_of`]);
@@ -179,10 +180,11 @@ fn perpendicular_foot(p1: Point2, p2: Point2, c: Point2) -> Option<Point2> {
     let (x_dif, y_dif) = (x2 - x1, y2 - y1);
     let num = (c.x as f64 - x1) * x_dif + (c.y as f64 - y1) * y_dif;
     let denom = x_dif * x_dif + y_dif * y_dif;
-    // Not as the reference: there two points in the same place divide
-    // nothing by nothing, the comparisons below all fail on the result
-    // and a point is made from it, which no rule defines. A segment of
-    // no length has no foot.
+    // A segment of no length has no foot, as in the reference since
+    // aceRage/EdgeSlicer#950 (`get_closest_perpendicular_point`); before
+    // it two points in the same place divided nothing by nothing, the
+    // comparisons below all failed on the result and a point was made
+    // from it, which no rule defines.
     if denom == 0.0 {
         return None;
     }
@@ -256,11 +258,12 @@ fn circle_of(points: &[Point2], max_radius: f64, tolerance: f64) -> Option<Circl
     if let Some(circle) = circle_through(first, middle_point, last, max_radius).filter(fits) {
         return Some(circle);
     }
-    // Not as the reference, which leaves the path's own middle point out
-    // of this search as "already checked": that was so in the code it
-    // took this from (ArcWelder), which tried the middle point first,
-    // but what it tries first now is the point made above, so the middle
-    // point itself was never tried. It is tried here with the rest.
+    // The path's own middle point is tried here with the rest, as in the
+    // reference since aceRage/EdgeSlicer#950 (`try_create_circle`).
+    // Before it the reference left it out as "already checked": that was
+    // so in the code it took this from (ArcWelder), which tried the
+    // middle point first, but what it tries first now is the point made
+    // above, so the middle point itself was never tried.
     let mut best: Option<(f64, Circle)> = None;
     for index in 1..count - 1 {
         let Some(circle) = circle_through(first, points[index], last, max_radius) else {
@@ -440,12 +443,14 @@ fn arc_on(
             angle = polar_start + (2.0 * PI - polar_end);
         }
     } else if polar_start > polar_end {
-        // Not as the reference, which has `0.0 < polar_mid` here where
-        // the clockwise case above has `0.0 <=`: a counter-clockwise arc
-        // through the angle nought whose middle point is exactly there,
-        // due east of the centre, is then no arc at all, and the path's
-        // arc is cut in two at whatever point came before. A round wall
-        // drawn square to the axes does it on every layer.
+        // `0.0 <=` here, as in the clockwise case above and in the
+        // reference since aceRage/EdgeSlicer#950 (`try_create_arc`).
+        // Before it the reference had `0.0 < polar_mid`: a
+        // counter-clockwise arc through the angle nought whose middle
+        // point is exactly there, due east of the centre, was then no arc
+        // at all, and the path's arc was cut in two at whatever point came
+        // before. A round wall drawn square to the axes did it on every
+        // layer.
         if (polar_start < polar_mid && polar_mid < 2.0 * PI)
             || (0.0 <= polar_mid && polar_mid < polar_end)
         {
@@ -476,11 +481,13 @@ fn arc_on(
         }
         length = other_length;
         ccw = !ccw;
-        // Not as the reference, which turns the direction about "but not
-        // the angle" and so keeps, with the length of this arc, the
-        // angle of the one it gave up. The angle is what says whether a
-        // point is abreast of the arc when the arc is cut at a seam
-        // (`is_point_inside`), so it is this arc's own here.
+        // The angle is turned about with the direction, as in the
+        // reference since aceRage/EdgeSlicer#950 (`try_create_arc`);
+        // before it the reference turned the direction "but not the
+        // angle" and so kept, with the length of this arc, the angle of
+        // the one it gave up. The angle is what says whether a point is
+        // abreast of the arc when the arc is cut at a seam
+        // (`is_point_inside`), so it is this arc's own.
         angle = other;
     }
     if !ccw {
@@ -1408,8 +1415,9 @@ mod tests {
         // arc has grown to a little over half the ring, its middle
         // point is the corner due east of the centre and the centre is
         // level with it to the unit, so the angle of the one from the
-        // other is exactly nought. The reference takes that for no arc
-        // and cuts the ring's arc in two at the top; it is one arc here.
+        // other is exactly nought. It is one arc, here and in the
+        // reference since aceRage/EdgeSlicer#950; before it the reference
+        // took that for no arc and cut the ring's arc in two at the top.
         let ring: Vec<Point2> = (0..=128)
             .map(|step| {
                 let angle = (((97 + step) % 128) as f64 * 2.8125).to_radians();

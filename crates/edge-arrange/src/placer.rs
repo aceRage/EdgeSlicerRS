@@ -421,11 +421,10 @@ impl Placer {
     /// Puts the finished pile where the configuration says, clear of the
     /// fixed items (`finalAlign`).
     ///
-    /// The reference counts the fixed objects (not the virtual ones) in the
-    /// pile's box and moves them with it (nfpplacer.hpp l.1075, l.1170);
-    /// the moves of fixed items are thrown away afterwards, so it lines up
-    /// a box that holds objects which stay where they are. Here the box is
-    /// the box of what was placed, and only that is moved.
+    /// The box is the box of what was placed, and only that is moved, as in
+    /// the reference since aceRage/EdgeSlicer#1000 (nfpplacer.hpp
+    /// `finalAlign`; before it, the fixed objects counted in the pile's box
+    /// and were moved with it, their moves thrown away afterwards).
     pub fn final_align(&self, arena: &mut [Item], config: &PlacerConfig) {
         if self.items.is_empty() || config.alignment == Align::Unaligned {
             return;

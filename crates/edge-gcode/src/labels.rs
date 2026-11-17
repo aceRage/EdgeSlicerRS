@@ -279,13 +279,12 @@ pub(crate) fn brim_owner(labels: &[ObjectLabel], brim: &ExtrusionLoop) -> Option
 /// On a layer with a prime tower (`tower`, where it is set to stand) it
 /// runs through every copy of each object printing on the layer, starts
 /// from the tower and is taken backwards, so the copy nearest the tower
-/// comes last, as the reference means it to. Not as the reference, on
-/// purpose: it builds its point from `wipe_tower_x` and `_y` in
-/// millimetres taken as its own units, unscaled, and without the plate's
-/// place among the others that its copies carry (GCode.cpp
-/// `process_layer`, l.9725 at the pin, `Point wt_pos(...)`), so its chain
-/// starts at the first plate's corner instead. Only the order of the
-/// copies and the travel between them differ for it.
+/// comes last, as the reference does since aceRage/EdgeSlicer#1041
+/// (GCode.cpp `process_layer`, `wt_pos`, now scaled and with the plate's
+/// origin). Before it the reference built its point from `wipe_tower_x`
+/// and `_y` in millimetres taken as its own units, unscaled, and without
+/// the plate's place among the others, so its chain started at the first
+/// plate's corner instead.
 pub(crate) fn order(labels: &[ObjectLabel], present: &[bool], tower: Option<Point2>) -> Vec<usize> {
     // The tower's chain runs through every copy of each object printing
     // on the layer; the plate's through every copy.
@@ -384,7 +383,8 @@ mod tests {
         assert_eq!(owner(&labels, Point2::from_mm(70.0, 30.0)), 2);
         // From the tower, taken backwards: the copy nearest the tower
         // last, wherever the tower stands (not from the first plate's
-        // corner, where the reference's unscaled `wt_pos` starts it).
+        // corner, where the reference's unscaled `wt_pos` started it
+        // before aceRage/EdgeSlicer#1041).
         let all = [true; 3];
         assert_eq!(
             order(&labels, &all, Some(Point2::from_mm(100.0, 10.0))),

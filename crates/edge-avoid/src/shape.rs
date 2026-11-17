@@ -171,13 +171,15 @@ fn contour_distance(
                 // unless the way round the ring to it is long compared
                 // with the way straight across.
                 //
-                // Not as the reference, on purpose: it leaves the last
-                // edge's own start out of how far round the foot is (a
-                // condition kept from ElephantFootCompensation.cpp, where
-                // lengths are counted from the ring's last point and not
-                // its first), so a point across from the edge that
-                // closes a ring is judged as if that edge were where
-                // the ring begins.
+                // The last edge's own start counts in how far round the
+                // foot is, as in the reference since
+                // aceRage/EdgeSlicer#959 (AvoidCrossingPerimeters.cpp
+                // `contour_distance`). Before it the reference left it
+                // out (a condition kept from ElephantFootCompensation.cpp,
+                // where lengths are counted from the ring's last point and
+                // not its first), so a point across from the edge that
+                // closes a ring was judged as if that edge were where the
+                // ring begins.
                 let mut param_lo = along[idx_point];
                 let mut param_hi = along[ipt] + t * l2.sqrt();
                 if param_lo > param_hi {

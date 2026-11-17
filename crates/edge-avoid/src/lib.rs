@@ -99,17 +99,17 @@ impl Layer {
     /// (`AvoidCrossingPerimeters::init_layer`, and the boundaries
     /// `travel_to` makes when it first needs them).
     ///
-    /// Not as the reference, on purpose: it makes the boundary for moves
-    /// inside the part on the layer's first such move and keeps it for
-    /// the layer, whether that move was between supports (top surfaces
-    /// not left out) or in the part (left out). Supports are printed
-    /// first, so on a layer that has them its moves in the part cross
-    /// top surfaces that the same moves go round on a layer that has
-    /// none. Here each kind of move has its own.
+    /// Each kind of move, between supports (top surfaces not left out) or
+    /// in the part (left out), has its own boundary, as in the reference
+    /// since aceRage/EdgeSlicer#959 (`travel_to`, `m_internal_layer`).
+    /// Before it the reference made the boundary on the layer's first
+    /// such move and kept it for the layer, so on a layer with supports,
+    /// printed first, the moves in the part crossed top surfaces that the
+    /// same moves went round on a layer with none.
     ///
-    /// The reference also draws the outline in by the nozzle's diameter
-    /// and not by the spacing of the walls when the first move was
-    /// between supports, a support layer having no walls to measure
+    /// Not as the reference: for moves between supports it draws the
+    /// outline in by the nozzle's diameter and not by the spacing of the
+    /// walls, a support layer having no walls to measure
     /// (`get_perimeter_spacing`); here the walls' spacing serves every
     /// kind of move, a hundredth of a millimetre from that.
     pub fn new(slices: &Slices<'_>, needs: Needs) -> Result<Self, ClipError> {

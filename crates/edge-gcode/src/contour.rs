@@ -132,10 +132,11 @@ impl Writer<'_> {
 
     /// The height word for a wipe move to `to` over a contoured line,
     /// `heights` being the line's: its own height there, as it was laid.
-    /// Not as the reference, whose wipe keeps the height the line ended
-    /// at (GCode.cpp `Wipe::wipe`, X and Y alone): over a line that came
-    /// down to its end it goes back up the slope that much below it,
-    /// through what it has just laid. Nothing for a line laid flat.
+    /// As the reference does since aceRage/EdgeSlicer#974 (GCode.cpp
+    /// `Wipe::wipe`, `wipe_heights`): before it the wipe kept the height
+    /// the line ended at, X and Y alone, and over a line that came down
+    /// to its end went back up the slope that much below it, through
+    /// what it had just laid. Nothing for a line laid flat.
     pub(crate) fn wipe_height(&mut self, heights: Option<&Profile>, to: Point2) -> String {
         let Some(heights) = heights else {
             return String::new();

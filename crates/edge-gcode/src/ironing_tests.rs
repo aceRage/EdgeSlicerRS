@@ -223,8 +223,9 @@ fn ironing_goes_at_its_own_speed_and_the_default_acceleration() {
 
 #[test]
 fn on_the_first_layer_ironing_is_no_faster_than_ironing_or_that_layers_fill() {
-    // Not as the reference, which irons a first layer at
-    // `initial_layer_infill_speed` whatever the ironing speed is.
+    // As the reference does since aceRage/EdgeSlicer#948 (GCode.cpp
+    // `_extrude`); before it a first layer was ironed at
+    // `initial_layer_infill_speed` whatever the ironing speed was.
     let loops = [wall(0.0, 0.0, 10.0)];
     let fill = [
         line((1.0, 5.0), (9.0, 5.0), Role::BottomSurface, 1),

@@ -23,10 +23,10 @@
 //!
 //! Numbers are kept the way the reference keeps them: the radius in `f32`
 //! and cut to whole units, the margin cut to whole units, the corners of
-//! the polygon worked out in `f32`. Two things differ on purpose and are
-//! said where they are: the test for a convex hole, which in the
-//! reference never fails, and runs with one and the same middle and
-//! radius, of which the reference converts only the first.
+//! the polygon worked out in `f32`. The test for a convex hole and runs
+//! with one and the same middle and radius are done as the reference
+//! does them since aceRage/EdgeSlicer#951 (before it, the test never
+//! failed and only the first of such runs was converted).
 
 use std::f32::consts::PI as PI_F32;
 
@@ -98,21 +98,16 @@ pub fn round_hole(hole: &Polygon, margin: Margin) -> Option<RoundHole> {
     // opposite)": a hole is convex when its ring, gone round clockwise,
     // never turns left.
     //
-    // Not as the reference, where the test never fails. It asks for
-    // `hole.convex_points(PI)`, the points that turn left by more than
-    // the angle given, and no turn is by more than a half circle
-    // (Polygon.cpp `filter_convex_concave_points_by_angle_threshold`: a
-    // dot product of two unit vectors under cos(PI) = -1), so the list is
-    // always empty and a hole with a notch in it passes. The test is
-    // made here as it is plainly meant: a hole that is not convex is
-    // left alone. A point on a flat counts for nothing, though: one that
-    // rounding has left a unit or two to the wrong side of the line
-    // through its neighbours (elephant foot compensation puts points
-    // along the flats of a large hole) is no notch. A left turn counts
-    // once the point stands `SCALED_EPSILON` off that line, the least
-    // distance the reference tells apart. The roundness test after it
-    // rejects nearly every hole that is not convex anyway; what differs
-    // is a hole with dents shallower than the margin.
+    // As the reference makes it since aceRage/EdgeSlicer#951
+    // (PrintObject.cpp `polyhole_is_convex`; before it, the test asked
+    // for `hole.convex_points(PI)`, which is always empty, and never
+    // failed): a hole that is not convex is left alone. A point on a
+    // flat counts for nothing, though: one that rounding has left a unit
+    // or two to the wrong side of the line through its neighbours
+    // (elephant foot compensation puts points along the flats of a large
+    // hole) is no notch. A left turn counts once the point stands
+    // `SCALED_EPSILON` off that line, the least distance the reference
+    // tells apart.
     let dented = |index: usize| {
         let before = points[(index + points.len() - 1) % points.len()];
         let at = points[index];
@@ -175,10 +170,9 @@ pub fn polyhole_edges(radius: Coord, nozzle_diameter: Coord, max_edges: i32) -> 
 /// (`create_polyholes`). Each is clockwise, with its flats on the circle
 /// of `radius`: "cylinder(h = h, r = d / cos (180 / n), $fn = n)".
 ///
-/// The corners are worked out in `f32` as the reference does. It also
-/// adds the middle of the hole in `f32`, which in an object's own
-/// coordinates costs it a unit or two; here coordinates are the bed's,
-/// where that would cost up to sixteen, so the sum is made in `f64`.
+/// The corners are worked out in `f32` and the middle of the hole added
+/// to them as a whole number, as the reference does since
+/// aceRage/EdgeSlicer#951 (before it, the sum was made in `f32`).
 pub fn create_polyholes(
     centre: Point2,
     radius: Coord,
@@ -288,12 +282,10 @@ pub fn hole_to_polyholes(layers: &mut [Vec<Share<'_>>], polyholes: &Polyholes) -
             if run.len() < MIN_LAYERS && !(run.len() == 1 && run[0].0 == 0) {
                 continue;
             }
-            // Not as the reference, which keeps its runs in a map by
-            // middle, radius, filament and margin, and so drops a run
-            // whose hole is, to the unit, the hole of a run it already
-            // has: the same hole met again higher up, past layers where
-            // it was not round, stays as drawn there. Here every run is
-            // converted.
+            // Every run is converted, as in the reference since
+            // aceRage/EdgeSlicer#951 (a multimap; before it, a map by
+            // middle, radius, filament and margin dropped a run whose
+            // hole was, to the unit, the hole of a run it already had).
             let made = create_polyholes(
                 id.centre,
                 id.radius as Coord,

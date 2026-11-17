@@ -181,14 +181,11 @@ fn nearest(segments: &[Segment], point: (f64, f64)) -> Option<&Segment> {
 /// for running square to itself, and the direction with the most votes
 /// within a tenth of a half turn either side wins, averaged over those.
 ///
-/// Different from the reference, which means to count the votes near the
-/// far end of its range together with those near the near end, as one
-/// direction, and does it for a window that reaches below the range but
-/// not for one that reaches above it (its test for the second asks for a
-/// window that starts above the range's end, which none does, so the
-/// code is never run). Here both ends are taken round. Where the votes
-/// lie away from those ends, which is nearly always, it makes no
-/// difference.
+/// The votes near the two ends of the range are counted together, as
+/// one direction, for a window that reaches past either end, as in the
+/// reference since aceRage/EdgeSlicer#969 (before it, its test for a
+/// window reaching above the range was never met, so only the low end
+/// was taken round).
 pub(crate) fn bridging_angle(bridged: &[ExPolygon], anchors: &[Segment]) -> f64 {
     let step = edge_geom::scaled(2.0) as f64;
     // Votes by direction; every direction is from a half up to one and a

@@ -113,13 +113,10 @@ fn as_hole(contour: &Polygon) -> Polygon {
 /// corner counting as turning right only where it lies more than
 /// [`EPSILON`] inside the line through its neighbours.
 ///
-/// The reference counts any right turn at all
-/// (`contour_simplified[0].concave_points().size() == 0`). Its outline
-/// is simplified first, and simplifying keeps the outline's first point
-/// whatever it is: where that point is in the middle of a straight side
-/// it is left a nanometre off the side by rounding, to one side or the
-/// other, and a hexagonal or square hole is then covered or not by
-/// which. Not copied.
+/// As the reference's `counterbore_outline_is_convex` since
+/// aceRage/EdgeSlicer#963 (before it, any right turn at all counted, so
+/// a point left a nanometre off a straight side by rounding decided
+/// whether a hexagonal or square hole was covered).
 fn convex(ring: &Polygon) -> bool {
     let points = &ring.points;
     let count = points.len();
@@ -182,13 +179,10 @@ pub fn split_counterbores(
             edge_clip::opening(&unsupported, spacing, join)?
         };
         // Only where a hole of the region is on the edge of what has
-        // nothing under it: a hole that narrows. The reference asks no
-        // more than that the region has a hole somewhere
-        // (PerimeterGenerator.cpp, "keep out if cannot be bridged or no
-        // holes to bridge": `!surface->expolygon.holes.empty()`), so
-        // there a deck across two posts loses the walls of its first
-        // layer, and whatever of that layer cannot be spanned, when a
-        // hole is drilled anywhere else in it. Not copied.
+        // nothing under it: a hole that narrows, as in the reference
+        // since aceRage/EdgeSlicer#963 (`unsupported_with_a_hole_on_the_edge`;
+        // before it, a hole anywhere in the region was enough, and a
+        // deck across two posts lost the walls of its first layer).
         if !filtered.is_empty() {
             let holes: Vec<ExPolygon> = surface.holes.iter().map(plug).collect();
             let beside = grown(&holes, TOUCHING)?;

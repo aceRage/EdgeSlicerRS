@@ -14,12 +14,13 @@
 //! `validate_compacted_wipe_tower_clearance`, `compacted_wipe_tower_zone`,
 //! `compacted_wipe_tower_clearance`). Both are here.
 //!
-//! Not as the reference in one thing: the tower's ground is grown by the
-//! reach of the spiral the nozzle lifts in, worked out with `travel_slope`
-//! in degrees as the reference's G-code writer takes it
-//! (GCodeWriter.cpp, Extruder.cpp `travel_slope`). The reference's check
-//! takes the degrees for radians, and so grows it by about a twenty-fourth
-//! of the spiral's reach at a slope of 3 degrees.
+//! The tower's ground is grown by the reach of the spiral the nozzle
+//! lifts in, worked out with `travel_slope` in degrees as the reference's
+//! G-code writer takes it (GCodeWriter.cpp, Extruder.cpp `travel_slope`),
+//! as the reference's check does since aceRage/EdgeSlicer#1020 (Print.cpp
+//! `compacted_wipe_tower_zone`, `deg2rad`). Before it the check took the
+//! degrees for radians, and so grew it by about a twenty-fourth of the
+//! spiral's reach at a slope of 3 degrees.
 
 use edge_clip::{ClipError, Join};
 use edge_config::{ConfigError, Settings, reference_defaults};

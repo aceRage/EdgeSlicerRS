@@ -97,12 +97,9 @@ fn compensate_region(
             let shrunk = shrink(&simplified[0], min_contour_width, compensation)?;
             Ok(vec![shrunk.unwrap_or_else(|| input.clone())])
         }
-        // Not as the reference, on purpose: it takes the first of the
-        // pieces (`simplify(SCALED_EPSILON).front()`) and returns that one
-        // shrunk as the whole region, which it does because it assumes
-        // simplifying by a tenth of a micrometre cannot part a region;
-        // where it does, the rest of the region is lost from the layer.
-        // Here every piece is treated as the region it has become.
+        // Every piece is treated as the region it has become, as the
+        // reference does since aceRage/EdgeSlicer#947 (before it, it kept
+        // the first piece and lost the rest of the region from the layer).
         _ => {
             for piece in &mut simplified {
                 if !is_tiny(piece, min_contour_width_compensated)
@@ -231,10 +228,9 @@ fn resample_polygon(contour: &[Point2], dist: f64) -> (Vec<Point2>, Along) {
         let v = (pt_this.0 - pt_prev.0, pt_this.1 - pt_prev.1);
         let l = (v.0 * v.0 + v.1 * v.1).sqrt();
         let n = (l / dist).ceil() as usize;
-        // Not as the reference, on purpose: it divides by `n` whatever it
-        // is, so an edge of no length (two points in one place) makes the
-        // step 0 / 0 and every length measured along the ring after it
-        // not a number. Such an edge has no step to add.
+        // An edge of no length (two points in one place) has no step to
+        // add, as in the reference since aceRage/EdgeSlicer#947 (before
+        // it, the step was 0 / 0 and every length after it not a number).
         let l_step = if n == 0 { 0.0 } else { l / n as f64 };
         for i in 1..n {
             let interpolation_parameter = i as f64 / n as f64;
