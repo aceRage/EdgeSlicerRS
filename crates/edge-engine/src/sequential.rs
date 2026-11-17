@@ -505,6 +505,7 @@ mod tests {
             negative: None,
             filament: 1,
             part: None,
+            object: None,
         };
         let label = |object: usize, name: &str| InstanceLabel {
             object,
@@ -520,6 +521,7 @@ mod tests {
             precise_seams: false,
             own: Vec::new(),
             objects: vec![tall.clone(), short.clone()],
+            middles: Vec::new(),
             labels: vec![label(0, "Tall"), label(1, "Short")],
             negatives: vec![Mesh::default(), Mesh::default()],
             parts: Vec::new(),

@@ -330,7 +330,8 @@ fn negative_parts_make_their_instances_separate_bodies() {
     .unwrap();
 
     let bodies = project.bodies(None);
-    // The two plain cubes share the first body; each drilled block has its own.
+    // Each plain cube is a body of its own, as is each drilled block, each
+    // tagged with its place among the instances.
     let volumes: Vec<_> = bodies
         .iter()
         .map(|b| {
@@ -342,10 +343,19 @@ fn negative_parts_make_their_instances_separate_bodies() {
         .collect();
     assert_eq!(
         volumes,
-        [(250.0, None), (1000.0, Some(80.0)), (1000.0, Some(80.0))]
+        [
+            (125.0, None),
+            (125.0, None),
+            (1000.0, Some(80.0)),
+            (1000.0, Some(80.0))
+        ]
     );
     assert_eq!(
-        bodies[2].negative.as_ref().unwrap().bounds().unwrap().0,
+        bodies.iter().map(|body| body.object).collect::<Vec<_>>(),
+        [Some(2), Some(3), Some(0), Some(1)]
+    );
+    assert_eq!(
+        bodies[3].negative.as_ref().unwrap().bounds().unwrap().0,
         [50.0, 0.0, 0.0]
     );
     // The merged mesh is the printed material only.
@@ -581,4 +591,49 @@ fn an_object_named_nowhere_is_object_and_its_place() {
         .map(|object| object.name.as_deref())
         .collect();
     assert_eq!(names_again, names);
+}
+
+#[test]
+fn instance_middles_are_the_reference_instance_shifts() {
+    // A 10 mm block and a 4 mm one beside it in +x, a modifier and a
+    // negative part reaching far out in -x, which do not move the middle.
+    let root = model(
+        "millimeter",
+        &format!(
+            r#"<object id="1">{}</object><object id="2">{}</object><object id="3">{}</object>
+               <object id="4">{}</object>
+               <object id="5"><components><component objectid="1"/>
+                 <component objectid="2" transform="1 0 0 0 1 0 0 0 1 10 0 0"/>
+                 <component objectid="3" transform="1 0 0 0 1 0 0 0 1 -30 0 0"/>
+                 <component objectid="4" transform="1 0 0 0 1 0 0 0 1 -20 0 0"/></components></object>"#,
+            box_mesh([10.0; 3]),
+            box_mesh([4.0, 2.0, 10.0]),
+            box_mesh([40.0, 1.0, 1.0]),
+            box_mesh([2.0; 3])
+        ),
+        // The second copy is turned a quarter about Z.
+        r#"<item objectid="5" transform="1 0 0 0 1 0 0 0 1 100.3 50.1 0"/>
+           <item objectid="5" transform="0 1 0 -1 0 0 0 0 1 20 30 0"/>"#,
+    );
+    let model_settings = r#"<config><object id="5">
+        <part id="1" subtype="normal_part"/><part id="2" subtype="normal_part"/>
+        <part id="3" subtype="modifier_part"/><part id="4" subtype="negative_part"/></object></config>"#;
+    let project = Project::read(package(&[
+        ("3D/3dmodel.model", &root),
+        (MODEL_SETTINGS_PART, model_settings),
+    ]))
+    .unwrap();
+    // The printed parts' box runs from 0 to 14 by 0 to 10: its middle is
+    // (7, 5), cut off toward zero in units, and on the turned copy
+    // turned with it to (-5, 7), not the middle of that copy's own box.
+    assert_eq!(
+        project.instance_middles(None),
+        [
+            [new_scale(100.3) + 7_000_000, new_scale(50.1) + 5_000_000],
+            [20_000_000 - 5_000_000, 30_000_000 + 7_000_000],
+        ]
+    );
+    // Cut off toward zero, as `Point::new_scale` does.
+    assert_eq!(new_scale(0.000_000_9), 0);
+    assert_eq!(new_scale(-0.000_001_9), -1);
 }

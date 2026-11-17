@@ -241,6 +241,97 @@ fn frame_of(
         })
 }
 
+/// Which of `objects` (bounds and middle) an island starting at `point`
+/// belongs to: of those whose bounds hold it, the one with the smallest
+/// bounds, as [`frame_of`] picks; else the one whose bounds are nearest.
+fn owner_of(objects: &[(Point2, Point2, Point2)], point: Point2) -> usize {
+    let outside = |(low, high, _): &(Point2, Point2, Point2)| {
+        let dx = (low.x - point.x).max(point.x - high.x).max(0);
+        let dy = (low.y - point.y).max(point.y - high.y).max(0);
+        i128::from(dx) * i128::from(dx) + i128::from(dy) * i128::from(dy)
+    };
+    let area = |(low, high, _): &(Point2, Point2, Point2)| {
+        i128::from(high.x - low.x) * i128::from(high.y - low.y)
+    };
+    (0..objects.len())
+        .min_by_key(|&at| (outside(&objects[at]), area(&objects[at])))
+        .unwrap_or(0)
+}
+
+/// Supports for each object by itself, laid about its own middle, as the
+/// reference makes them for each object alone (PrintObject.cpp
+/// `generate_support_material`, with the object's layers about its
+/// `center_offset`; TreeSupport.cpp and TreeSupport3D.cpp work in that
+/// frame). Each island of every layer, and each enforcer and blocker, goes
+/// with the object [`owner_of`] gives it: objects stood against one
+/// another, which this engine unites, are supported as the object their
+/// island starts in. With one object or none, the plate is one, about
+/// `middle` when there is no object.
+#[allow(clippy::too_many_arguments)]
+fn supports_by_object(
+    outlines: &[&[ExPolygon]],
+    objects: &[(Point2, Point2, Point2)],
+    middle: Point2,
+    first_layer_height: f64,
+    layer_height: f64,
+    support: &SupportSettings,
+    annotations: &edge_support::Annotations,
+) -> Result<Vec<Vec<ExtrusionPath>>, edge_support::SupportError> {
+    if objects.len() < 2 || !support.enabled {
+        let centre = objects.first().map_or(middle, |object| object.2);
+        return edge_support::generate_with(
+            outlines,
+            centre,
+            first_layer_height,
+            layer_height,
+            support,
+            annotations,
+        );
+    }
+    let split = |layers: &[&[ExPolygon]]| -> Vec<Vec<Vec<ExPolygon>>> {
+        let mut by: Vec<Vec<Vec<ExPolygon>>> = vec![vec![Vec::new(); layers.len()]; objects.len()];
+        for (index, layer) in layers.iter().enumerate() {
+            for island in layer.iter() {
+                if let Some(&first) = island.contour.points.first() {
+                    by[owner_of(objects, first)][index].push(island.clone());
+                }
+            }
+        }
+        by
+    };
+    fn as_slices(layers: &[Vec<ExPolygon>]) -> Vec<&[ExPolygon]> {
+        layers.iter().map(Vec::as_slice).collect()
+    }
+    let own_outlines = split(outlines);
+    let own_enforcers = split(&as_slices(&annotations.enforcers));
+    let own_blockers = split(&as_slices(&annotations.blockers));
+    let own_blocking = split(&as_slices(&annotations.blocking_volumes));
+    let mut supports: Vec<Vec<ExtrusionPath>> = vec![Vec::new(); outlines.len()];
+    for (at, object) in objects.iter().enumerate() {
+        // An object with nothing on any layer has nothing to hold up.
+        if own_outlines[at].iter().all(Vec::is_empty) {
+            continue;
+        }
+        let own_annotations = edge_support::Annotations {
+            enforcers: own_enforcers[at].clone(),
+            blockers: own_blockers[at].clone(),
+            blocking_volumes: own_blocking[at].clone(),
+        };
+        let made = edge_support::generate_with(
+            &as_slices(&own_outlines[at]),
+            object.2,
+            first_layer_height,
+            layer_height,
+            support,
+            &own_annotations,
+        )?;
+        for (layer, paths) in supports.iter_mut().zip(made) {
+            layer.extend(paths);
+        }
+    }
+    Ok(supports)
+}
+
 /// A layer's outlines moved out by `contour` and its holes made larger
 /// by `hole`, in scaled units, either of which may be negative
 /// (PrintObjectSlice.cpp `_shrink_contour_holes`). A hole is grown by
@@ -402,6 +493,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     } = job;
     let (mut bodies, objects, plate) = (loaded.bodies, loaded.objects, loaded.plate);
     let instance_labels = loaded.labels;
+    let object_middles = loaded.middles;
     let negatives = loaded.negatives;
     let seam_parts = loaded.parts;
     let painted = loaded.painted;
@@ -440,14 +532,14 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 );
             }
             let filament = materials.first().copied().unwrap_or(1);
-            bodies = objects
-                .iter()
+            bodies = (objects.iter().enumerate())
                 .zip(negatives.iter().map(Some).chain(std::iter::repeat(None)))
-                .map(|(solid, negative)| Body {
+                .map(|((at, solid), negative)| Body {
                     solid: solid.clone(),
                     negative: negative.filter(|mesh| !mesh.triangles.is_empty()).cloned(),
                     filament,
                     part: None,
+                    object: Some(at),
                 })
                 .collect();
         }
@@ -504,17 +596,24 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         )
     });
     // Each object's bounds across the bed and its middle, for laying its
-    // sparse pattern. A bare model is one object, with the one middle.
-    let middles: Vec<(Point2, Point2, Point2)> = objects
-        .iter()
-        .filter_map(Mesh::bounds)
-        .map(|(lo, hi)| {
+    // sparse pattern, ironing, seams and supports about. The middle is the
+    // reference's instance shift (`Loaded::middles`); an object without
+    // one is laid about the middle of its bounds. A bare model is one
+    // object, with the one middle.
+    let middles: Vec<(Point2, Point2, Point2)> = (objects.iter().enumerate())
+        .filter_map(|(at, mesh)| Some((at, mesh.bounds()?)))
+        .map(|(at, (lo, hi))| {
             (
                 Point2::from_mm(lo[0].into(), lo[1].into()),
                 Point2::from_mm(hi[0].into(), hi[1].into()),
-                Point2::from_mm(
-                    f64::from(lo[0] + hi[0]) / 2.0,
-                    f64::from(lo[1] + hi[1]) / 2.0,
+                object_middles.get(at).map_or_else(
+                    || {
+                        Point2::from_mm(
+                            f64::from(lo[0] + hi[0]) / 2.0,
+                            f64::from(lo[1] + hi[1]) / 2.0,
+                        )
+                    },
+                    |&[x, y]| Point2 { x, y },
                 ),
             )
         })
@@ -731,11 +830,26 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         } else {
             Vec::new()
         };
-        let mut layers = edge_slice::slice_regions_vase(
+        // Each object is closed by itself, as the reference slices each
+        // object apart: two objects closer than twice the closing radius
+        // stay two.
+        // Then simplified by 0.0025 mm, unless the slicing resolution is
+        // finer than a micron (PrintObjectSlice.cpp `slice_volumes`: "safe
+        // enough to simplify the data to speed slicing up").
+        let body_objects: Vec<Option<usize>> = bodies.iter().map(|body| body.object).collect();
+        let resolution = settings.float("resolution")?.unwrap_or(0.012);
+        let simplify = if resolution <= 0.001 {
+            0
+        } else {
+            scaled(0.0025)
+        };
+        let mut layers = edge_slice::slice_regions_by_object(
             &borrowed,
+            &body_objects,
             &planes,
             scaled(closing_radius),
             &largest_from,
+            simplify,
         )?;
         // Height ranges and modifiers lay their settings over what of an
         // object's parts they take (`crate::regions`).
@@ -1262,8 +1376,9 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         } else {
             edge_support::Annotations::default()
         };
-        let mut supports = edge_support::generate_with(
+        let mut supports = supports_by_object(
             &outlines,
+            &middles,
             middle,
             first_layer_height,
             layer_height,
@@ -3440,5 +3555,80 @@ mod tests {
         for (_, own) in &shrunk.by_filament {
             assert!((area(own) - 9.9 * 19.8).abs() < 1e-3);
         }
+    }
+
+    /// A shelf: a 4 mm post under a 16 mm cap, standing at `(x, y)`.
+    fn shelf(x: f64, y: f64) -> Vec<Vec<ExPolygon>> {
+        let island = |half: f64| ExPolygon {
+            contour: rect(x - half, y - half, x + half, y + half),
+            holes: Vec::new(),
+        };
+        (0..30)
+            .map(|layer| vec![island(if layer < 20 { 2.0 } else { 8.0 })])
+            .collect()
+    }
+
+    #[test]
+    fn supports_are_laid_about_each_objects_own_middle() {
+        let support = SupportSettings {
+            enabled: true,
+            ..SupportSettings::default()
+        };
+        let frame = |x: f64, y: f64, middle: Point2| {
+            (
+                Point2::from_mm(x - 8.0, y - 8.0),
+                Point2::from_mm(x + 8.0, y + 8.0),
+                middle,
+            )
+        };
+        // Two shelves, the second off the first by an amount the base's
+        // spacing does not divide, each with its own middle.
+        let (a, b) = (shelf(50.0, 50.0), shelf(91.3, 57.77));
+        let plate: Vec<Vec<ExPolygon>> = a
+            .iter()
+            .zip(&b)
+            .map(|(a, b)| a.iter().chain(b).cloned().collect())
+            .collect();
+        let outlines: Vec<&[ExPolygon]> = plate.iter().map(Vec::as_slice).collect();
+        let objects = [
+            frame(50.0, 50.0, Point2::from_mm(50.0, 50.0)),
+            frame(91.3, 57.77, Point2::from_mm(91.3, 57.77)),
+        ];
+        assert_eq!(owner_of(&objects, Point2::from_mm(91.0, 60.0)), 1);
+        // Just outside every box, the nearest takes it.
+        assert_eq!(owner_of(&objects, Point2::from_mm(41.9, 50.0)), 0);
+        let made = supports_by_object(
+            &outlines,
+            &objects,
+            Point2::from_mm(0.0, 0.0),
+            0.2,
+            0.2,
+            &support,
+            &edge_support::Annotations::default(),
+        )
+        .unwrap();
+        // Each shelf's supports are the same, moved with it.
+        let (dx, dy) = (
+            objects[1].2.x - objects[0].2.x,
+            objects[1].2.y - objects[0].2.y,
+        );
+        let mut held = 0;
+        for layer in &made {
+            let mut first: Vec<Vec<(i64, i64)>> = Vec::new();
+            let mut second: Vec<Vec<(i64, i64)>> = Vec::new();
+            for path in layer {
+                let at = path.points[0];
+                if at.x < Point2::from_mm(70.0, 0.0).x {
+                    first.push(path.points.iter().map(|p| (p.x, p.y)).collect());
+                } else {
+                    second.push((path.points.iter()).map(|p| (p.x - dx, p.y - dy)).collect());
+                }
+            }
+            held += first.len();
+            first.sort();
+            second.sort();
+            assert_eq!(first, second);
+        }
+        assert!(held > 0, "the shelves needed supports");
     }
 }

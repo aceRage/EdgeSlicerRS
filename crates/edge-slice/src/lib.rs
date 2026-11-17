@@ -196,9 +196,9 @@ pub struct LayerRegions {
 /// filled (the reference's `slice_closing_radius`; zero leaves them open).
 /// `planes` must be sorted ascending.
 ///
-/// The reference closes cracks within one object only. Here closing runs
-/// after bodies are united, so two separate objects standing closer than
-/// twice the radius are joined as well.
+/// The bodies are taken as one object: closing joins any two standing
+/// closer than twice the radius. [`slice_regions_by_object`] closes each
+/// object by itself, as the reference does.
 pub fn slice_regions(
     bodies: &[Body<'_>],
     planes: &[f64],
@@ -219,6 +219,39 @@ pub fn slice_regions_vase(
     closing_radius: Coord,
     largest_from: &[Option<usize>],
 ) -> Result<Vec<LayerRegions>, ClipError> {
+    slice_regions_by_object(bodies, &[], planes, closing_radius, largest_from, 0)
+}
+
+/// [`slice_regions_vase`], each object closed by itself and then
+/// simplified, as the reference makes each object's slices
+/// (TriangleMeshSlicer.cpp `slice_mesh_ex`, `make_expolygons`: united,
+/// grown and shrunk by the closing radius, then `ExPolygon::simplify` by
+/// the slicing resolution). `objects` gives each body's object; bodies
+/// with the same entry are one object, closed together, as the parts of
+/// one object are in the reference; an empty list makes every body one
+/// object. Two objects standing closer than twice the radius are not
+/// joined, but where they overlap they are still united afterwards.
+/// `simplify` is the largest a ring may be moved by dropping its points
+/// (Douglas-Peucker), zero for none.
+///
+/// The reference closes and simplifies each part (volume) by itself
+/// before uniting an object's parts. Here, with `simplify`, each body of
+/// an object of several is closed and simplified by itself, as the
+/// reference does each part, and the bodies are then united and closed
+/// together; an object of one body is closed, then simplified. A body is
+/// an object's parts in one filament, which are closed and simplified
+/// together. Closing the bodies together again joins an object's parts
+/// standing closer than twice the radius, which the reference does not:
+/// it keeps two parts 0.05 mm apart in one object, in one filament, as two
+/// outlines (measured).
+pub fn slice_regions_by_object(
+    bodies: &[Body<'_>],
+    objects: &[Option<usize>],
+    planes: &[f64],
+    closing_radius: Coord,
+    largest_from: &[Option<usize>],
+    simplify: Coord,
+) -> Result<Vec<LayerRegions>, ClipError> {
     let sliced: Vec<(Vec<Layer>, Option<Vec<Layer>>)> = bodies
         .iter()
         .enumerate()
@@ -232,6 +265,18 @@ pub fn slice_regions_vase(
             (solid, body.negative.map(|mesh| slice(mesh, planes)))
         })
         .collect();
+    // The objects, each with its bodies, in the order they first come.
+    let object_of = |at: usize| objects.get(at).copied().flatten();
+    let mut groups: Vec<(Option<usize>, Vec<usize>)> = Vec::new();
+    for at in 0..bodies.len() {
+        match groups
+            .iter_mut()
+            .find(|(object, _)| *object == object_of(at))
+        {
+            Some((_, members)) => members.push(at),
+            None => groups.push((object_of(at), vec![at])),
+        }
+    }
 
     let several = bodies
         .iter()
@@ -240,71 +285,41 @@ pub fn slice_regions_vase(
         .par_iter()
         .enumerate()
         .map(|(index, &z)| {
-            // Contours that need no carving go straight into the final union.
-            let mut plain: Vec<&Polygon> = Vec::new();
-            let mut carved: Vec<ExPolygon> = Vec::new();
             let mut open_chains = 0;
-            // Each filament's own material, kept apart when there are several.
-            let mut own: Vec<(usize, Vec<ExPolygon>)> = Vec::new();
-            for (body, (solid, negative)) in bodies.iter().zip(&sliced) {
-                let solid = &solid[index];
-                open_chains += solid.open_chains;
-                let negative = negative.as_ref().map(|layers| &layers[index]);
-                open_chains += negative.map_or(0, |layer| layer.open_chains);
-                let before = carved.len();
-                match negative.filter(|layer| !layer.polygons.is_empty()) {
-                    None => plain.extend(&solid.polygons),
-                    Some(negative) => carved.extend(edge_clip::difference(
-                        &edge_clip::union(&solid.polygons)?,
-                        &edge_clip::union(&negative.polygons)?,
-                    )?),
-                }
-                if several {
-                    let mut material = if carved.len() > before {
-                        carved[before..].to_vec()
-                    } else {
-                        edge_clip::union(&solid.polygons)?
-                    };
-                    match own
-                        .iter_mut()
-                        .find(|(filament, _)| *filament == body.filament)
-                    {
-                        Some((_, regions)) => regions.append(&mut material),
-                        None => own.push((body.filament, material)),
+            let mut regions = Vec::new();
+            let mut by_filament: Vec<(usize, Vec<ExPolygon>)> = Vec::new();
+            let mut cut_by_filament: Vec<(usize, Vec<ExPolygon>)> = Vec::new();
+            for (_, members) in &groups {
+                let object = object_layer(
+                    members.iter().map(|&at| (&bodies[at], &sliced[at])),
+                    index,
+                    several,
+                    closing_radius,
+                    simplify,
+                )?;
+                open_chains += object.open_chains;
+                regions.extend(object.regions);
+                for (into, from) in [
+                    (&mut by_filament, object.by_filament),
+                    (&mut cut_by_filament, object.cut_by_filament),
+                ] {
+                    for (filament, mut material) in from {
+                        match into.iter_mut().find(|(own, _)| *own == filament) {
+                            Some((_, regions)) => regions.append(&mut material),
+                            None => into.push((filament, material)),
+                        }
                     }
                 }
             }
-            let united = edge_clip::union(
-                plain
-                    .into_iter()
-                    .chain(carved.iter().flat_map(ExPolygon::rings)),
-            )?;
-            let regions = if closing_radius > 0 {
-                edge_clip::closing(&united, closing_radius, Join::MITER)?
-            } else {
-                united
-            };
-            // Shared out from the highest filament down, each taking what
-            // no higher one has; then each is let into the cracks that
-            // closing filled, so neighbours meet as the whole does.
-            own.sort_by_key(|(filament, _)| *filament);
-            let mut by_filament: Vec<(usize, Vec<ExPolygon>)> = Vec::with_capacity(own.len());
-            let mut taken: Vec<ExPolygon> = Vec::new();
-            let mut cut_by_filament = Vec::with_capacity(own.len());
-            for (filament, material) in own.into_iter().rev() {
-                let mut mine = edge_clip::union_ex(&material)?;
-                cut_by_filament.push((filament, mine.clone()));
-                if closing_radius > 0 {
-                    mine = edge_clip::offset(&mine, closing_radius, Join::MITER)?;
+            // Objects closed apart are united where they overlap.
+            if groups.len() > 1 {
+                regions = edge_clip::union_ex(&regions)?;
+                for (_, material) in by_filament.iter_mut().chain(&mut cut_by_filament) {
+                    *material = edge_clip::union_ex(material)?;
                 }
-                let mine =
-                    edge_clip::difference(&edge_clip::intersection(&mine, &regions)?, &taken)?;
-                taken.extend(mine.iter().cloned());
-                taken = edge_clip::union_ex(&taken)?;
-                by_filament.push((filament, mine));
+                by_filament.sort_by_key(|(filament, _)| *filament);
+                cut_by_filament.sort_by_key(|(filament, _)| *filament);
             }
-            by_filament.reverse();
-            cut_by_filament.reverse();
             Ok(LayerRegions {
                 z,
                 regions,
@@ -314,6 +329,107 @@ pub fn slice_regions_vase(
             })
         })
         .collect()
+}
+
+/// One object's layer, from its bodies and their cuts: what
+/// [`slice_regions_by_object`] gives for it alone.
+fn object_layer<'a, 'b: 'a>(
+    members: impl Iterator<Item = (&'a Body<'b>, &'a (Vec<Layer>, Option<Vec<Layer>>))>,
+    index: usize,
+    several: bool,
+    closing_radius: Coord,
+    simplify: Coord,
+) -> Result<LayerRegions, ClipError> {
+    let members: Vec<_> = members.collect();
+    // An object of several bodies has each closed and simplified by
+    // itself first, as the reference does each part.
+    let apart = simplify > 0 && members.len() > 1;
+    // Contours that need no carving go straight into the final union.
+    let mut plain: Vec<&Polygon> = Vec::new();
+    let mut carved: Vec<ExPolygon> = Vec::new();
+    let mut open_chains = 0;
+    // Each filament's own material, kept apart when there are several.
+    let mut own: Vec<(usize, Vec<ExPolygon>)> = Vec::new();
+    for (body, (solid, negative)) in members {
+        let solid = &solid[index];
+        open_chains += solid.open_chains;
+        let negative = negative.as_ref().map(|layers| &layers[index]);
+        open_chains += negative.map_or(0, |layer| layer.open_chains);
+        let before = carved.len();
+        match negative.filter(|layer| !layer.polygons.is_empty()) {
+            None if !apart => plain.extend(&solid.polygons),
+            None => carved.extend(edge_clip::union(&solid.polygons)?),
+            Some(negative) => carved.extend(edge_clip::difference(
+                &edge_clip::union(&solid.polygons)?,
+                &edge_clip::union(&negative.polygons)?,
+            )?),
+        }
+        if apart {
+            let mine = carved.split_off(before);
+            let mine = if closing_radius > 0 {
+                edge_clip::closing(&mine, closing_radius, Join::MITER)?
+            } else {
+                mine
+            };
+            carved.extend(edge_clip::simplify(&mine, simplify)?);
+        }
+        if several {
+            let mut material = if carved.len() > before {
+                carved[before..].to_vec()
+            } else {
+                edge_clip::union(&solid.polygons)?
+            };
+            match own
+                .iter_mut()
+                .find(|(filament, _)| *filament == body.filament)
+            {
+                Some((_, regions)) => regions.append(&mut material),
+                None => own.push((body.filament, material)),
+            }
+        }
+    }
+    let united = edge_clip::union(
+        plain
+            .into_iter()
+            .chain(carved.iter().flat_map(ExPolygon::rings)),
+    )?;
+    let regions = if closing_radius > 0 {
+        edge_clip::closing(&united, closing_radius, Join::MITER)?
+    } else {
+        united
+    };
+    let regions = if simplify > 0 && !apart {
+        edge_clip::simplify(&regions, simplify)?
+    } else {
+        regions
+    };
+    // Shared out from the highest filament down, each taking what
+    // no higher one has; then each is let into the cracks that
+    // closing filled, so neighbours meet as the whole does.
+    own.sort_by_key(|(filament, _)| *filament);
+    let mut by_filament: Vec<(usize, Vec<ExPolygon>)> = Vec::with_capacity(own.len());
+    let mut taken: Vec<ExPolygon> = Vec::new();
+    let mut cut_by_filament = Vec::with_capacity(own.len());
+    for (filament, material) in own.into_iter().rev() {
+        let mut mine = edge_clip::union_ex(&material)?;
+        cut_by_filament.push((filament, mine.clone()));
+        if closing_radius > 0 {
+            mine = edge_clip::offset(&mine, closing_radius, Join::MITER)?;
+        }
+        let mine = edge_clip::difference(&edge_clip::intersection(&mine, &regions)?, &taken)?;
+        taken.extend(mine.iter().cloned());
+        taken = edge_clip::union_ex(&taken)?;
+        by_filament.push((filament, mine));
+    }
+    by_filament.reverse();
+    cut_by_filament.reverse();
+    Ok(LayerRegions {
+        z: 0.0,
+        regions,
+        by_filament,
+        cut_by_filament,
+        open_chains,
+    })
 }
 
 /// Keeps the outline of largest area, holes included in the reckoning,
@@ -662,6 +778,89 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(run(1), run(8));
+    }
+
+    #[test]
+    fn slices_are_simplified_by_the_tolerance_each_body_by_itself() {
+        // A block whose front bows out by 2 um in the middle: within the
+        // 2.5 um tolerance, so the bend goes; 10 um is kept.
+        let bowed = |bow: f32| {
+            edge_mesh::primitives::prism(
+                &[(
+                    vec![
+                        [0.0, 0.0],
+                        [5.0, -bow],
+                        [10.0, 0.0],
+                        [10.0, 10.0],
+                        [0.0, 10.0],
+                    ],
+                    Vec::new(),
+                )],
+                0.0,
+                10.0,
+            )
+            .unwrap()
+        };
+        let (slight, marked) = (bowed(0.002), bowed(0.01));
+        let tolerance = edge_geom::scaled(0.0025);
+        let count = |mesh: &Mesh, simplify: Coord| {
+            let body = Body {
+                solid: mesh,
+                negative: None,
+                filament: 1,
+            };
+            let layers =
+                slice_regions_by_object(&[body], &[Some(0)], &[5.0], 0, &[], simplify).unwrap();
+            layers[0].regions[0].contour.points.len()
+        };
+        assert_eq!(count(&slight, 0), 5);
+        assert_eq!(count(&slight, tolerance), 4);
+        assert_eq!(count(&marked, tolerance), 5);
+        // Two bodies of one object are each simplified before they are
+        // put together.
+        let other = Mesh::from_triangle_soup(cuboid([20.0, 0.0, 0.0], [30.0, 10.0, 10.0]));
+        let bodies = [&slight, &other].map(|solid| Body {
+            solid,
+            negative: None,
+            filament: 1,
+        });
+        let layers =
+            slice_regions_by_object(&bodies, &[Some(0), Some(0)], &[5.0], 0, &[], tolerance)
+                .unwrap();
+        let mut points: Vec<usize> = (layers[0].regions.iter())
+            .map(|region| region.contour.points.len())
+            .collect();
+        points.sort_unstable();
+        assert_eq!(points, [4, 4]);
+    }
+
+    #[test]
+    fn closing_joins_the_parts_of_one_object_and_not_two_objects() {
+        let (left, right) = (
+            Mesh::from_triangle_soup(cube(0.0, 10.0)),
+            Mesh::from_triangle_soup(cuboid([10.05, 0.0, 0.0], [20.0, 10.0, 10.0])),
+        );
+        let bodies = [&left, &right].map(|solid| Body {
+            solid,
+            negative: None,
+            filament: 1,
+        });
+        let radius = edge_geom::scaled(0.049);
+        let one = slice_regions_by_object(&bodies, &[Some(0), Some(0)], &[5.0], radius, &[], 0);
+        assert_eq!(shapes(&one.unwrap()[0]), [(200.0, 0)]);
+        let two = slice_regions_by_object(&bodies, &[Some(0), Some(1)], &[5.0], radius, &[], 0);
+        let mut apart = shapes(&two.unwrap()[0]);
+        apart.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert_eq!(apart, [(99.5, 0), (100.0, 0)]);
+        // Objects that overlap are still one region.
+        let over = Mesh::from_triangle_soup(cuboid([5.0, 0.0, 0.0], [15.0, 10.0, 10.0]));
+        let bodies = [&left, &over].map(|solid| Body {
+            solid,
+            negative: None,
+            filament: 1,
+        });
+        let both = slice_regions_by_object(&bodies, &[Some(0), Some(1)], &[5.0], radius, &[], 0);
+        assert_eq!(shapes(&both.unwrap()[0]), [(150.0, 0)]);
     }
 }
 

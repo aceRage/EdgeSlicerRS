@@ -174,7 +174,7 @@ fn plain_3mf_takes_names_from_model_settings() {
 }
 
 /// A project printed in several filaments says which part is printed in
-/// which, and its bodies come one to a filament.
+/// which, and its bodies come one to an object and filament.
 #[test]
 fn parts_keep_their_filaments() {
     let project = Project::open(reference().join("tests").join("mcbrim_test.3mf")).unwrap();
@@ -188,8 +188,12 @@ fn parts_keep_their_filaments() {
     );
     let plate = project.plate_index(1);
     let bodies = project.bodies(plate);
-    let used: Vec<usize> = bodies.iter().map(|body| body.filament).collect();
+    // One body to an object and filament, in ascending order of filament.
+    let mut used: Vec<usize> = bodies.iter().map(|body| body.filament).collect();
+    assert!(used.is_sorted());
+    used.dedup();
     assert_eq!(used, [2, 3, 4, 7]);
+    assert!(bodies.iter().all(|body| body.object.is_some()));
     assert!(bodies.iter().all(|body| !body.solid.triangles.is_empty()));
     // Together they are the same material as the plate's one mesh.
     let all: usize = bodies.iter().map(|body| body.solid.triangles.len()).sum();
