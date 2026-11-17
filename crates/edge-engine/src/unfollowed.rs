@@ -327,8 +327,6 @@ const SILENT: &[Silent] = &[
         Is("1"),
         &["tree_support_brim_width"],
     ),
-    // Print.cpp l.6727.
-    silent("combine_brims", Is("0")),
     // Fill.
     // Fill.cpp l.1527: set from 0 degrees up.
     silent("bottom_layer_direction", Below(0.0, "-1")),
