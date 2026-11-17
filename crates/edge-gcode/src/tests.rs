@@ -381,6 +381,75 @@ fn a_small_wall_loop_goes_at_its_own_speed() {
     assert_eq!(speeds(&unset), [100.0, 50.0]);
 }
 
+#[test]
+fn outer_wall_speeds_leave_the_resonance_band_the_nearer_way() {
+    let band = (70.0, 120.0);
+    // Above the band and at its top: kept.
+    assert_eq!(out_of_resonance(200.0, band, None), 200.0);
+    assert_eq!(out_of_resonance(120.0, band, None), 120.0);
+    // Its lower half down to the bottom, its upper half up to the top.
+    assert_eq!(out_of_resonance(90.0, band, None), 70.0);
+    assert_eq!(out_of_resonance(95.0, band, None), 120.0);
+    assert_eq!(out_of_resonance(110.0, band, None), 120.0);
+    // Below the band: kept.
+    assert_eq!(out_of_resonance(50.0, band, None), 50.0);
+    // Up to the top only where the hot end melts that much.
+    assert_eq!(out_of_resonance(110.0, band, Some(115.0)), 70.0);
+    assert_eq!(out_of_resonance(110.0, band, Some(125.0)), 120.0);
+
+    // Through the writer: the outer wall's own lines, on a layer above
+    // the first, the inner wall's not.
+    let loops = [wall(0.0, 0.0, 10.0, 0), wall(0.5, 0.5, 9.0, 1)];
+    let islands = [0..2];
+    let feeds = |settings: &PrintSettings| -> Vec<(String, f64)> {
+        let layer = one_layer(&loops, &islands, &[])[0];
+        let layers = [layer, Layer { z: 0.4, ..layer }];
+        let (text, _) = print(&layers, settings);
+        let second = text.split(";LAYER_CHANGE").last().unwrap().to_owned();
+        let (mut kind, mut feed) = (String::new(), 0.0);
+        let mut found = Vec::new();
+        for line in second.lines() {
+            if let Some(name) = line.strip_prefix(";TYPE:") {
+                kind = name.to_owned();
+            }
+            if line.starts_with("G1 ") {
+                feed = word(line, 'F').unwrap_or(feed);
+                if word(line, 'E').is_some_and(|e| e > 0.0) && word(line, 'X').is_some() {
+                    found.push((kind.clone(), feed / 60.0));
+                }
+            }
+        }
+        found.dedup();
+        found
+    };
+    let base = PrintSettings {
+        outer_wall_speed: 100.0,
+        inner_wall_speed: 100.0,
+        ..basic()
+    };
+    let wall_speeds = |settings: &PrintSettings| {
+        let found = feeds(settings);
+        ["Outer wall", "Inner wall"].map(|kind| {
+            found
+                .iter()
+                .find(|(name, _)| name == kind)
+                .map(|(_, speed)| *speed)
+                .unwrap()
+        })
+    };
+    assert_eq!(wall_speeds(&base), [100.0, 100.0]);
+    let avoiding = PrintSettings {
+        resonance_avoidance: Some(band),
+        ..base.clone()
+    };
+    assert_eq!(wall_speeds(&avoiding), [120.0, 100.0]);
+    let lower = PrintSettings {
+        outer_wall_speed: 80.0,
+        ..avoiding
+    };
+    assert_eq!(wall_speeds(&lower), [70.0, 100.0]);
+}
+
 /// The x each wall in `text` starts at, less the island's own: 0 for the
 /// outermost of [`wall`]'s squares nested half a millimetre apart.
 fn wall_depths(text: &str) -> Vec<usize> {
@@ -1200,6 +1269,10 @@ fn a_move_off_an_overhanging_wall_retracts_even_in_the_shelter() {
 
 /// A wall and one fill line on each of `count` layers, 0.2 mm apart.
 fn printed(count: usize, settings: &PrintSettings) -> String {
+    printed_with_summary(count, settings).0
+}
+
+fn printed_with_summary(count: usize, settings: &PrintSettings) -> (String, Summary) {
     let loops = [wall(0.0, 0.0, 10.0, 0)];
     let fill = [line((2.0, 2.0), (8.0, 2.0), Role::SparseInfill)];
     let layers: Vec<Layer<'_>> = (0..count)
@@ -1223,7 +1296,7 @@ fn printed(count: usize, settings: &PrintSettings) -> String {
             below: &[],
         })
         .collect();
-    print(&layers, settings).0
+    print(&layers, settings)
 }
 
 fn profile(templates: &[(&str, &str)]) -> PrintSettings {
@@ -1398,6 +1471,44 @@ fn fan_runs_faster_on_layers_that_take_less_time() {
         ..basic()
     };
     assert_eq!(fan(&never), ["M106 S0", "M106 S0"]);
+}
+
+#[test]
+fn a_feature_s_acceleration_is_set_before_its_kind_is_said() {
+    // GCode.cpp `_extrude`: the acceleration (and jerk) are set after the
+    // travel and the unretraction and before the `;TYPE:` and `;WIDTH:`
+    // tags, so no acceleration line comes between a feature's tag and its
+    // first move.
+    for form in [AccelerationForm::Klipper, AccelerationForm::PrintTravel] {
+        let settings = PrintSettings {
+            acceleration_form: form,
+            default_acceleration: 10000.0,
+            outer_wall_acceleration: 5000.0,
+            sparse_infill_acceleration: FloatOrPercent::Value(2000.0),
+            travel_acceleration: 12000.0,
+            ..basic()
+        };
+        let text = printed(2, &settings);
+        let second = text.split(";LAYER_CHANGE").last().unwrap();
+        let mut tagged = false;
+        let mut before_tags = Vec::new();
+        for line in second.lines() {
+            if line.starts_with(";TYPE:") {
+                tagged = true;
+            } else if line.starts_with("G1 ") {
+                tagged = false;
+            } else if line.starts_with("SET_VELOCITY_LIMIT") || line.starts_with("M204 P") {
+                assert!(!tagged, "{form:?}: {line} after a feature's tag:\n{second}");
+                before_tags.push(line.to_owned());
+            }
+        }
+        // The outer wall's and the infill's were both set, before their tags.
+        assert!(
+            before_tags.iter().any(|line| line.contains("5000"))
+                && before_tags.iter().any(|line| line.contains("2000")),
+            "{form:?}: {before_tags:?}"
+        );
+    }
 }
 
 #[test]
@@ -4618,6 +4729,49 @@ fn the_timelapse_picture_is_taken_at_the_farthest_point() {
         );
         assert!(second.find("; TIMELAPSE").unwrap() < second.find("; LAYER CHANGE").unwrap());
     }
+}
+
+/// The reference's cooling follows a timelapse template's moves
+/// (CoolingBuffer.cpp `parse`), so the travel back from where the
+/// template left the head counts towards the layer's time and the
+/// travelled length; an arc that ends where it starts is a whole turn
+/// (Circle.cpp `calc_arc_radian`).
+#[test]
+fn the_way_back_from_a_timelapse_template_is_timed() {
+    let moves = template_seconds("G2 Z1.6 I0.86 J0.86 P1 F20000", [5.0, 5.0], 1.2, 600.0);
+    let turn = (TAU * 0.86f64.hypot(0.86)).hypot(0.4);
+    assert!(
+        (moves.seconds - turn / (20000.0 / 60.0)).abs() < 1e-9,
+        "{moves:?}"
+    );
+    assert_eq!((moves.end, moves.feedrate), ([5.0, 5.0], 20000.0));
+    let moves = template_seconds(
+        "G1 X0 Y128 F18000\n    G0 Z1.6 F4000\nG91\nG1 X-10\nG90",
+        [0.0, 0.0],
+        1.2,
+        600.0,
+    );
+    assert_eq!((moves.end, moves.feedrate), ([-10.0, 128.0], 4000.0));
+
+    let with = |template: &str| {
+        let settings = PrintSettings {
+            time_lapse: Some((template.into(), Timelapse::LayerStart { bambu: true })),
+            ..bambu(&[("start", "PRINT_START")])
+        };
+        printed_with_summary(2, &settings).1
+    };
+    let still = with("; TIMELAPSE");
+    let away = with("; TIMELAPSE\nG1 X100 Y100 F6000");
+    // The template's own move, and the way back from (100, 100) to the
+    // fill, each counted.
+    let template = 10.0f64.hypot(10.0).max(90.0f64.hypot(90.0));
+    assert!(
+        away.travel_mm - still.travel_mm > 100.0,
+        "{} against {}",
+        away.travel_mm,
+        still.travel_mm
+    );
+    assert!(away.seconds - still.seconds > template / 100.0, "{away:?}");
 }
 
 /// The farthest point is an outer wall's; on a layer with none, the

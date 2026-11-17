@@ -317,6 +317,10 @@ impl Writer<'_> {
             return Ok(());
         }
         self.prime()?;
+        // The acceleration before the kind, as for a line laid.
+        let first_layer = self.state.first_layer;
+        let acceleration = self.motion(role, flow, first_layer).acceleration;
+        self.accelerate(acceleration)?;
         if self.state.role != Some(role) {
             if self.state.role.map(role_name) != Some(role_name(role)) {
                 writeln!(self.out, "{}{}", self.tags().feature, role_name(role))?;
@@ -327,9 +331,6 @@ impl Writer<'_> {
             self.width_tag(flow.width)?;
             self.state.width = flow.width;
         }
-        let first_layer = self.state.first_layer;
-        let acceleration = self.motion(role, flow, first_layer).acceleration;
-        self.accelerate(acceleration)?;
         if !self.extruding {
             self.extruding = true;
             self.timing.fixed = 0.0;
