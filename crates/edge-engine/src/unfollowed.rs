@@ -340,9 +340,6 @@ const SILENT: &[Silent] = &[
     silent("sparse_infill_smooth_factor", Is("0%")),
     // Fill.cpp l.1439.
     silent("undertop_surface_pattern", Is("default")),
-    // PrintObject.cpp l.3126.
-    silent("bottom_surface_density", Is("100%")),
-    silent("top_surface_density", Is("100%")),
     // PrintObject.cpp l.2289: with top surface expansion on.
     with(
         "top_surface_expansion_margin",

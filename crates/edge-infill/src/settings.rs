@@ -118,6 +118,11 @@ pub struct InfillSettings {
     /// them to `solid_infill_direction`).
     pub top_layer_direction: Option<f64>,
     pub bottom_layer_direction: Option<f64>,
+    /// How closely top and bottom surfaces are laid, from 0 to 1
+    /// (`top_surface_density`, from 0%; `bottom_surface_density`, from
+    /// 10%).
+    pub top_surface_density: f64,
+    pub bottom_surface_density: f64,
     /// Whether the fill keeps one direction on every layer rather than
     /// turning a quarter on each odd one: Z contouring's
     /// `zaa_dont_alternate_fill_direction`, which counts only with
@@ -255,6 +260,8 @@ impl Default for InfillSettings {
             solid_infill_direction: 45.0,
             top_layer_direction: None,
             bottom_layer_direction: None,
+            top_surface_density: 1.0,
+            bottom_surface_density: 1.0,
             steady_direction: false,
             lateral_lattice_angles: (-45.0, 45.0),
             infill_shift_step: 0.4,
@@ -383,6 +390,30 @@ impl InfillSettings {
         let surface_direction = |key: &str| -> Result<Option<f64>, ConfigError> {
             Ok(settings.float(key)?.filter(|degrees| *degrees >= 0.0))
         };
+        // A percentage within the reference's bounds (PrintConfig.cpp:
+        // `top_surface_density` from 0, `bottom_surface_density` from 10,
+        // both to 100), which it will not slice outside.
+        let surface_density = |key: &str, least: f64| -> Result<f64, ConfigError> {
+            match settings.float_or_percent(key)? {
+                Some(FloatOrPercent::Percent(percent) | FloatOrPercent::Value(percent)) => {
+                    if !(least..=100.0).contains(&percent) {
+                        return Err(ConfigError::BadValue {
+                            key: key.into(),
+                            found: percent.to_string(),
+                            expected: if least > 0.0 {
+                                "from 10% to 100%"
+                            } else {
+                                "from 0% to 100%"
+                            },
+                        });
+                    }
+                    Ok(percent / 100.0)
+                }
+                None => Ok(1.0),
+            }
+        };
+        let top_surface_density = surface_density("top_surface_density", 0.0)?;
+        let bottom_surface_density = surface_density("bottom_surface_density", 10.0)?;
         // Asked for and not done: said, never passed over.
         let mut unsupported = Vec::new();
         if let Some(FloatOrPercent::Value(value) | FloatOrPercent::Percent(value)) =
@@ -485,6 +516,16 @@ impl InfillSettings {
             .unwrap_or("each_surface")
             .to_owned();
         let mut spiral_notes = Vec::new();
+        // At half density and less the reference joins the spiral's
+        // pieces along the surface's edge (FillPlanePath.cpp,
+        // `connect_infill` unless `density > 0.5`); here they are left
+        // apart.
+        if top_archimedean && top_surface_density > 0.0 && top_surface_density <= 0.5 {
+            spiral_notes.push(format!(
+                "top_surface_density \"{}%\": the pieces of the top surface's spiral are not joined along its edge",
+                top_surface_density * 100.0
+            ));
+        }
         if top_archimedean {
             // Only the default order, and the spiral turning about each
             // surface's own middle, are ported.
@@ -602,6 +643,8 @@ impl InfillSettings {
             solid_infill_direction: settings
                 .float("solid_infill_direction")?
                 .unwrap_or(defaults.solid_infill_direction),
+            top_surface_density,
+            bottom_surface_density,
             top_layer_direction: surface_direction("top_layer_direction")?,
             bottom_layer_direction: surface_direction("bottom_layer_direction")?,
             steady_direction: steady_direction(settings)?,
@@ -949,6 +992,8 @@ impl InfillSettings {
             solid_angle: self.solid_infill_direction.to_radians(),
             top_angle: self.top_layer_direction.map(f64::to_radians),
             bottom_angle: self.bottom_layer_direction.map(f64::to_radians),
+            top_density: self.top_surface_density,
+            bottom_density: self.bottom_surface_density,
             alternate: !self.steady_direction,
             // Both are shares of the line spacing when given as percentages
             // (Fill.cpp), and an anchor is never longer than a join may be.
@@ -1234,6 +1279,27 @@ mod tests {
         .unwrap();
         assert_eq!(centred.unsupported.len(), 2);
         assert!(centred.unsupported[1].starts_with("bottom_surface_fill_order \"inward\""));
+    }
+
+    #[test]
+    fn top_and_bottom_surface_densities_are_read_within_bounds() {
+        let read = |json: &str| InfillSettings::from_settings(&Settings::from_json(json).unwrap());
+        let set =
+            read(r#"{"top_surface_density": "0%", "bottom_surface_density": "40%"}"#).unwrap();
+        let params = set.params(0.2, false).unwrap();
+        assert_eq!((params.top_density, params.bottom_density), (0.0, 0.4));
+        assert!(set.unsupported.is_empty());
+        let unset = read("{}").unwrap().params(0.2, false).unwrap();
+        assert_eq!((unset.top_density, unset.bottom_density), (1.0, 1.0));
+        // The reference will not slice below 10% for a bottom.
+        assert!(read(r#"{"bottom_surface_density": "5%"}"#).is_err());
+        assert!(read(r#"{"top_surface_density": "120%"}"#).is_err());
+        // A spiral top at half density or less is joined along its edge
+        // there, and not here.
+        let spiral =
+            read(r#"{"top_surface_pattern": "archimedeanchords", "top_surface_density": "50%"}"#)
+                .unwrap();
+        assert!(spiral.unsupported[0].starts_with("top_surface_density"));
     }
 
     #[test]

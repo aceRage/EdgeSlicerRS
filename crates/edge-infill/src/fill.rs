@@ -55,6 +55,14 @@ pub struct FillParams {
     /// over air as a bottom surface.
     pub top_angle: Option<f64>,
     pub bottom_angle: Option<f64>,
+    /// How closely the lines of top surfaces and of bottom surfaces are
+    /// laid, from 0 to 1 (`top_surface_density`, `bottom_surface_density`):
+    /// below 1 they keep their width and lie that much further apart,
+    /// on the object's grid as any fill short of full does; a top of
+    /// none is left to its walls (Fill.cpp `group_fills`, "a 0% top
+    /// surface density means walls only").
+    pub top_density: f64,
+    pub bottom_density: f64,
     /// Whether lines laid in the fill's own direction turn a quarter on
     /// odd layers, as they do unless Z contouring keeps them steady
     /// ([`crate::InfillSettings::steady_direction`]).
@@ -454,6 +462,7 @@ pub fn fill_within(
         let (flow, role, spacing, lay, angles): (Flow, Role, f64, Lay, &[f64]) = match surface.kind
         {
             SurfaceKind::Sparse if params.density <= 0.0 => continue,
+            SurfaceKind::Top if params.top_density <= 0.0 => continue,
             SurfaceKind::Sparse => match params.pattern {
                 Pattern::Lines => (
                     params.sparse,
@@ -521,7 +530,7 @@ pub fn fill_within(
                     joined: params.top_joined,
                     ordered: params.top_ordered,
                     placed: Placed::Fitted,
-                    density: 1.0,
+                    density: params.top_density,
                 },
                 &[params.top_angle.unwrap_or(params.solid_angle + turned)],
             ),
@@ -574,7 +583,7 @@ pub fn fill_within(
                     joined: params.bottom_joined,
                     ordered: params.bottom_ordered,
                     placed: Placed::Fitted,
-                    density: 1.0,
+                    density: params.bottom_density,
                 },
                 &[params.bottom_angle.unwrap_or(params.solid_angle + turned)],
             ),
@@ -841,8 +850,14 @@ pub fn fill_within(
                 // `_infill_direction` works the angle in single precision.
                 let along = params.top_angle.unwrap_or(params.solid_angle);
                 let angle = f64::from(along as f32 + std::f32::consts::FRAC_PI_2);
-                for chords in spiral_chords(&inside, angle, flow.spacing, params.flow_calib_order)?
-                {
+                // Short of full density the spiral's turns lie that much
+                // further apart (FillPlanePath.cpp, `spacing / density`).
+                for chords in spiral_chords(
+                    &inside,
+                    angle,
+                    (flow.spacing, params.top_density),
+                    params.flow_calib_order,
+                )? {
                     for (index, points) in chords.into_iter().enumerate() {
                         paths.push(ExtrusionPath {
                             points,
@@ -1095,6 +1110,8 @@ pub fn fill_within(
             // Fill laid thinner than solid has no gaps filled
             // (FillBase.cpp `_create_gap_fill`, `params.density >= 1`).
             (_, SurfaceKind::InternalSolid) if params.solid_density(layer_index) < 1.0 => false,
+            (_, SurfaceKind::Top) if params.top_density < 1.0 => false,
+            (_, SurfaceKind::Bottom) if params.bottom_density < 1.0 => false,
             (_, SurfaceKind::Top | SurfaceKind::Bottom) => true,
             (GapFillTarget::Everywhere, SurfaceKind::InternalSolid) => true,
             _ => false,
@@ -1229,7 +1246,7 @@ fn rotated(point: Point2, angle: f64) -> Point2 {
 fn spiral_chords(
     areas: &[ExPolygon],
     angle: f64,
-    spacing: f64,
+    (spacing, density): (f64, f64),
     calibration: bool,
 ) -> Result<Vec<Vec<Vec<Point2>>>, FillError> {
     /// libslic3r's `SCALED_EPSILON`.
@@ -1278,7 +1295,7 @@ fn spiral_chords(
                 y: high.y + SCALED_EPSILON,
             },
         );
-        let pattern = curves::plane_path(curves::Curve::Archimedean, bounds, spacing, 1.0);
+        let pattern = curves::plane_path(curves::Curve::Archimedean, bounds, spacing, density);
         if pattern.first().is_none_or(|line| line.len() < 2) {
             continue;
         }
@@ -1564,6 +1581,8 @@ mod tests {
             solid_angle: 45f64.to_radians(),
             top_angle: None,
             bottom_angle: None,
+            top_density: 1.0,
+            bottom_density: 1.0,
             alternate: true,
             sparse_link_max: 0.0,
             sparse_anchor: 0.0,
@@ -2499,6 +2518,56 @@ mod tests {
         let mut gaps: Vec<f64> = across.windows(2).map(|pair| pair[1] - pair[0]).collect();
         gaps.sort_by(f64::total_cmp);
         (gaps[gaps.len() / 2], across.len())
+    }
+
+    #[test]
+    fn top_and_bottom_surfaces_short_of_full_lie_further_apart() {
+        let full = params(Pattern::Lines, 0.2);
+        let thin = FillParams {
+            top_density: 0.6,
+            bottom_density: 0.5,
+            gap_fill: GapFillTarget::Everywhere,
+            ..full
+        };
+        for (kind, share, flow) in [
+            (SurfaceKind::Top, 0.6, full.top),
+            (SurfaceKind::Bottom, 0.5, full.solid),
+        ] {
+            let area = [surface(kind, 20.0)];
+            let usual = fill(&area, 1, &full).unwrap();
+            let thinned = fill(&area, 1, &thin).unwrap();
+            let angle = 135f64.to_radians();
+            let (pitch, _) = pitch_of(&thinned, angle);
+            // On the grid at the pitch over the density, each line as
+            // wide as ever.
+            assert!((pitch - flow.spacing / share).abs() < 1e-3, "{pitch}");
+            assert!(thinned.iter().all(|line| line.flow == flow));
+            let laid = length(&thinned) / length(&usual);
+            assert!((laid - share).abs() < 0.04, "{kind:?} {laid}");
+            // What thinned lines leave bare is not gap filled.
+            let bare = fill_within(
+                &area,
+                1,
+                &thin,
+                &|_| Frame {
+                    origin: thin.origin,
+                    bounds: None,
+                },
+                &[area[0].area.clone()],
+            )
+            .unwrap();
+            assert!(bare.iter().all(|path| path.role != Role::GapFill));
+        }
+        // A top of none is left to its walls.
+        let none = FillParams {
+            top_density: 0.0,
+            ..full
+        };
+        assert!(
+            fill(&[surface(SurfaceKind::Top, 20.0)], 1, &none)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
