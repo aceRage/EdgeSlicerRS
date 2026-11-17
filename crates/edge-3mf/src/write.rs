@@ -50,7 +50,7 @@ use crate::{
 /// plates, settings and presets) only when its `Application` names
 /// EdgeSlicer, Snapmaker Orca or Bambu Studio (bbs_3mf.cpp
 /// `_handle_end_metadata`), and this is the reference's own layout.
-pub const REFERENCE_VERSION: &str = "2.4.9.0";
+pub const REFERENCE_VERSION: &str = "2.4.9.3";
 
 const MODEL: &str = "3D/3dmodel.model";
 const MODEL_RELS: &str = "3D/_rels/3dmodel.model.rels";

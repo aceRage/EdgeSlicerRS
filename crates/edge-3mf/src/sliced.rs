@@ -229,7 +229,7 @@ impl PlateBoxes {
 }
 
 /// The reference's version as its slice information heads it
-/// (`convert_to_full_version`: "02.04.09.00").
+/// (`convert_to_full_version`: "02.04.09.03").
 pub(crate) fn full_version() -> String {
     let parts: Vec<String> = REFERENCE_VERSION
         .split('.')

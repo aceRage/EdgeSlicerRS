@@ -196,6 +196,9 @@ const SILENT: &[Silent] = &[
             "mixed_filament_pointillism_pixel_size",
             "mixed_filament_region_collapse",
             "mixed_filament_surface_indentation",
+            // MixedSublayer.cpp `mixed_sublayer_effective_method`: how a
+            // mixed filament's rows are split into sublayers.
+            "enable_mixed_color_sublayer",
         ],
     ),
     // EdgeSlicer's per-nozzle processes and nozzle rack (NozzleProcess.cpp,
@@ -227,7 +230,18 @@ const SILENT: &[Silent] = &[
     silent("filament_rack_nozzle_diameter", Blank),
     silent("filament_rack_nozzle_slot", Blank),
     silent("filament_side_pin", Blank),
+    // Rack hotends taken one by one as extruders (Bambu Lab H3C): the
+    // pre-cooling, tool change and time estimate of GCode.cpp,
+    // PreCoolingInjector.cpp and GCodeProcessor.cpp. The reference also
+    // takes a printer of one extruder and more than one rack nozzle so
+    // (PrintConfig.cpp `hotend_as_extruder`); that is said by its rack
+    // settings.
+    silent("handle_hotend_as_extruder", Is("0")),
     // Support.
+    // Print.cpp `resolve_support_interface_temperatures`: the interface
+    // filament printed at this temperature, only where it prints nothing
+    // but support, so never with one filament printing.
+    silent("support_interface_nozzle_temperature", Is("0")).many(Many::Printing),
     // SupportParameters.hpp l.237: woven interface layers.
     gate(
         "support_interface_interlock",
@@ -279,8 +293,20 @@ const SILENT: &[Silent] = &[
     ),
     // PrintObject.cpp l.554.
     silent("separated_infills", Is("0")),
+    // CurvedTops.cpp: top surfaces bent to follow the model's slope.
+    gate(
+        "curved_tops_enabled",
+        Is("0"),
+        &["curved_tops_layers", "curved_tops_max_angle"],
+    ),
+    // ContourZ.cpp l.416: the Z contour's added points thinned to a
+    // number of moves a second.
+    with("zaa_max_segment_rate", Is("0"), "zaa_enabled", Is("0")),
     // Walls: PerimeterGenerator.cpp l.346.
     silent("offset_layers", Is("0")),
+    // Travel: GCode.cpp l.13362, a retraction on leaving an outer wall
+    // however short the travel.
+    silent("retract_after_outer_wall", Is("0")),
     // Order of objects: GCode.cpp l.3711.
     silent("print_order", Is("default")),
     // G-code of the profile's own: GCode.cpp l.11741, l.4345.
@@ -569,11 +595,15 @@ mod tests {
             "filament_nozzle_map",
             "filament_pre_cooling_temperature",
             "filament_pre_cooling_temperature_nc",
+            // PreCoolingInjector.cpp l.126, l.205: with enable_pre_heating,
+            // on Bambu printers of two extruders or rack hotends.
+            "filament_pre_heating_enabled",
             "filament_preheat_temperature_delta",
             "filament_retract_length_nc",
             "filament_volume_map",
             "group_algo_with_time",
             "hotend_cooling_rate",
+            "hotend_cooling_rate_on_rack",
             "hotend_heating_rate",
             "infill_instead_top_bottom_surfaces",
             "infill_lock_depth",
@@ -705,23 +735,52 @@ mod tests {
         pub const TOWER: &[&str] = &[
             "cooling_tube_length",
             "cooling_tube_retraction",
+            "enable_tower_interface_cooldown_during_tower",
             "extra_loading_move",
+            "filament_adhesiveness_category",
+            "filament_change_length",
+            "filament_change_length_nc",
             "filament_cooling_final_speed",
             "filament_cooling_initial_speed",
             "filament_cooling_moves",
+            "filament_idle_travel_cooling_enabled",
             "filament_loading_speed",
             "filament_loading_speed_start",
+            "filament_prime_tower_speed_factor_curve",
+            "filament_prime_volume",
+            "filament_prime_volume_nc",
+            "filament_ramming_travel_time",
+            "filament_ramming_travel_time_nc",
+            "filament_ramming_volumetric_speed",
+            "filament_ramming_volumetric_speed_nc",
             "filament_stamping_distance",
             "filament_stamping_loading_speed",
             "filament_toolchange_delay",
             "filament_tower_interface_pre_extrusion_dist",
             "filament_tower_interface_pre_extrusion_length",
             "filament_tower_interface_print_temp",
+            "filament_tower_interface_purge_volume",
             "filament_unloading_speed",
             "filament_unloading_speed_start",
             "high_current_on_filament_swap",
             "local_z_wipe_tower_purge_lines",
             "parking_pos_retraction",
+            "prime_tower_enable_framework",
+            "prime_tower_feedrate_factor",
+            "prime_tower_flat_ironing",
+            "prime_tower_infill_gap",
+            "prime_tower_ironing_speed",
+            "prime_tower_line_ironing",
+            "prime_tower_side_scrape",
+            "prime_tower_side_scrape_along_length",
+            "prime_tower_side_scrape_face",
+            "prime_tower_side_scrape_height",
+            "prime_tower_side_scrape_length",
+            "prime_tower_side_scrape_point_spacing",
+            "prime_tower_side_scrape_speed",
+            "prime_tower_side_scrape_wall_gap",
+            "prime_tower_tail_slowdown_volume",
+            "prime_tower_tail_speed_factor",
             "prime_tower_wipe_distance",
             "prime_tower_wipe_speed",
             "printer_notes",
