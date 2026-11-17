@@ -554,6 +554,33 @@ impl Project {
         })
     }
 
+    /// The application the file says wrote it (the model's `Application`
+    /// metadata), when it says.
+    pub fn application(&self) -> Option<&str> {
+        let kept = self.kept.as_deref()?;
+        (kept.header.iter())
+            .find(|(name, _)| name == "Application")
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// Whether the reference reads the file as a whole project of its own
+    /// kind, with its plates and where everything stands on them, rather
+    /// than as a plain model: it was written by Bambu Studio, EdgeSlicer
+    /// or Snapmaker Orca (bbs_3mf.cpp `_handle_end_metadata`, by the
+    /// `Application` metadata) and carries printer settings (the command
+    /// line, Snapmaker_Orca.cpp l.2373, and the application's
+    /// `Plater::load_files`, ask for `printer_settings_id`).
+    pub fn is_reference_project(&self) -> bool {
+        let written_by_kin = self.application().is_some_and(|application| {
+            ["BambuStudio-", "EdgeSlicer-", "Snapmaker_Orca-"]
+                .iter()
+                .any(|prefix| application.starts_with(prefix))
+        });
+        written_by_kin
+            && (self.settings.as_ref())
+                .is_some_and(|settings| settings.get("printer_settings_id").is_some())
+    }
+
     /// Position in `plates` of the plate numbered `id`.
     pub fn plate_index(&self, id: u32) -> Option<usize> {
         self.plates.iter().position(|plate| plate.id == id)

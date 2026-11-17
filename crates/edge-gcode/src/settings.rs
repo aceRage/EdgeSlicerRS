@@ -84,6 +84,11 @@ pub struct PrintSettings {
     /// the line hangs over; zero for the wall's own speed.
     pub enable_overhang_speed: bool,
     pub overhang_speeds: [FloatOrPercent; 4],
+    /// Outer walls kept out of the printer's resonance band
+    /// (`resonance_avoidance`): a wall speed from `min_resonance_avoidance_speed`
+    /// up to below `max_resonance_avoidance_speed` is moved to the nearer
+    /// end of it (GCode.cpp `_extrude`, "resonance-avoidance").
+    pub resonance_avoidance: Option<(f64, f64)>,
     /// With this on, the reference prints a wall with nothing under it
     /// at the last of the overhang speeds, not at the bridge's
     /// (`slowdown_for_curled_perimeters`). Slowing over edges that have
@@ -440,6 +445,7 @@ impl Default for PrintSettings {
             unsupported_wall_last: false,
             enable_overhang_speed: true,
             overhang_speeds: [FloatOrPercent::Value(0.0); 4],
+            resonance_avoidance: None,
             slowdown_for_curled_perimeters: false,
             overhang_fan: Some(OverhangFan {
                 speed: 100.0,
@@ -846,6 +852,14 @@ impl PrintSettings {
             detect_overhang_wall: flag("detect_overhang_wall", defaults.detect_overhang_wall)?,
             unsupported_wall_last: flag("unsupported_wall_last", defaults.unsupported_wall_last)?,
             enable_overhang_speed: flag("enable_overhang_speed", defaults.enable_overhang_speed)?,
+            resonance_avoidance: if flag("resonance_avoidance", false)? {
+                Some((
+                    number("min_resonance_avoidance_speed", 70.0)?,
+                    number("max_resonance_avoidance_speed", 120.0)?,
+                ))
+            } else {
+                None
+            },
             overhang_speeds: [
                 listed_share("overhang_1_4_speed", defaults.overhang_speeds[0])?,
                 listed_share("overhang_2_4_speed", defaults.overhang_speeds[1])?,
