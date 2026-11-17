@@ -25,6 +25,7 @@ mod flush;
 mod inside;
 mod labels;
 mod overhang;
+mod pause;
 mod scarf;
 mod seam;
 mod seam_align;
@@ -253,6 +254,8 @@ pub struct Summary {
     pub timed: Option<TimeModel>,
     /// Layers slowed down to give them time to cool.
     pub slowed_layers: usize,
+    /// Layers paused to make up a minimum layer time (`pause.rs`).
+    pub paused_layers: usize,
     pub tool_changes: usize,
 }
 
@@ -725,6 +728,8 @@ pub fn write_timed(
         laid_layers: groups.len(),
         spiral_layer: false,
         object_layer: None,
+        current_run: None,
+        pause_target: 0.0,
     };
     let several = layers.iter().any(|layer| layer.filament > 0);
     writer.preamble(several)?;
@@ -795,6 +800,7 @@ pub fn write_timed(
                 writer.out.clear();
             }
             writer.object_layer = Some((number, run_layers[run]));
+            writer.current_run = Some(run);
         }
         reached.push((whole.len(), writer.state.summary.seconds));
         if index == 1 {
@@ -1440,6 +1446,12 @@ struct Writer<'a> {
     /// number in the file goes on counting (GCode.cpp `m_layer_index`,
     /// `layer.id()`). None for a print laid layer by layer.
     object_layer: Option<(usize, usize)>,
+    /// Printing object by object: the run of [`Plate::by_object`] being
+    /// written.
+    current_run: Option<usize>,
+    /// The minimum layer time the layer being laid is paused to make up,
+    /// in seconds (`pause.rs`); 0 where it is not paused.
+    pause_target: f64,
 }
 
 /// What the file says about the print outside its G-code.
@@ -3065,6 +3077,27 @@ impl Writer<'_> {
             overhang::Below::new(layer.below, (1.5 * widest).max(0.6))
         };
 
+        // A layer that may still be too short once slowed ends with a
+        // pause laid out for it, kept or dropped once its time is known
+        // (GCode.cpp `process_layer`, `min_layer_time_pause`): not on the
+        // first layer or the last, nor in spiral vase mode; as long as the
+        // longest any region on the layer asks for.
+        let last = match self.object_layer {
+            Some((number, count)) => number + 1 == count,
+            None => index + 1 == self.laid_layers,
+        };
+        self.pause_target = if own == 0 || last || s.spiral.is_some() {
+            0.0
+        } else {
+            (parts.iter())
+                .map(|part| {
+                    (part.region.and_then(|at| self.regions.get(at)))
+                        .or_else(|| self.all.get(part.filament))
+                        .map_or(0.0, |own| own.min_layer_time_pause)
+                })
+                .fold(0.0, f64::max)
+        };
+
         // Lay the layer out to see how long it takes; if that is too short
         // for it to cool, lay it out again, slower.
         let head = self.out.len();
@@ -3103,6 +3136,9 @@ impl Writer<'_> {
             }
         }
         let seconds = self.timing.seconds_after(self.slowdown);
+        if self.pause_target > 0.0 && pause::settle(&mut self.out, head, seconds) {
+            self.state.summary.paused_layers += 1;
+        }
 
         // The fans are set ahead of the layer, where the reference sets them.
         let fan = cooling::Fan {
@@ -3382,6 +3418,9 @@ impl Writer<'_> {
                 self.end_copy(copy)?;
             }
         }
+        if self.pause_target > 0.0 {
+            self.pause_block()?;
+        }
         if traditional && !towered_layer && !self.state.pictured {
             self.timelapse(parts[0].z)?;
         }
@@ -3392,6 +3431,111 @@ impl Writer<'_> {
         }
         self.interface_fan(None)?;
         self.fan_over_air(false)?;
+        Ok(())
+    }
+
+    /// The minimum layer time pause laid out at the layer's end, after its
+    /// last line and before any picture taken there, between the markers
+    /// [`pause::settle`] keeps or drops it by (GCode.cpp
+    /// `min_layer_time_pause_block`, GCodeWriter.cpp `park_and_return`):
+    /// the filament pulled back, the head lifted clear of the layer and
+    /// taken to where it parks, the wait, and all of it undone in turn.
+    /// Nothing of it counts in the layer's time, and it leaves the writer
+    /// as it found it. Not laid where the head is not known to be
+    /// anywhere, or no free spot is found to park at.
+    fn pause_block(&mut self) -> io::Result<()> {
+        let s = self.settings;
+        let (Some(at), Some(head_z)) = (self.state.position, self.state.height) else {
+            return Ok(());
+        };
+        let current = self.current_run.and_then(|run| {
+            let copy = self.all[0].plate.by_object.get(run)?.copy;
+            let hull = &self.copies().get(copy)?.hull;
+            (hull.iter().map(|p| [unscaled(p.x), unscaled(p.y)])).fold(
+                None,
+                |b: Option<[f64; 4]>, [x, y]| {
+                    Some(match b {
+                        None => [x, y, x, y],
+                        Some([a, b, c, d]) => [
+                            f64::min(a, x),
+                            f64::min(b, y),
+                            f64::max(c, x),
+                            f64::max(d, y),
+                        ],
+                    })
+                },
+            )
+        });
+        let sites = pause::Sites {
+            bed: s.bed,
+            bed_outline: s.bed_outline.clone(),
+            objects: s.plate.objects.clone(),
+            tower: s.tower_footprint,
+            exclusions: s.bed_exclusions.clone(),
+        };
+        let from = [unscaled(at.x), unscaled(at.y)];
+        let Some(park) = sites.park_point(s.pause_park, from, current) else {
+            return Ok(());
+        };
+        let nominal = self.state.z;
+        let clearance = s.z_hop.max(1.0);
+        let mut park_z = head_z.max(nominal + clearance);
+        if s.printable_height > 0.0 {
+            park_z = park_z.min(head_z.max(s.printable_height));
+        }
+        // The copy's stop goes before the pause, so a printer skipping
+        // the copy still makes it; it stays whether the pause is kept or
+        // not.
+        self.flush_labels()?;
+        let [x, y] = [
+            park[0] - s.extruder_offset[0],
+            park[1] - s.extruder_offset[1],
+        ];
+        let feed = |speed: f64| (speed * 60.0).round();
+        let mut there = String::new();
+        let mut unretract = String::new();
+        let length = self.retraction_length();
+        if !self.state.retracted && length > 1e-4 {
+            let back_speed = if s.deretraction_speed > 0.0 {
+                s.deretraction_speed
+            } else {
+                s.retraction_speed
+            };
+            there.push_str(&format!(
+                "G1 E-{length:.5} F{:.0}\n",
+                feed(s.retraction_speed)
+            ));
+            unretract = format!("G1 E{length:.5} F{:.0}\n", feed(back_speed));
+        }
+        let lift = park_z > head_z + 1e-4;
+        if lift {
+            there.push_str(&format!("G1 Z{park_z:.3} F{:.0}\n", feed(s.z_speed)));
+        }
+        there.push_str(&format!(
+            "G1 X{x:.3} Y{y:.3} F{:.0}\n",
+            feed(s.travel_speed)
+        ));
+        let mut back = format!(
+            "G1 X{:.3} Y{:.3} F{:.0}\n",
+            self.gcode_x(at),
+            self.gcode_y(at),
+            feed(s.travel_speed)
+        );
+        if lift {
+            back.push_str(&format!("G1 Z{head_z:.3} F{:.0}\n", feed(s.z_speed)));
+        }
+        back.push_str(&unretract);
+        self.out.extend_from_slice(pause::START);
+        writeln!(
+            self.out,
+            "{:.3} {:.0}",
+            pause::target_as_read(self.pause_target),
+            self.state.feedrate.abs()
+        )?;
+        self.out.extend_from_slice(there.as_bytes());
+        self.out.extend_from_slice(pause::DWELL);
+        self.out.extend_from_slice(back.as_bytes());
+        self.out.extend_from_slice(pause::END);
         Ok(())
     }
 
@@ -5012,6 +5156,7 @@ impl Writer<'_> {
                     width: flow.width as f32,
                     speeds: &speeds,
                     fan_at,
+                    shadow: self.shadow(role, flow),
                 }
                 .readings(&stretch.points, known.as_deref());
                 // "with the slowdown off the points only carry the
@@ -5043,6 +5188,29 @@ impl Writer<'_> {
                 }
             })
             .collect()
+    }
+
+    /// How much further out over the layer beneath an inner wall is
+    /// graded, in mm, to slow and cool it with the overhang laid against
+    /// it (GCode.cpp `_extrude`, "Overhang Shadow",
+    /// `overhang_shadow_shift`): with the overhang slowdown on, for inner
+    /// walls alone, and not where the outer wall is laid first, as then
+    /// the overhang does not lean on it. 0 for none.
+    fn shadow(&self, role: Role, flow: &Flow) -> f32 {
+        let s = self.settings;
+        match s.overhang_shadow {
+            Some((ratio, reach))
+                if s.enable_overhang_speed
+                    && role == Role::Perimeter
+                    && s.wall_order != WallOrder::OuterInner =>
+            {
+                // In single precision, as the reference has them.
+                let ratio = (ratio / 100.0) as f32;
+                let reach = (f64::from(flow.width as f32) * reach / 100.0) as f32;
+                ratio * reach
+            }
+            _ => 0.0,
+        }
     }
 
     /// Lays a measured wall stretch by stretch. As in the reference

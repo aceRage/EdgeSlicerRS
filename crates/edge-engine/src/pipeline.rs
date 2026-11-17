@@ -543,6 +543,10 @@ fn step(watch: &dyn Watcher, stage: Stage) -> Result<(), Failure> {
 /// Slices a model: layers, walls, supports, fill, tool order, prime tower,
 /// skirt and brim. `watch` is told as each stage starts and may stop the
 /// work between stages.
+/// The reference's refusal of `preload_all_filaments` without a prime
+/// tower (Print.cpp `validate`).
+pub(crate) const PRELOAD_WITHOUT_TOWER: &str = "\"Preload all filaments\" requires the prime tower: every filament is loaded and purged into it on the first layer. Enable the prime tower, or turn \"Preload all filaments\" off.";
+
 pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let Job {
         loaded,
@@ -632,6 +636,18 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // the file's settings say so.
     if sequence.is_some() && crate::sequential::tower_off(&mut settings)? {
         print = PrintSettings::from_settings(&settings)?;
+    }
+    // Every filament loaded at the start goes through the prime tower, and
+    // a plate without one is refused (Print.cpp `validate`), counting a
+    // tower turned off for printing object by object. Not as the
+    // reference where one filament alone is used: the reference turns the
+    // tower off for it (PrintConfig.cpp `normalize_fdm_2`) and then refuses
+    // the plate for want of the tower the profile asks for, though there
+    // is nothing to load; here such a plate is sliced.
+    if settings.flag("preload_all_filaments")? == Some(true)
+        && settings.flag("enable_prime_tower")? != Some(true)
+    {
+        return Err(PRELOAD_WITHOUT_TOWER.into());
     }
     // A bare model has no place on the bed of its own: it goes in the
     // middle, as the reference's arranger leaves a single part. One that
@@ -2345,6 +2361,43 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let mut orders = crate::order::layers(on_bed, &later, |from, to| {
         tower_settings.change_cost(tools[from] - 1, tools[to] - 1)
     });
+    // Cyclic tool changes: every layer above the first, and the first
+    // too where asked, in one fixed order (ToolOrdering.cpp
+    // `reorder_extruders_for_minimum_flush_volume`, `get_custom_seq`).
+    // The first layer otherwise keeps the order it was given for the
+    // bed, which the reference does not turn to start from the tool in
+    // hand either way.
+    if tools.len() > 1 && settings.text("toolchange_ordering") == Some("cyclic") {
+        let count = settings
+            .texts("filament_diameter")
+            .map_or(tools.len(), <[String]>::len);
+        let whole = |key: &str| -> Result<Vec<i64>, crate::Failure> {
+            Ok((settings.floats(key)?.unwrap_or_default().into_iter())
+                .map(|number| number.unwrap_or(0.0) as i64)
+                .collect())
+        };
+        let other_layers = crate::order::other_layers_sequences(
+            settings
+                .integer("other_layers_print_sequence_nums")?
+                .unwrap_or(0),
+            &whole("other_layers_print_sequence")?,
+        );
+        let sequence = crate::order::cyclic_sequence(
+            settings.text("toolchange_cyclic_order").unwrap_or(""),
+            &other_layers,
+            count,
+        );
+        let from = if settings.flag("toolchange_cyclic_first_layer")? == Some(true) {
+            0
+        } else {
+            1
+        };
+        for order in orders.iter_mut().skip(from) {
+            if !order.is_empty() {
+                *order = crate::order::cyclic(order, &sequence, |tool| tools[tool] as u32);
+            }
+        }
+    }
     // A layer with nothing of the part on it still has its place, for
     // the tool in hand.
     let mut in_hand: Option<usize> = None;
@@ -2420,9 +2473,28 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 .to_owned(),
         );
     }
+    // On a printer that groups filaments onto nozzles of different kinds
+    // (PrintConfig.cpp `support_different_extruders`: the H2S, P2S, H2D,
+    // H2C, X2D), the filaments the first layer does not print are loaded and
+    // purged into the tower ahead of it (ToolOrdering.cpp
+    // `apply_preload_all_filaments`); that is not done. On every other
+    // printer the reference does nothing with the setting.
+    if settings.flag("preload_all_filaments")? == Some(true)
+        && settings.flag("enable_prime_tower")? == Some(true)
+        && groups_onto_nozzles(&settings)
+        && orders
+            .first()
+            .is_some_and(|first| first.len() < tools.len())
+    {
+        order_notes.push(
+            "preload_all_filaments \"1\": not followed; the print is made as if it were \"0\""
+                .to_owned(),
+        );
+    }
     if used.len() > 1 {
         if let Some(kind) = settings.text("toolchange_ordering")
             && kind != "default"
+            && kind != "cyclic"
         {
             order_notes.push(format!(
                 "toolchange_ordering \"{kind}\": tools are taken in the order that wastes least"
@@ -2433,8 +2505,12 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             .is_some_and(|sequence| sequence.iter().flatten().any(|number| *number != 0.0))
         {
             order_notes.push(
-                "other_layers_print_sequence: above the first layer tools are taken in the order that wastes least"
-                    .to_owned(),
+                if settings.text("toolchange_ordering") == Some("cyclic") {
+                    "other_layers_print_sequence: above the first layer tools are taken in the cyclic order"
+                } else {
+                    "other_layers_print_sequence: above the first layer tools are taken in the order that wastes least"
+                }
+                .to_owned(),
             );
         }
     }
@@ -3337,6 +3413,7 @@ impl Sliced {
             print.produced_at = Some(produced_at.to_owned());
             print.plate = self.plate_facts.clone();
             print.tower_envelope = self.tower.envelope;
+            print.tower_footprint = self.tower.footprint;
             print.own_heights = self.below.is_some();
         }
         if let Some(params) = &self.calibration {
@@ -3658,6 +3735,22 @@ impl Sliced {
             timings,
         })
     }
+}
+
+/// Whether the printer is one the reference groups filaments onto
+/// nozzles of different kinds for (PrintConfig.cpp
+/// `support_different_extruders`): one or two extruders, whose
+/// `extruder_variant_list` names more than one kind between them.
+fn groups_onto_nozzles(settings: &Settings) -> bool {
+    let extruders = settings.texts("nozzle_diameter").map_or(0, <[String]>::len);
+    let kinds: std::collections::BTreeSet<&str> = (settings.texts("extruder_variant_list"))
+        .unwrap_or_default()
+        .iter()
+        .take(extruders)
+        .flat_map(|list| list.split(','))
+        .filter(|kind| !kind.is_empty())
+        .collect();
+    extruders <= 2 && kinds.len() > 1
 }
 
 #[cfg(test)]

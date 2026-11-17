@@ -98,6 +98,13 @@ pub struct PrintSettings {
     /// (`slowdown_for_curled_perimeters`). Slowing over edges that have
     /// curled up, which the setting is named for, is not done.
     pub slowdown_for_curled_perimeters: bool,
+    /// EdgeSlicer's overhang shadow (`overhang_shadow_inner_wall`): an
+    /// inner wall is graded as if it were further out over the layer
+    /// beneath, by `overhang_shadow_speed_ratio` of
+    /// `overhang_shadow_distance` (each in percent, the distance of the
+    /// line's width), so the wall an overhang is laid against is slowed
+    /// and cooled as part of it. None when off.
+    pub overhang_shadow: Option<(f64, f64)>,
     /// The fan for bridges and overhangs; none when they get the layer's.
     pub overhang_fan: Option<OverhangFan>,
     /// A bridge's plastic as a share of a normal line's, and whether it
@@ -201,6 +208,22 @@ pub struct PrintSettings {
     pub arc_fitting: bool,
     /// The bed's extent in mm: min x, min y, max x, max y.
     pub bed: Option<[f64; 4]>,
+    /// The corners of `printable_area`, and the box round
+    /// `bed_exclude_area` where it has three corners or more.
+    pub bed_outline: Vec<[f64; 2]>,
+    pub bed_exclusions: Vec<[f64; 4]>,
+    /// How tall a print the printer takes (`printable_height`); 0 for no
+    /// limit.
+    pub printable_height: f64,
+    /// The ground the prime tower takes, brim included
+    /// (`edge_tower::Tower::footprint`): min x, min y, max x, max y in mm.
+    /// Set by the pipeline; none for no tower.
+    pub tower_footprint: Option<[f64; 4]>,
+    /// The minimum layer time a layer is paused to make up, in seconds
+    /// (`min_layer_time_pause`, `pause.rs`); 0 for none. And where the head
+    /// waits meanwhile.
+    pub min_layer_time_pause: f64,
+    pub pause_park: crate::pause::Park,
     /// Where the nozzle goes round on its way into the prime tower
     /// (`edge_tower::Tower::envelope`): min x, min y, max x, max y in mm.
     /// Set by the pipeline; none for no tower, Bambu Lab's tower, or a
@@ -485,6 +508,7 @@ impl Default for PrintSettings {
             overhang_speeds: [FloatOrPercent::Value(0.0); 4],
             resonance_avoidance: None,
             slowdown_for_curled_perimeters: false,
+            overhang_shadow: None,
             overhang_fan: Some(OverhangFan {
                 speed: 100.0,
                 at: Some(0.05),
@@ -533,6 +557,12 @@ impl Default for PrintSettings {
             resolution: 0.01,
             arc_fitting: false,
             bed: None,
+            bed_outline: Vec::new(),
+            bed_exclusions: Vec::new(),
+            printable_height: 0.0,
+            tower_footprint: None,
+            min_layer_time_pause: 0.0,
+            pause_park: crate::pause::Park::Away,
             tower_envelope: None,
             filament_diameter: 1.75,
             filament_flow_ratio: 1.0,
@@ -847,6 +877,46 @@ impl PrintSettings {
             extent
         });
 
+        let corners = |key: &str| -> Vec<[f64; 2]> {
+            (settings.texts(key).unwrap_or_default().iter())
+                .flat_map(|item| item.split(','))
+                .filter_map(|corner| {
+                    let (x, y) = corner.split_once('x')?;
+                    Some([x.trim().parse().ok()?, y.trim().parse().ok()?])
+                })
+                .collect()
+        };
+        let bed_outline = corners("printable_area");
+        let excluded = corners("bed_exclude_area");
+        let bed_exclusions: Vec<[f64; 4]> = (excluded.len() >= 3)
+            .then(|| {
+                (excluded.iter()).fold(
+                    [f64::MAX, f64::MAX, f64::MIN, f64::MIN],
+                    |[a, b, c, d], [x, y]| [a.min(*x), b.min(*y), c.max(*x), d.max(*y)],
+                )
+            })
+            .into_iter()
+            .collect();
+        let pause_park = match settings.text("min_layer_time_pause_park") {
+            None | Some("away") => crate::pause::Park::Away,
+            Some("prime_tower") => crate::pause::Park::PrimeTower,
+            Some("custom") => crate::pause::Park::Custom([
+                settings
+                    .float("min_layer_time_pause_park_x")?
+                    .unwrap_or(0.0),
+                settings
+                    .float("min_layer_time_pause_park_y")?
+                    .unwrap_or(0.0),
+            ]),
+            Some(other) => {
+                return Err(ConfigError::BadValue {
+                    key: "min_layer_time_pause_park".into(),
+                    found: other.to_owned(),
+                    expected: "away, prime_tower or custom",
+                });
+            }
+        };
+
         // The bed temperature lives under a key named after the plate in use
         // (PrintConfig.hpp `get_bed_temp_key`, `get_bed_temp_1st_layer_key`).
         // The reference falls back to the High Temp Plate's keys for a plate
@@ -928,6 +998,22 @@ impl PrintSettings {
                 listed_share("overhang_4_4_speed", defaults.overhang_speeds[3])?,
             ],
             slowdown_for_curled_perimeters: flag("slowdown_for_curled_perimeters", false)?,
+            overhang_shadow: if flag("overhang_shadow_inner_wall", false)? {
+                let percent = |key: &str, default: f64| -> Result<f64, ConfigError> {
+                    Ok(match settings.float_or_percent(key)? {
+                        Some(FloatOrPercent::Percent(value) | FloatOrPercent::Value(value)) => {
+                            value
+                        }
+                        None => default,
+                    })
+                };
+                Some((
+                    percent("overhang_shadow_speed_ratio", 30.0)?,
+                    percent("overhang_shadow_distance", 200.0)?,
+                ))
+            } else {
+                None
+            },
             overhang_fan: if flag("enable_overhang_bridge_fan", true)? {
                 Some(OverhangFan {
                     speed: number("overhang_fan_speed", 100.0)?,
@@ -1077,6 +1163,12 @@ impl PrintSettings {
                 None
             },
             bed,
+            bed_outline,
+            bed_exclusions,
+            printable_height: settings.float("printable_height")?.unwrap_or(0.0),
+            tower_footprint: None,
+            min_layer_time_pause: settings.float("min_layer_time_pause")?.unwrap_or(0.0),
+            pause_park,
             tower_envelope: None,
             filament_diameter: number("filament_diameter", defaults.filament_diameter)?,
             filament_flow_ratio: number("filament_flow_ratio", defaults.filament_flow_ratio)?,
