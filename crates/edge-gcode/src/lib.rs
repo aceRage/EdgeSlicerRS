@@ -4078,14 +4078,20 @@ impl Writer<'_> {
             // The gap fill of an area is one more of its lines, chained
             // with the rest (FillBase.cpp `_create_gap_fill` adds it to
             // the area's collection, which `extrude_infill` chains
-            // whole). The gap fill of an area laid in turn comes as a
-            // part of its own (`edge_infill`).
+            // whole). The gap fill of an area laid in turn is among its
+            // lines already, laid in turn with them (`insert_gap_fill`):
+            // a line of the area after a gap line stays in the area.
             let own_gap =
                 |a: &ExtrusionPath, b: &ExtrusionPath| a.part != 0 && b.role == Role::GapFill;
+            let laid_after = |a: &ExtrusionPath, b: &ExtrusionPath| {
+                a.part != 0 && a.role == Role::GapFill && b.in_turn
+            };
             let mut parts: Vec<Part<'_>> = stage
                 .chunk_by(|a, b| {
                     a.part == b.part
-                        && ((a.role == b.role && (a.part != 0 || b.in_turn)) || own_gap(a, b))
+                        && ((a.role == b.role && (a.part != 0 || b.in_turn))
+                            || own_gap(a, b)
+                            || laid_after(a, b))
                 })
                 .filter_map(Part::new)
                 .collect();
