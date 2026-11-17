@@ -1513,6 +1513,22 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                         }
                     }
                 }
+                // Sparse fill made solid on the layers `extra_solid_infills`
+                // lists, before tops and bottoms reach into the fill beside
+                // them (PrintObject.cpp `discover_horizontal_shells`, which
+                // the reference runs ahead of `process_external_surfaces`).
+                let extra = &stages[filament].infill.extra_solid_infills;
+                if !extra.is_empty() {
+                    for (index, layer) in surfaces.iter_mut().enumerate() {
+                        if edge_infill::extra_solid_layer(extra, index) {
+                            for surface in layer.iter_mut() {
+                                if surface.kind == edge_infill::SurfaceKind::Sparse {
+                                    surface.kind = edge_infill::SurfaceKind::InternalSolid;
+                                }
+                            }
+                        }
+                    }
+                }
                 // Bridges, bottoms and tops reach into the fill beside them,
                 // and each bridge is turned to run from support to support.
                 let mut anchored =

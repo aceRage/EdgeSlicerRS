@@ -127,6 +127,9 @@ pub struct InfillSettings {
     /// `undertop_surface_pattern` sets it apart: whether its lines are
     /// joined and swept in order ([`crate::FillParams::under_top`]).
     pub under_top: Option<(bool, bool)>,
+    /// The layers whose sparse fill is made solid (`extra_solid_infills`,
+    /// read by [`extra_solid_layer`]); empty for none.
+    pub extra_solid_infills: String,
     /// Whether the fill keeps one direction on every layer rather than
     /// turning a quarter on each odd one: Z contouring's
     /// `zaa_dont_alternate_fill_direction`, which counts only with
@@ -238,6 +241,85 @@ pub struct InfillSettings {
     pub unsupported: Vec<String>,
 }
 
+/// Whether the sparse fill of a layer, counted from 0 at the bed, is
+/// made solid by `extra_solid_infills` (utils.cpp
+/// `check_layer_id_pattern`, called from PrintObject.cpp
+/// `discover_horizontal_shells`). Layers are counted from 1 there. The
+/// pattern, spaces and surrounding quotes left out, is a list ("5,9,18",
+/// each entry possibly "N#K", K layers from N on), or one "N#K" (or "N",
+/// for "N#1"): K layers from every Nth on. What does not read as a number
+/// is passed over in a list and matches nothing on its own, as there.
+pub fn extra_solid_layer(pattern: &str, layer_index: usize) -> bool {
+    // `std::stoi`: an optional sign and at least one digit; what follows
+    // is not read; a number outside an `int` is no number.
+    fn stoi(text: &str) -> Option<i64> {
+        let digits_from = usize::from(text.starts_with(['+', '-']));
+        let digits = text[digits_from..]
+            .bytes()
+            .take_while(u8::is_ascii_digit)
+            .count();
+        if digits == 0 {
+            return None;
+        }
+        let value: i64 = text[..digits_from + digits].parse().ok()?;
+        (i64::from(i32::MIN)..=i64::from(i32::MAX))
+            .contains(&value)
+            .then_some(value)
+    }
+    let Ok(layer) = i64::try_from(layer_index + 1) else {
+        return false;
+    };
+    let mut text: String = pattern
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '\t' | '\n' | '\r'))
+        .collect();
+    if text.starts_with(['"', '\'']) {
+        text.remove(0);
+    }
+    if text.ends_with(['"', '\'']) {
+        text.pop();
+    }
+    if text.is_empty() {
+        return false;
+    }
+    if text.contains(',') {
+        return text
+            .split(',')
+            .filter(|token| !token.is_empty())
+            .any(|token| match token.split_once('#') {
+                None => stoi(token) == Some(layer),
+                Some((base, count)) => {
+                    let (Some(base), Some(count)) = (
+                        stoi(base),
+                        if count.is_empty() {
+                            Some(1)
+                        } else {
+                            stoi(count)
+                        },
+                    ) else {
+                        return false;
+                    };
+                    base > 0 && count > 0 && layer >= base && layer < base + count
+                }
+            });
+    }
+    let (interval, count) = match text.split_once('#') {
+        None => (stoi(&text), Some(1)),
+        Some((interval, count)) => (
+            stoi(interval),
+            if count.is_empty() {
+                Some(1)
+            } else {
+                stoi(count)
+            },
+        ),
+    };
+    let (Some(interval), Some(count)) = (interval, count) else {
+        return false;
+    };
+    interval > 0 && count > 0 && layer >= interval && layer % interval < count
+}
+
 /// Whether fill keeps one direction on every layer: with Z contouring on
 /// and `zaa_dont_alternate_fill_direction` set (Fill.cpp, where each
 /// filler's `dont_alternate_fill_direction` is set from the two). Only
@@ -267,6 +349,7 @@ impl Default for InfillSettings {
             top_surface_density: 1.0,
             bottom_surface_density: 1.0,
             under_top: None,
+            extra_solid_infills: String::new(),
             steady_direction: false,
             lateral_lattice_angles: (-45.0, 45.0),
             infill_shift_step: 0.4,
@@ -664,6 +747,10 @@ impl InfillSettings {
             top_surface_density,
             bottom_surface_density,
             under_top,
+            extra_solid_infills: settings
+                .text("extra_solid_infills")
+                .unwrap_or_default()
+                .to_owned(),
             top_layer_direction: surface_direction("top_layer_direction")?,
             bottom_layer_direction: surface_direction("bottom_layer_direction")?,
             steady_direction: steady_direction(settings)?,
@@ -1349,6 +1436,37 @@ mod tests {
                 .unwrap();
         assert_eq!(other.under_top, Some((true, false)));
         assert!(other.unsupported[0].starts_with("undertop_surface_pattern \"concentric\""));
+    }
+
+    #[test]
+    fn extra_solid_layers_are_matched_as_the_reference_matches_them() {
+        // Layer indices from 0; the pattern counts from 1.
+        let layers = |pattern: &str| -> Vec<usize> {
+            (0..30)
+                .filter(|index| extra_solid_layer(pattern, *index))
+                .collect()
+        };
+        assert!(layers("").is_empty());
+        // Every Nth layer, K from each.
+        assert_eq!(layers("10"), [9, 19, 29]);
+        assert_eq!(layers("10#3"), [9, 10, 11, 19, 20, 21, 29]);
+        assert_eq!(layers(" \"10#\" "), [9, 19, 29]);
+        // A list, with runs.
+        assert_eq!(layers("1,7, 9"), [0, 6, 8]);
+        assert_eq!(layers("5,9#2,18"), [4, 8, 9, 17]);
+        // What does not read as a number: passed over in a list, nothing
+        // alone; a number with more after it is read up to there.
+        assert_eq!(layers("x,4,y#2"), [3]);
+        assert!(layers("x").is_empty());
+        assert!(layers("0").is_empty() && layers("-3#2").is_empty());
+        assert_eq!(layers("12abc"), [11, 23]);
+        assert!(layers("99999999999").is_empty());
+        let read = InfillSettings::from_settings(
+            &Settings::from_json(r#"{"extra_solid_infills": "5#2"}"#).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(read.extra_solid_infills, "5#2");
+        assert!(read.unsupported.is_empty());
     }
 
     #[test]

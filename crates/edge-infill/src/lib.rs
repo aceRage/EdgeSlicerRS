@@ -37,7 +37,9 @@ pub use ironing::{
     iron_ramped, ironing_areas,
 };
 pub use narrow::NarrowFill;
-pub use settings::{ExtraBridgeLayer, InfillSettings, Pattern, steady_direction};
+pub use settings::{
+    ExtraBridgeLayer, InfillSettings, Pattern, extra_solid_layer, steady_direction,
+};
 pub use surfaces::{
     Anchoring, Beneath, Shells, Surface, SurfaceKind, WallsAround, anchor, classify, inside_walls,
     inside_walls_by_layer, internal, shell_depths,
