@@ -173,6 +173,83 @@ pub(crate) fn layers(
     orders
 }
 
+/// The fixed order of cyclic tool changes (`toolchange_ordering`
+/// "cyclic"), as filament numbers from 1: `toolchange_cyclic_order`'s
+/// numbers ("3,2,1,4"), each kept once and only if it is one of the
+/// project's `count` filaments; anything else in it is passed over
+/// (ToolOrdering.cpp `parse_cyclic_order`). Where that leaves none, the
+/// first range of the plate's own order for its other layers
+/// (`other_layers_print_sequence`, read the same way) that names one
+/// (`cyclic_order_from_customized_sequence`); empty for none at all.
+pub(crate) fn cyclic_sequence(text: &str, other_layers: &[Vec<i64>], count: usize) -> Vec<u32> {
+    let mut sequence: Vec<u32> = Vec::new();
+    let mut keep = |number: i64, into: &mut Vec<u32>| {
+        if let Ok(number) = u32::try_from(number)
+            && number >= 1
+            && number as usize <= count
+            && !into.contains(&number)
+        {
+            into.push(number);
+        }
+    };
+    for token in text.split(',') {
+        // `std::stoi`: leading space skipped, trailing space allowed,
+        // anything else after the number and the token is dropped.
+        let token = token.trim_start().trim_end_matches([' ', '\t', '\r', '\n']);
+        if let Ok(number) = token.parse::<i32>() {
+            keep(i64::from(number), &mut sequence);
+        }
+    }
+    if sequence.is_empty() {
+        for range in other_layers {
+            for &number in range {
+                keep(number, &mut sequence);
+            }
+            if !sequence.is_empty() {
+                break;
+            }
+        }
+    }
+    sequence
+}
+
+/// The plate's own order for its other layers, one list of filament
+/// numbers per range of layers (ParameterUtils.cpp
+/// `get_other_layers_print_sequence`): `values` in `ranges` groups, each
+/// its first and last layer and then the filaments. None where the
+/// count does not divide them into groups of three or more.
+pub(crate) fn other_layers_sequences(ranges: i64, values: &[i64]) -> Vec<Vec<i64>> {
+    let Ok(ranges) = usize::try_from(ranges) else {
+        return Vec::new();
+    };
+    if ranges == 0 || values.is_empty() || values.len() % ranges != 0 || values.len() / ranges < 3 {
+        return Vec::new();
+    }
+    (values.chunks(values.len() / ranges))
+        .map(|group| group[2..].to_vec())
+        .collect()
+}
+
+/// A layer's order under cyclic tool changes: its `tools` (as the layer
+/// lists them, ascending) in the order of `sequence`, those it does not
+/// name after them, ascending; `number` gives a tool's filament number
+/// (ToolOrdering.cpp `apply_cyclic_order`).
+pub(crate) fn cyclic(
+    tools: &[usize],
+    sequence: &[u32],
+    number: impl Fn(usize) -> u32,
+) -> Vec<usize> {
+    let mut order = tools.to_vec();
+    order.sort_by_key(|tool| number(*tool));
+    order.sort_by_key(|tool| {
+        sequence
+            .iter()
+            .position(|named| *named == number(*tool))
+            .unwrap_or(sequence.len())
+    });
+    order
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,6 +308,29 @@ mod tests {
         // first costs less than going to 1 first.
         let dear = |a: usize, b: usize| if (a, b) == (0, 1) { 100.0 } else { 10.0 };
         assert_eq!(solve(dear, &[0, 1, 2], Some(0)), [0, 2, 1]);
+    }
+
+    #[test]
+    fn cyclic_layers_keep_one_order() {
+        // Numbers past the project's, repeated or not numbers at all are
+        // passed over.
+        assert_eq!(cyclic_sequence("7,3,x,2,9,3", &[], 7), [7, 3, 2]);
+        assert_eq!(cyclic_sequence(" 2 , 1", &[], 2), [2, 1]);
+        assert_eq!(cyclic_sequence("2x,0,-1,1.5", &[], 4), Vec::<u32>::new());
+        // With none, the first range of the plate's own order that names
+        // one.
+        let other = other_layers_sequences(2, &[2, 4, 9, 9, 5, 9, 3, 1]);
+        assert_eq!(other, [vec![9, 9], vec![3, 1]]);
+        assert_eq!(cyclic_sequence("", &other, 4), [3, 1]);
+        assert_eq!(cyclic_sequence("2", &other, 4), [2]);
+        // A count that does not divide them is no order.
+        assert!(other_layers_sequences(2, &[1, 2, 3, 4, 5]).is_empty());
+        assert!(other_layers_sequences(0, &[1, 2, 3]).is_empty());
+        // The layer's tools in that order, the rest after, ascending.
+        let own = |tool: usize| tool as u32 + 1;
+        assert_eq!(cyclic(&[1, 2, 3], &[7, 3, 2], own), [2, 1, 3]);
+        assert_eq!(cyclic(&[0, 1, 2, 3], &[], own), [0, 1, 2, 3]);
+        assert_eq!(cyclic(&[0, 3, 5], &[4], own), [3, 0, 5]);
     }
 
     #[test]

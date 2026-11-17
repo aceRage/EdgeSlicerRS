@@ -2345,6 +2345,43 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let mut orders = crate::order::layers(on_bed, &later, |from, to| {
         tower_settings.change_cost(tools[from] - 1, tools[to] - 1)
     });
+    // Cyclic tool changes: every layer above the first, and the first
+    // too where asked, in one fixed order (ToolOrdering.cpp
+    // `reorder_extruders_for_minimum_flush_volume`, `get_custom_seq`).
+    // The first layer otherwise keeps the order it was given for the
+    // bed, which the reference does not turn to start from the tool in
+    // hand either way.
+    if tools.len() > 1 && settings.text("toolchange_ordering") == Some("cyclic") {
+        let count = settings
+            .texts("filament_diameter")
+            .map_or(tools.len(), <[String]>::len);
+        let whole = |key: &str| -> Result<Vec<i64>, crate::Failure> {
+            Ok((settings.floats(key)?.unwrap_or_default().into_iter())
+                .map(|number| number.unwrap_or(0.0) as i64)
+                .collect())
+        };
+        let other_layers = crate::order::other_layers_sequences(
+            settings
+                .integer("other_layers_print_sequence_nums")?
+                .unwrap_or(0),
+            &whole("other_layers_print_sequence")?,
+        );
+        let sequence = crate::order::cyclic_sequence(
+            settings.text("toolchange_cyclic_order").unwrap_or(""),
+            &other_layers,
+            count,
+        );
+        let from = if settings.flag("toolchange_cyclic_first_layer")? == Some(true) {
+            0
+        } else {
+            1
+        };
+        for order in orders.iter_mut().skip(from) {
+            if !order.is_empty() {
+                *order = crate::order::cyclic(order, &sequence, |tool| tools[tool] as u32);
+            }
+        }
+    }
     // A layer with nothing of the part on it still has its place, for
     // the tool in hand.
     let mut in_hand: Option<usize> = None;
@@ -2423,6 +2460,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     if used.len() > 1 {
         if let Some(kind) = settings.text("toolchange_ordering")
             && kind != "default"
+            && kind != "cyclic"
         {
             order_notes.push(format!(
                 "toolchange_ordering \"{kind}\": tools are taken in the order that wastes least"
@@ -2433,8 +2471,12 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             .is_some_and(|sequence| sequence.iter().flatten().any(|number| *number != 0.0))
         {
             order_notes.push(
-                "other_layers_print_sequence: above the first layer tools are taken in the order that wastes least"
-                    .to_owned(),
+                if settings.text("toolchange_ordering") == Some("cyclic") {
+                    "other_layers_print_sequence: above the first layer tools are taken in the cyclic order"
+                } else {
+                    "other_layers_print_sequence: above the first layer tools are taken in the order that wastes least"
+                }
+                .to_owned(),
             );
         }
     }

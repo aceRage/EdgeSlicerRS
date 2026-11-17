@@ -750,10 +750,6 @@ mod tests {
         /// Being made to be followed on branches of their own; each comes
         /// off here when it lands.
         pub const IN_HAND: &[&str] = &[];
-        /// Only matter with toolchange_ordering "cyclic", which has a
-        /// note of its own (pipeline.rs).
-        pub const SAID_BY_ANOTHER: &[&str] =
-            &["toolchange_cyclic_order", "toolchange_cyclic_first_layer"];
     }
 
     /// Read by a stage and said where only partly followed: kept in the
@@ -924,7 +920,6 @@ mod tests {
             allowed::DEAD,
             allowed::PLACEHOLDER,
             allowed::IN_HAND,
-            allowed::SAID_BY_ANOTHER,
         ]
         .concat()
         .into_iter()
