@@ -264,6 +264,19 @@ const CHANGE_MARK: &[u8] = b";_TOOL_CHANGE ";
 /// Where the fans are set back to the layer's speeds after a tool change,
 /// replaced once the layer's speeds are known.
 const RESUME_FAN_MARK: &[u8] = b";_RESUME_FAN_SPEED\n";
+/// What a tool is taken up with when the filament is changed by hand
+/// (`manual_filament_change`; GCodeWriter.cpp `toolchange_prefix`, the
+/// processor's `Manual_Tool_Change` tag): a comment, the number after it.
+const MANUAL_TOOL_CHANGE: &str = "; MANUAL_TOOL_CHANGE T";
+
+/// What [`Writer::swap`] did: whether the printer's change G-code ran, and
+/// the command that takes the tool up where it did not, to be written
+/// after the fans are set back (GCode.cpp `set_extruder`: the change
+/// G-code, `;_FORCE_RESUME_FAN_SPEED`, then the tool's command).
+struct Swapped {
+    templated: bool,
+    command: Option<String>,
+}
 
 /// A support wall's hook is six line spacings long, so its two ends are
 /// never further apart than a little more than that.
@@ -1998,9 +2011,15 @@ impl Writer<'_> {
                 let tool = line.trim().strip_prefix('T')?.parse::<i64>().ok()?;
                 (0..255).contains(&tool).then_some(tool)
             });
-            self.swap(from, self.state.tool, None, 0.0, 0.0)?;
-            // The reference leaves this marker of its own here.
-            writeln!(self.out, ";_FORCE_RESUME_FAN_SPEED")?;
+            let swapped = self.swap(from, self.state.tool, None, 0.0, 0.0)?;
+            // The reference leaves this marker of its own here, where the
+            // change G-code ran.
+            if swapped.templated {
+                writeln!(self.out, ";_FORCE_RESUME_FAN_SPEED")?;
+            }
+            if let Some(command) = swapped.command {
+                self.out.extend_from_slice(command.as_bytes());
+            }
             self.announce(self.state.tool, true)?;
             return Ok(());
         }
@@ -2012,7 +2031,12 @@ impl Writer<'_> {
         // when the project has more than one filament to choose from
         // (GCodeWriter.cpp `toolchange`).
         if s.machine_start_gcode.is_some() && s.filaments > 1 {
-            writeln!(self.out, "T0")?;
+            let prefix = if s.manual_filament_change {
+                MANUAL_TOOL_CHANGE
+            } else {
+                "T"
+            };
+            writeln!(self.out, "{prefix}0")?;
         }
         Ok(())
     }
@@ -2102,7 +2126,7 @@ impl Writer<'_> {
         layer: Option<usize>,
         z: f64,
         toolchange_z: f64,
-    ) -> Result<(), GcodeError> {
+    ) -> Result<Swapped, GcodeError> {
         let first_layer = layer.is_none_or(|layer| layer == 0);
         let old = from.and_then(|tool| usize::try_from(tool).ok());
         let settings_of = |tool: Option<usize>| tool.and_then(|tool| self.all.get(tool));
@@ -2235,7 +2259,15 @@ impl Writer<'_> {
                 Value::Float(height),
             ],
         );
-        match &new_settings.change_filament_gcode {
+        // With the filament changed by hand, the print's first taking up of
+        // a tool goes without the change G-code (GCode.cpp `set_extruder`),
+        // and every change is a comment for the person to make it by
+        // (GCodeWriter.cpp `toolchange_prefix`).
+        let manual = new_settings.manual_filament_change;
+        let prefix = if manual { MANUAL_TOOL_CHANGE } else { "T" };
+        let template =
+            (new_settings.change_filament_gcode.as_ref()).filter(|_| !(manual && count == 1));
+        let swapped = match template {
             Some(template) => {
                 let text =
                     edge_template::expand_mut(template, &mut self.variables).map_err(|source| {
@@ -2251,19 +2283,28 @@ impl Writer<'_> {
                     writeln!(self.out)?;
                 }
                 writeln!(self.out, "; custom gcode end")?;
-                // The tool is selected by the template, or else here.
+                // The tool is selected by the template, or else after it
+                // (GCode.cpp `custom_gcode_changes_tool`). Not as the
+                // reference for a prefix of more than one letter (the hand
+                // change's comment), which it reads the number after the
+                // prefix's first letter for, and so never finds: here the
+                // template naming the change in it is taken as it is meant.
                 let named = text.lines().any(|line| {
                     line.trim()
-                        .strip_prefix('T')
+                        .strip_prefix(prefix)
                         .and_then(|rest| rest.split([' ', ';']).next())
                         .is_some_and(|number| number.parse() == Ok(to))
                 });
-                if !named {
-                    writeln!(self.out, "T{to}")?;
+                Swapped {
+                    templated: true,
+                    command: (!named).then(|| format!("{prefix}{to}\n")),
                 }
             }
-            None => writeln!(self.out, "T{to}")?,
-        }
+            None => Swapped {
+                templated: false,
+                command: Some(format!("{prefix}{to}\n")),
+            },
+        };
         self.variables.set("max_layer_z", top);
         self.variables
             .set("current_extruder", Value::Int(to as i64));
@@ -2276,7 +2317,7 @@ impl Writer<'_> {
         self.state.feedrate = 0.0;
         self.state.acceleration = 0.0;
         self.state.travel_acceleration = 0.0;
-        Ok(())
+        Ok(swapped)
     }
 
     /// Makes a tool the one whose settings are used, and tells the printer
@@ -2546,7 +2587,7 @@ impl Writer<'_> {
             Some(tower) if s.bambu_tower => tower,
             _ => z,
         };
-        self.swap(Some(from as i64), to, Some(layer), z, toolchange_z)?;
+        let swapped = self.swap(Some(from as i64), to, Some(layer), z, toolchange_z)?;
         self.state.flushed.select(to, self.all);
         // Each nozzle keeps its own filament's retraction; with one nozzle
         // for all the filaments it is the one retraction, carried on to
@@ -2566,6 +2607,9 @@ impl Writer<'_> {
         // (CoolingBuffer.cpp); not to the speeds in force, which before
         // the layer's own are set are the layer below's.
         self.out.extend_from_slice(RESUME_FAN_MARK);
+        if let Some(command) = swapped.command {
+            self.out.extend_from_slice(command.as_bytes());
+        }
         // Bambu's tower: to where its block starts and down to the layer,
         // the filament pushed back, straight after the change G-code and
         // before the new filament's start G-code (GCode.cpp `append_tcr`,

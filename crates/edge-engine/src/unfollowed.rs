@@ -180,9 +180,6 @@ const SILENT: &[Silent] = &[
         &["flush_multiplier_fast"],
     )
     .many(Many::Printing),
-    // GCodeWriter.cpp l.705, GCode.cpp l.13182: tool changes written as
-    // comments for a person to make.
-    silent("manual_filament_change", Is("0")).many(Many::Printing),
     // ToolOrdering.cpp l.1404: every filament of the project loaded.
     silent("preload_all_filaments", Is("0")).many(Many::InProject),
     // PrintRegion.cpp l.58: walls and fill in a filament of their own.
@@ -540,7 +537,7 @@ mod tests {
     #[test]
     fn what_is_about_more_filaments_than_one_waits_for_them() {
         let one = Settings::from_json(
-            r#"{"manual_filament_change": "1", "wall_filament": "2",
+            r#"{"prime_volume_mode": "Fast", "wall_filament": "2",
                 "filament_diameter": ["1.75"]}"#,
         )
         .unwrap();
@@ -548,7 +545,7 @@ mod tests {
         // Two printing: tool changes are written.
         let said = notes(&one, 2);
         assert_eq!(said.len(), 1, "{said:?}");
-        assert!(said[0].starts_with("manual_filament_change \"1\""));
+        assert!(said[0].starts_with("prime_volume_mode \"Fast\""));
         // Two in the project: walls may go to the second though only the
         // first is printing.
         let two =

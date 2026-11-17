@@ -2224,8 +2224,13 @@ fn the_tool_is_named_when_the_profile_does_not() {
     let silent = "; swapping\n";
     let (text, _) = in_filaments(&[&[0, 1]], &two_tools(Some(silent)));
     let layer = text.split(";LAYER_CHANGE").nth(1).unwrap();
-    let after: Vec<&str> = from(layer, "; swapping", 3);
-    assert_eq!(after[..3], ["; swapping", "; custom gcode end", "T1"]);
+    // After the fan is set back, as the reference writes the tool's
+    // command after its `;_FORCE_RESUME_FAN_SPEED` (GCode.cpp
+    // `set_extruder`).
+    let after: Vec<&str> = from(layer, "; swapping", 4);
+    assert_eq!(after[..2], ["; swapping", "; custom gcode end"]);
+    assert!(after[2].starts_with("M106 S"), "{after:?}");
+    assert_eq!(after[3], "T1");
     // With no template at all, the tool is simply selected.
     let (text, summary) = in_filaments(&[&[0, 1]], &two_tools(None));
     assert_eq!(summary.tool_changes, 1);
@@ -5245,4 +5250,47 @@ fn short_support_lines_go_at_their_own_speed() {
     let mut speeds = feeds(&off);
     speeds.sort_by(f64::total_cmp);
     assert_eq!(speeds, [80.0, 150.0, 150.0]);
+}
+
+#[test]
+fn a_filament_changed_by_hand_is_a_comment_and_starts_without_the_change_gcode() {
+    let manual = two_tools(Some("; change\nM400")).map(|tool| PrintSettings {
+        manual_filament_change: true,
+        ..tool
+    });
+    let (text, summary) = in_filaments(&[&[0, 1], &[1, 0]], &manual);
+    assert_eq!(summary.tool_changes, 2);
+    // The first tool is taken up without the change G-code, and no tool
+    // command is written: only the comment for the person.
+    let opening = from(&text, "M83 ; use relative", 3);
+    assert_eq!(
+        opening,
+        [
+            "M83 ; use relative distances for extrusion",
+            "; MANUAL_TOOL_CHANGE T0",
+            "; filament start"
+        ]
+    );
+    assert_eq!(text.matches("; change\n").count(), 2);
+    // The start G-code's own `T0` the only tool command.
+    assert_eq!(
+        text.lines().filter(|line| line.starts_with('T')).count(),
+        1,
+        "{text}"
+    );
+    // Each change after: the change G-code, the fan set back, the comment.
+    assert!(
+        text.contains("; MANUAL_TOOL_CHANGE T1\n") && text.contains("; MANUAL_TOOL_CHANGE T0\n")
+    );
+    let after = from(&text, "; custom gcode end", 4);
+    assert!(after[1].starts_with("M106 S"), "{after:?}");
+    assert_eq!(after[2], "; MANUAL_TOOL_CHANGE T1");
+    // A template that names the change itself is left to.
+    let named =
+        two_tools(Some("; MANUAL_TOOL_CHANGE T[next_extruder]")).map(|tool| PrintSettings {
+            manual_filament_change: true,
+            ..tool
+        });
+    let (text, _) = in_filaments(&[&[0, 1], &[1, 0]], &named);
+    assert_eq!(text.matches("; MANUAL_TOOL_CHANGE T1").count(), 1, "{text}");
 }

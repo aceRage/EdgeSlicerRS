@@ -267,6 +267,8 @@ pub struct PrintSettings {
     /// percent once the first layers are down.
     pub auxiliary_fan: bool,
     pub additional_cooling_fan_speed: f64,
+    /// The filament is changed by hand (`manual_filament_change`).
+    pub manual_filament_change: bool,
     /// The least the part fan is run at where it runs at all, as `M106 S`
     /// takes it (`part_cooling_fan_min_pwm`, in percent; 0 for none).
     pub part_fan_floor: u8,
@@ -563,6 +565,7 @@ impl Default for PrintSettings {
             dont_slow_down_outer_wall: false,
             circle_compensation_speed: 200.0,
             auxiliary_fan: false,
+            manual_filament_change: false,
             part_fan_floor: 0,
             activate_chamber_temp_control: false,
             chamber_temperature: 0.0,
@@ -1141,6 +1144,7 @@ impl PrintSettings {
             )?
             .max(0.0),
             auxiliary_fan: flag("auxiliary_fan", false)?,
+            manual_filament_change: flag("manual_filament_change", false)?,
             part_fan_floor,
             activate_chamber_temp_control: flag("activate_chamber_temp_control", false)?,
             chamber_temperature: number("chamber_temperature", 0.0)?,
