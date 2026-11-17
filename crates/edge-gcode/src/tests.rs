@@ -4884,3 +4884,47 @@ fn a_filaments_z_offset_is_added_to_the_printers() {
     assert!((first.z_offset - 0.15).abs() < 1e-9);
     assert!((second.z_offset + 0.05).abs() < 1e-9);
 }
+
+#[test]
+fn the_chamber_is_heated_before_the_start_gcode_and_put_off_at_the_end() {
+    let heated = PrintSettings {
+        activate_chamber_temp_control: true,
+        chamber_temperature: 45.0,
+        auxiliary_fan: true,
+        ..profile(&[("start", "START"), ("end", "END")])
+    };
+    let text = printed(1, &heated);
+    let custom = text.find(";TYPE:Custom\n").unwrap();
+    assert!(
+        text[custom..].starts_with(
+            ";TYPE:Custom\nM106 P2 S255 \nM191 S45 ;set chamber_temperature and wait for it to be reached\n\
+             M106 P2 S0 \nSTART\n"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("END\nM141 S0;set chamber_temperature\n"));
+    // A start G-code that sets the chamber itself is left to.
+    let own = PrintSettings {
+        machine_start_gcode: Some("  M191 S50\nSTART".into()),
+        ..heated.clone()
+    };
+    let text = printed(1, &own);
+    assert!(!text.contains("M191 S45"));
+    assert!(text.contains("M141 S0"));
+    // Without a temperature, or not asked for, nothing.
+    for off in [
+        PrintSettings {
+            chamber_temperature: 0.0,
+            ..heated.clone()
+        },
+        PrintSettings {
+            activate_chamber_temp_control: false,
+            ..heated
+        },
+    ] {
+        let text = printed(1, &off);
+        assert!(!text.contains("M191") && !text.contains("M141"));
+    }
+    assert!(sets_chamber("M141 S40") && sets_chamber("\tM191") && !sets_chamber("M1410 S2"));
+    assert!(!sets_chamber("; M141 S40") && !sets_chamber("G1 M141"));
+}

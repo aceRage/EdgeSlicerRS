@@ -196,13 +196,6 @@ const SILENT: &[Silent] = &[
     silent("part_cooling_fan_min_pwm", Is("0")),
     // CoolingBuffer.cpp l.936: a fan speed of its own when 0 or more.
     silent("support_material_interface_fan_speed", Below(0.0, "-1")),
-    // Temperature: GCode.cpp l.4541, M141 / M191 with a chamber temperature.
-    with(
-        "activate_chamber_temp_control",
-        Is("0"),
-        "chamber_temperature",
-        Is("0"),
-    ),
     // Geometry.
     // PrintObjectSlice.cpp l.319.
     silent("enable_order_independent_overlap_carving", Is("0")),

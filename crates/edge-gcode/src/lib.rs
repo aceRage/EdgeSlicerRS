@@ -1293,6 +1293,18 @@ fn extent(layer: &Layer<'_>) -> Option<[f64; 4]> {
 
 /// Whether a piece of G-code sets pressure advance itself, in any of the
 /// ways the firmwares take it.
+/// Whether G-code sets the chamber's temperature itself: a line that is
+/// `M141` or `M191` (GCode.cpp `custom_gcode_sets_temperature`).
+fn sets_chamber(text: &str) -> bool {
+    text.lines().any(|line| {
+        let Some(rest) = line.trim_start_matches([' ', '\t']).strip_prefix('M') else {
+            return false;
+        };
+        let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        matches!(rest[..digits].parse::<u32>(), Ok(141 | 191))
+    })
+}
+
 fn sets_pressure_advance(text: &str) -> bool {
     ["SET_PRESSURE_ADVANCE", "M900", "M572", "M233"]
         .iter()
@@ -1629,6 +1641,20 @@ impl Writer<'_> {
     /// What each filament the print uses asks of the exhaust fan
     /// (GCode.cpp `_do_export`, over `m_writer.extruders()`, the
     /// filaments used).
+    /// The chamber temperature the print heats to, where any of its
+    /// filaments asks for the chamber to be heated: the hottest any of
+    /// them gives (GCode.cpp `_do_export`, over the writer's extruders).
+    fn chamber(&self) -> Option<i64> {
+        let used = || {
+            (self.file.filaments.iter()).filter_map(|number| self.all.get(number.checked_sub(1)?))
+        };
+        let hottest = used()
+            .map(|s| s.chamber_temperature.round() as i64)
+            .max()
+            .unwrap_or(0);
+        (used().any(|s| s.activate_chamber_temp_control) && hottest > 0).then_some(hottest)
+    }
+
     fn exhaust_fans(&self) -> Vec<[Option<i64>; 2]> {
         (self.file.filaments.iter())
             .filter_map(|filament| self.all.get(filament - 1))
@@ -1872,7 +1898,26 @@ impl Writer<'_> {
         match &s.machine_start_gcode {
             Some(template) => {
                 writeln!(self.out, "{}Custom", self.tags().feature)?;
+                let at = self.out.len();
                 started = self.custom("machine_start_gcode", template)?;
+                // The chamber heated and waited for ahead of the start
+                // G-code, unless that sets it itself (GCode.cpp
+                // `_do_export`, `custom_gcode_sets_temperature`).
+                if let Some(chamber) = self.chamber()
+                    && !sets_chamber(&started)
+                {
+                    let mut heat = String::new();
+                    if s.auxiliary_fan {
+                        heat.push_str("M106 P2 S255 \n");
+                    }
+                    heat.push_str(&format!(
+                        "M191 S{chamber} ;set chamber_temperature and wait for it to be reached\n"
+                    ));
+                    if s.auxiliary_fan {
+                        heat.push_str("M106 P2 S0 \n");
+                    }
+                    self.out.splice(at..at, heat.into_bytes());
+                }
                 self.state.primed = true;
             }
             None => {
@@ -6002,6 +6047,10 @@ impl Writer<'_> {
                 self.custom("machine_end_gcode", template)?;
             }
             None => writeln!(self.out, "M104 S0\nM140 S0\nM84")?,
+        }
+        // The chamber's heater off (GCode.cpp `_do_export`).
+        if self.chamber().is_some() {
+            writeln!(self.out, "M141 S0;set chamber_temperature")?;
         }
         // The exhaust fan as the print's filaments ask once it is done,
         // after the end G-code (GCode.cpp `_do_export`).

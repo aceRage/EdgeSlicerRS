@@ -253,6 +253,12 @@ pub struct PrintSettings {
     /// percent once the first layers are down.
     pub auxiliary_fan: bool,
     pub additional_cooling_fan_speed: f64,
+    /// Whether this filament has the chamber heated to its
+    /// `chamber_temperature`, in °C, before the start G-code and the heater
+    /// put off at the end (GCode.cpp `_do_export`; the print takes the
+    /// hottest of its filaments' once any of them asks).
+    pub activate_chamber_temp_control: bool,
+    pub chamber_temperature: f64,
     /// The part fan told early and kick-started (`fan_speedup_time`,
     /// `fan_speedup_overhangs`, `fan_kickstart`), where asked.
     pub fan_timing: Option<FanTiming>,
@@ -528,6 +534,8 @@ impl Default for PrintSettings {
             dont_slow_down_outer_wall: false,
             circle_compensation_speed: 200.0,
             auxiliary_fan: false,
+            activate_chamber_temp_control: false,
+            chamber_temperature: 0.0,
             fan_timing: None,
             additional_cooling_fan_speed: 0.0,
             skirt_speed: 50.0,
@@ -1082,6 +1090,8 @@ impl PrintSettings {
             )?
             .max(0.0),
             auxiliary_fan: flag("auxiliary_fan", false)?,
+            activate_chamber_temp_control: flag("activate_chamber_temp_control", false)?,
+            chamber_temperature: number("chamber_temperature", 0.0)?,
             additional_cooling_fan_speed: number("additional_cooling_fan_speed", 0.0)?,
             fan_timing: FanTiming::of(
                 number("fan_speedup_time", 0.0)?,
