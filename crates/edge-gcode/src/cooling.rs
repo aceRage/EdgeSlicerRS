@@ -183,6 +183,19 @@ pub fn pwm(percent: f64) -> u8 {
     (255.5 * percent / 100.0) as u8
 }
 
+/// A part fan speed as `M106 S` takes it, raised to the printer's floor
+/// where it is not off (GCodeWriter.cpp `set_fan`,
+/// `part_cooling_fan_min_pwm`): `floor` is that floor as `pwm` gives it,
+/// 0 for none. Speeds are whole percentages, which `pwm` keeps apart, so
+/// comparing the values it gives is comparing the percentages.
+pub fn floored(speed: u8, floor: u8) -> u8 {
+    if speed > 0 && speed < floor {
+        floor
+    } else {
+        speed
+    }
+}
+
 /// The same for the auxiliary fan, which the reference rounds differently.
 pub fn auxiliary_pwm(percent: f64) -> u8 {
     (255.0 * percent / 100.0) as u8
@@ -321,5 +334,16 @@ mod tests {
 
         assert_eq!((pwm(100.0), pwm(89.0), pwm(0.0)), (255, 227, 0));
         assert_eq!((auxiliary_pwm(50.0), auxiliary_pwm(100.0)), (127, 255));
+        // A floor of 40 %: off stays off, anything under is raised.
+        let floor = pwm(40.0);
+        assert_eq!(
+            (
+                floored(0, floor),
+                floored(pwm(15.0), floor),
+                floored(pwm(60.0), floor)
+            ),
+            (0, 102, 153)
+        );
+        assert_eq!(floored(pwm(15.0), 0), 38);
     }
 }

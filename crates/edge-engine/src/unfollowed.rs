@@ -192,8 +192,6 @@ const SILENT: &[Silent] = &[
         ],
     ),
     // Fan.
-    // GCodeWriter.cpp l.1449: a floor under any fan speed but 0.
-    silent("part_cooling_fan_min_pwm", Is("0")),
     // CoolingBuffer.cpp l.936: a fan speed of its own when 0 or more.
     silent("support_material_interface_fan_speed", Below(0.0, "-1")),
     // Geometry.

@@ -253,6 +253,9 @@ pub struct PrintSettings {
     /// percent once the first layers are down.
     pub auxiliary_fan: bool,
     pub additional_cooling_fan_speed: f64,
+    /// The least the part fan is run at where it runs at all, as `M106 S`
+    /// takes it (`part_cooling_fan_min_pwm`, in percent; 0 for none).
+    pub part_fan_floor: u8,
     /// Whether this filament has the chamber heated to its
     /// `chamber_temperature`, in °C, before the start G-code and the heater
     /// put off at the end (GCode.cpp `_do_export`; the print takes the
@@ -534,6 +537,7 @@ impl Default for PrintSettings {
             dont_slow_down_outer_wall: false,
             circle_compensation_speed: 200.0,
             auxiliary_fan: false,
+            part_fan_floor: 0,
             activate_chamber_temp_control: false,
             chamber_temperature: 0.0,
             fan_timing: None,
@@ -839,6 +843,11 @@ impl PrintSettings {
             None => (None, None),
         };
 
+        let part_fan_floor = crate::cooling::pwm(
+            number("part_cooling_fan_min_pwm", 0.0)?
+                .round()
+                .clamp(0.0, 100.0),
+        );
         Ok(Self {
             outer_wall_speed: number("outer_wall_speed", defaults.outer_wall_speed)?,
             inner_wall_speed: number("inner_wall_speed", defaults.inner_wall_speed)?,
@@ -1090,6 +1099,7 @@ impl PrintSettings {
             )?
             .max(0.0),
             auxiliary_fan: flag("auxiliary_fan", false)?,
+            part_fan_floor,
             activate_chamber_temp_control: flag("activate_chamber_temp_control", false)?,
             chamber_temperature: number("chamber_temperature", 0.0)?,
             additional_cooling_fan_speed: number("additional_cooling_fan_speed", 0.0)?,
@@ -1097,7 +1107,8 @@ impl PrintSettings {
                 number("fan_speedup_time", 0.0)?,
                 flag("fan_speedup_overhangs", true)?,
                 number("fan_kickstart", 0.0)?,
-            ),
+            )
+            .map(|timing| timing.with_floor(part_fan_floor)),
             skirt_speed: number("skirt_speed", defaults.skirt_speed)?,
             support_speed: number("support_speed", defaults.support_speed)?,
             support_interface_speed: number(

@@ -3034,6 +3034,7 @@ impl Writer<'_> {
         self.settle_fan(speed, over_air);
         self.settle_ironing_fan(speed);
         if self.state.fan != Some(speed) {
+            let speed = cooling::floored(speed, s.part_fan_floor);
             fans.push_str(&format!("M106 S{speed}\n"));
             self.state.fan = Some(speed);
         }
@@ -3055,6 +3056,7 @@ impl Writer<'_> {
                 text.push_str(&format!("M106 P2 S{speed}\n"));
             }
             if let Some(speed) = self.state.fan {
+                let speed = cooling::floored(speed, s.part_fan_floor);
                 text.push_str(&format!("M106 S{speed}\n"));
             }
             text.into_bytes()
@@ -3504,6 +3506,7 @@ impl Writer<'_> {
                 continue;
             };
             if let Some(speed) = speed {
+                let speed = cooling::floored(speed, self.settings.part_fan_floor);
                 settled.extend_from_slice(format!("M106 S{speed}\n").as_bytes());
             }
             rest = &tail[length..];
@@ -3726,6 +3729,7 @@ impl Writer<'_> {
             let ironing: Option<u8> = words.next().and_then(|word| word.parse().ok());
             if let Some(ironing) = ironing.filter(|ironing| *ironing != layer) {
                 let speed = if on { ironing } else { layer };
+                let speed = cooling::floored(speed, self.settings.part_fan_floor);
                 self.out
                     .extend_from_slice(format!("M106 S{speed}\n").as_bytes());
             }

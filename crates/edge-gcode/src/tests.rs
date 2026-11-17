@@ -4928,3 +4928,35 @@ fn the_chamber_is_heated_before_the_start_gcode_and_put_off_at_the_end() {
     assert!(sets_chamber("M141 S40") && sets_chamber("\tM191") && !sets_chamber("M1410 S2"));
     assert!(!sets_chamber("; M141 S40") && !sets_chamber("G1 M141"));
 }
+
+#[test]
+fn a_running_part_fan_is_never_told_less_than_the_printers_floor() {
+    let ramped = PrintSettings {
+        fan_min_speed: 10.0,
+        fan_max_speed: 60.0,
+        full_fan_speed_layer: 5,
+        close_fan_the_first_x_layers: 1,
+        ..basic()
+    };
+    let speeds = |settings: &PrintSettings| -> Vec<u32> {
+        printed(6, settings)
+            .lines()
+            .filter_map(|line| line.strip_prefix("M106 S"))
+            .map(|speed| speed.parse().unwrap())
+            .collect()
+    };
+    let free = speeds(&ramped);
+    assert!(
+        free.iter().any(|speed| (1..102).contains(speed)),
+        "{free:?}"
+    );
+    let floored = speeds(&PrintSettings {
+        part_fan_floor: cooling::pwm(40.0),
+        ..ramped
+    });
+    // The same commands, each raised to the floor where it runs at all.
+    assert_eq!(free.len(), floored.len());
+    for (free, floored) in free.iter().zip(&floored) {
+        assert_eq!(*floored, if *free == 0 { 0 } else { (*free).max(102) });
+    }
+}
