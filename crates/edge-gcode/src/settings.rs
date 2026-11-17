@@ -122,6 +122,11 @@ pub struct PrintSettings {
     pub initial_layer_speed: f64,
     /// All fill on the first layer.
     pub initial_layer_infill_speed: f64,
+    /// Over how many layers the speeds climb from the first layer's to
+    /// their own (`slow_down_layers`; 1 or less for none), counted from
+    /// the first layer above the raft's (`raft_layers`).
+    pub slow_down_layers: usize,
+    pub raft_layers: usize,
     pub travel_speed: f64,
     /// Speed of moves that only change height: `travel_speed_z` or else the
     /// travel speed, held to the machine's Z limit.
@@ -486,6 +491,8 @@ impl Default for PrintSettings {
             small_perimeter_speed: FloatOrPercent::Percent(50.0),
             initial_layer_speed: 30.0,
             initial_layer_infill_speed: 60.0,
+            slow_down_layers: 0,
+            raft_layers: 0,
             travel_speed: 120.0,
             z_speed: 120.0,
             filament_max_volumetric_speed: 0.0,
@@ -953,6 +960,8 @@ impl PrintSettings {
                 defaults.small_perimeter_speed,
             )?,
             initial_layer_speed: number("initial_layer_speed", defaults.initial_layer_speed)?,
+            slow_down_layers: number("slow_down_layers", 0.0)?.max(0.0) as usize,
+            raft_layers: number("raft_layers", 0.0)?.max(0.0) as usize,
             initial_layer_infill_speed: number(
                 "initial_layer_infill_speed",
                 defaults.initial_layer_infill_speed,

@@ -5205,6 +5205,12 @@ impl Writer<'_> {
             Role::Support => s.support_speed,
             Role::SupportInterface => s.support_interface_speed,
         };
+        let wanted = match role {
+            Role::PrimeTower | Role::PrimeLine => wanted,
+            Role::Skirt if s.skirt_speed > 0.0 => wanted,
+            _ if first_layer => wanted,
+            _ => self.slowed_down(role, wanted),
+        };
         let melts = (s.filament_max_volumetric_speed > 0.0)
             .then(|| s.filament_max_volumetric_speed / self.melted(role, flow));
         let speed = melts.map_or(wanted, |melts| wanted.min(melts));
@@ -5244,6 +5250,39 @@ impl Writer<'_> {
             } else {
                 s.default_acceleration
             },
+        }
+    }
+
+    /// A speed on the layers `slow_down_layers` covers: no more than the
+    /// first layer's speed (the walls', or the fill's for the rest) part
+    /// of the way to its own, as far along as the layer is (GCode.cpp
+    /// `_extrude`, l.11433; above a raft from the first layer on it).
+    fn slowed_down(&self, role: Role, speed: f64) -> f64 {
+        let s = self.settings;
+        let layer = self
+            .object_layer
+            .map_or(self.state.layer, |(number, _)| number);
+        let Some(above) = layer.checked_sub(s.raft_layers) else {
+            return speed;
+        };
+        if s.slow_down_layers <= 1 || above == 0 || above >= s.slow_down_layers {
+            return speed;
+        }
+        let perimeter = matches!(
+            role,
+            Role::ExternalPerimeter | Role::Perimeter | Role::OverhangPerimeter
+        );
+        let first = if perimeter {
+            s.initial_layer_speed
+        } else {
+            s.initial_layer_infill_speed
+        };
+        if first < speed {
+            let share = above as f64 / s.slow_down_layers as f64;
+            // `Slic3r::lerp`, in its order.
+            speed.min((1.0 - share) * first + share * speed)
+        } else {
+            speed
         }
     }
 

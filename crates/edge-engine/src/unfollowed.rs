@@ -112,8 +112,6 @@ const SILENT: &[Silent] = &[
         Is("0"),
         &["overhang_shadow_distance", "overhang_shadow_speed_ratio"],
     ),
-    // GCode.cpp l.11433: a ramp over more than one layer.
-    silent("slow_down_layers", Below(2.0, "0")),
     // GCode.cpp l.10908: small support loops at their own speed.
     gate(
         "small_support_perimeter_threshold",
@@ -497,7 +495,6 @@ mod tests {
         // Turned off in other words, nothing either.
         let off = Settings::from_json(
             r#"{"z_offset": "0.0", "filament_shrink": ["100", "100%"],
-                "slow_down_layers": "1",
                 "bottom_layer_direction": "-3", "use_relative_e_distances": "true",
                 "file_start_gcode": "", "mixed_filament_definitions": "\"\"",
                 "adaptive_pressure_advance": ["1"], "enable_pressure_advance": ["0"],
@@ -511,7 +508,7 @@ mod tests {
     #[test]
     fn settings_nothing_reads_are_said_when_they_change_the_print() {
         let on = Settings::from_json(
-            r#"{"filament_shrink": ["100%", "98%"], "slow_down_layers": "3",
+            r#"{"filament_shrink": ["100%", "98%"],
                 "adaptive_pressure_advance": ["1"], "enable_pressure_advance": ["1"],
                 "prime_volume_mode": "Fast", "stabilizer_supports": "auto",
                 "file_start_gcode": "M117 first line\nM117 second line"}"#,
@@ -521,7 +518,6 @@ mod tests {
         assert_eq!(
             said,
             [
-                "slow_down_layers \"3\": not followed; the print is made as if it were \"0\"",
                 "adaptive_pressure_advance \"1\": not followed; the print is made as if it were \"0\"",
                 "filament_shrink \"98%\": not followed; the print is made as if it were \"100%\"",
                 "prime_volume_mode \"Fast\": not followed; the print is made as if it were \"Default\"",

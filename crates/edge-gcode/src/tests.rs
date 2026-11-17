@@ -5133,3 +5133,52 @@ fn marlin_2_is_told_its_junction_deviation_on_the_first_layer() {
     assert_eq!(read(&marlin2.replace("marlin2", "klipper")), None);
     assert_eq!(read(&marlin2.replace("\"0.05\"", "\"0\"")), None);
 }
+
+#[test]
+fn speeds_climb_from_the_first_layers_over_the_slowed_down_layers() {
+    let settings = PrintSettings {
+        slow_down_layers: 4,
+        initial_layer_speed: 40.0,
+        initial_layer_infill_speed: 80.0,
+        outer_wall_speed: 120.0,
+        sparse_infill_speed: 200.0,
+        ..basic()
+    };
+    let text = printed(6, &settings);
+    let layers: Vec<&str> = text.split(";LAYER_CHANGE").skip(1).collect();
+    let feeds = |feature: &str| -> Vec<f64> {
+        layers
+            .iter()
+            .map(|layer| feed_of(layer, feature).unwrap() / 60.0)
+            .collect()
+    };
+    // A quarter of the way more on each layer, the walls from the first
+    // layer's wall speed, the fill from its fill speed.
+    assert_eq!(feeds("Outer wall"), [40.0, 60.0, 80.0, 100.0, 120.0, 120.0]);
+    assert_eq!(
+        feeds("Sparse infill")[1..],
+        [110.0, 140.0, 170.0, 200.0, 200.0]
+    );
+    // Above a raft of two layers, from the first layer above it.
+    let raft = PrintSettings {
+        raft_layers: 2,
+        ..settings.clone()
+    };
+    let text = printed(6, &raft);
+    let walls: Vec<f64> = text
+        .split(";LAYER_CHANGE")
+        .skip(1)
+        .map(|layer| feed_of(layer, "Outer wall").unwrap() / 60.0)
+        .collect();
+    assert_eq!(walls[1..], [120.0, 120.0, 60.0, 80.0, 100.0]);
+    // One layer or none: nothing slowed.
+    let text = printed(
+        3,
+        &PrintSettings {
+            slow_down_layers: 1,
+            ..settings
+        },
+    );
+    let second = text.split(";LAYER_CHANGE").nth(2).unwrap();
+    assert_eq!(feed_of(second, "Outer wall"), Some(7200.0));
+}
