@@ -545,6 +545,9 @@ pub fn write_timed(
     variables.set("max_layer_z", Value::Float(top));
     variables.set("layer_num", Value::Int(0));
     variables.set("layer_z", Value::Float(0.0));
+    // With the first printing filament's offset in it (GCode.cpp
+    // `_do_export`, the `z_offset` placeholder set after it is folded in).
+    variables.set("z_offset", Value::Float(settings[first].z_offset));
     for name in [
         "initial_extruder",
         "initial_tool",
@@ -611,7 +614,11 @@ pub fn write_timed(
         settings: &settings[first],
         variables,
         filament_area: PI * (settings[first].filament_diameter / 2.0).powi(2),
+        z_offset: settings[first].z_offset,
         state: State {
+            // GCode.cpp `preamble`: the writer starts at the offset, so a
+            // lift before the first layer rises from there.
+            z: settings[first].z_offset,
             tool: first,
             parked: vec![(false, 0.0); settings.len()],
             used: vec![(0.0, 0.0); settings.len()],
@@ -1316,6 +1323,11 @@ struct Writer<'a> {
     variables: Variables,
     /// Cross-section of the filament in mm².
     filament_area: f64,
+    /// Added to every height the nozzle is sent to: the printer's and the
+    /// first printing filament's Z offset ([`PrintSettings::z_offset`]).
+    /// The layers' own heights, their tags and what templates are told
+    /// (`layer_z`, `max_layer_z`) are without it, as the reference's.
+    z_offset: f64,
     state: State,
     /// How the layer being written spends its time.
     timing: Timing,
@@ -2033,7 +2045,7 @@ impl Writer<'_> {
             .state
             .position
             .map_or((0.0, 0.0), |at| (self.gcode_x(at), self.gcode_y(at)));
-        let height = self.state.height.unwrap_or(z);
+        let height = self.state.height.unwrap_or(z + self.z_offset);
         // Every change so far and this one, the print's first taking up
         // of a tool included (GCode.cpp `m_toolchange_count`).
         self.state.swaps += 1;
@@ -2569,7 +2581,10 @@ impl Writer<'_> {
             (Some(_), _) | (None, None) => self.state.z + s.z_hop,
             (None, Some(height)) => height,
         };
-        let up = lifted.max(self.state.max_z);
+        // The reference goes to the highest layer without the Z offset
+        // (GCode.cpp `_do_export`, `travel_to_z(m_max_layer_z)`), into the
+        // copy just printed when the offset is above 0; not copied.
+        let up = lifted.max(self.state.max_z + self.z_offset);
         if self.state.height.is_none_or(|height| height < up - 1e-9) {
             self.feed(s.z_speed);
             let feed_word = self.feed_word();
@@ -2738,14 +2753,15 @@ impl Writer<'_> {
         // move of its own, which the spiral starts its ramp from
         // (GCode.cpp `change_layer`: "force to normal lift immediately in
         // spiral vase mode").
+        let z = layer.z + self.z_offset;
         if s.spiral.is_some() {
             self.feed(s.z_speed);
             let feed_word = self.feed_word();
-            writeln!(self.out, "G1 Z{:.3}{feed_word}", layer.z)?;
+            writeln!(self.out, "G1 Z{z:.3}{feed_word}")?;
             if let Some(height) = self.state.height {
-                self.spend((layer.z - height).abs() / s.z_speed);
+                self.spend((z - height).abs() / s.z_speed);
             }
-            self.state.height = Some(layer.z);
+            self.state.height = Some(z);
             self.state.pending_lift = None;
         }
         self.variables.set("layer_num", Value::Int(index as i64));
@@ -2896,7 +2912,7 @@ impl Writer<'_> {
         self.ways.clear();
         self.shelters.clear();
         // The nozzle itself moves up with the layer's first travel.
-        self.state.z = layer.z;
+        self.state.z = z;
         self.state.max_z = self.state.max_z.max(layer.z);
         self.below = if own == 0 {
             None
@@ -3121,14 +3137,15 @@ impl Writer<'_> {
                         .map_or(0.0, |at| distance(at, wipe.start));
                     let s = self.settings;
                     self.go(wipe.start, None, s.travel_speed, length)?;
-                    if self.state.height != Some(layer.z) {
+                    let z = layer.z + self.z_offset;
+                    if self.state.height != Some(z) {
                         self.feed(s.z_speed);
                         let feed_word = self.feed_word();
-                        writeln!(self.out, "G1 Z{:.3}{feed_word}", layer.z)?;
+                        writeln!(self.out, "G1 Z{z:.3}{feed_word}")?;
                         if let Some(height) = self.state.height {
-                            self.spend((height - layer.z).abs() / s.z_speed);
+                            self.spend((height - z).abs() / s.z_speed);
                         }
-                        self.state.height = Some(layer.z);
+                        self.state.height = Some(z);
                     }
                     self.state.pending_lift = None;
                 }
@@ -3303,7 +3320,7 @@ impl Writer<'_> {
         self.flush_labels()?;
         self.variables.set("layer_z", Value::Float(z));
         let text = self.custom("time_lapse_gcode", template)?;
-        self.after_timelapse(&text, z, bambu)?;
+        self.after_timelapse(&text, z + self.z_offset, bambu)?;
         // The template moves the head, so where it is after is not known.
         if bambu {
             self.state.position = None;
@@ -3348,7 +3365,8 @@ impl Writer<'_> {
         self.state.farthest = None;
         self.state.pictured = true;
         let z = self.state.z;
-        self.variables.set("layer_z", Value::Float(z));
+        self.variables
+            .set("layer_z", Value::Float(z - self.z_offset));
         self.variables
             .set("timelapse_inline_photo", Value::Bool(true));
         let text = self.custom("time_lapse_gcode", template);
@@ -4431,6 +4449,7 @@ impl Writer<'_> {
             return Ok(());
         }
         let layer = self.state.z;
+        let tower = tower + self.z_offset;
         self.plunge(tower)?;
         self.state.z = tower;
         self.state.lowered = Some(layer);
@@ -5933,7 +5952,7 @@ impl Writer<'_> {
         self.state.feedrate = 0.0;
         self.state.z = top;
         self.state.height = Some(top);
-        self.state.max_z = top;
+        self.state.max_z = top - self.z_offset;
         Ok(())
     }
 

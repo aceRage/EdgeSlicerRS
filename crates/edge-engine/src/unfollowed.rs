@@ -203,9 +203,6 @@ const SILENT: &[Silent] = &[
         "chamber_temperature",
         Is("0"),
     ),
-    // Height: GCodeWriter adds it to every Z (GCode.cpp l.3742).
-    silent("z_offset", Is("0")),
-    silent("filament_z_offset", Is("0")),
     // Geometry.
     // PrintObjectSlice.cpp l.319.
     silent("enable_order_independent_overlap_carving", Is("0")),
@@ -549,7 +546,7 @@ mod tests {
     #[test]
     fn settings_nothing_reads_are_said_when_they_change_the_print() {
         let on = Settings::from_json(
-            r#"{"z_offset": "0.2", "filament_shrink": ["100%", "98%"], "slow_down_layers": "3",
+            r#"{"filament_shrink": ["100%", "98%"], "slow_down_layers": "3",
                 "default_junction_deviation": "0.02", "gcode_flavor": "marlin2",
                 "adaptive_pressure_advance": ["1"], "enable_pressure_advance": ["1"],
                 "prime_volume_mode": "Fast", "stabilizer_supports": "auto",
@@ -563,7 +560,6 @@ mod tests {
                 "default_junction_deviation \"0.02\": not followed; the print is made as if it were \"0\"",
                 "slow_down_layers \"3\": not followed; the print is made as if it were \"0\"",
                 "adaptive_pressure_advance \"1\": not followed; the print is made as if it were \"0\"",
-                "z_offset \"0.2\": not followed; the print is made as if it were \"0\"",
                 "filament_shrink \"98%\": not followed; the print is made as if it were \"100%\"",
                 "prime_volume_mode \"Fast\": not followed; the print is made as if it were \"Default\"",
                 "stabilizer_supports \"auto\": not followed; the print is made as if it were \"off\"",
@@ -578,7 +574,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(followed.notes_on("slow_down").count(), 0);
-        assert_eq!(followed.notes_on("z_offset").count(), 1);
+        assert_eq!(followed.notes_on("filament_shrink").count(), 1);
         // Looking does not count as reading: what a slice reads is how the
         // desktop app tells a setting that changes nothing.
         let reads = edge_config::Reads::default();

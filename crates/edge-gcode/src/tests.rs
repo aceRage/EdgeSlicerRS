@@ -4831,3 +4831,56 @@ fn a_layer_with_nothing_to_lay_is_not_written_but_still_counted() {
     assert!(text.contains("; total layer number: 2"));
     assert!(text.contains("; total layers count = 3"));
 }
+
+#[test]
+fn the_z_offset_is_added_to_every_height_the_nozzle_is_sent_to() {
+    // Templates are told the layers' own heights, without the offset
+    // (GCode.cpp `process_layer`, `layer_z` and `max_layer_z`).
+    let plain = PrintSettings {
+        z_hop: 0.4,
+        ..profile(&[
+            ("before", ";BEFORE [layer_z] [max_layer_z]"),
+            ("start", ";START"),
+        ])
+    };
+    let shifted = PrintSettings {
+        z_offset: 0.3,
+        ..plain.clone()
+    };
+    let (without, with) = (printed(3, &plain), printed(3, &shifted));
+    assert_eq!(without.lines().count(), with.lines().count());
+    let mut heights = 0;
+    for (a, b) in without.lines().zip(with.lines()) {
+        let code = |line: &str| line.split(';').next().unwrap_or("").trim().to_owned();
+        let is_move = ["G0 ", "G1 ", "G2 ", "G3 "]
+            .iter()
+            .any(|start| code(a).starts_with(start));
+        match (is_move, word(&code(a), 'Z'), word(&code(b), 'Z')) {
+            (true, Some(low), Some(high)) => {
+                assert!((high - low - 0.3).abs() < 1e-9, "{a} / {b}");
+                heights += 1;
+            }
+            _ => assert_eq!(a, b),
+        }
+    }
+    assert!(heights >= 6, "{heights}");
+    assert!(with.contains(";BEFORE 0.4 0.4"), "{with}");
+    let told = PrintSettings {
+        machine_start_gcode: Some(";OFFSET [z_offset]".into()),
+        ..shifted
+    };
+    assert!(printed(1, &told).contains(";OFFSET 0.3"));
+    assert!(with.contains(";Z:0.600"));
+}
+
+#[test]
+fn a_filaments_z_offset_is_added_to_the_printers() {
+    let settings = edge_config::Settings::from_json(
+        r#"{"z_offset": "-0.1", "filament_z_offset": ["0.25", "0.05"]}"#,
+    )
+    .unwrap();
+    let first = PrintSettings::for_filament(&settings, 0).unwrap();
+    let second = PrintSettings::for_filament(&settings, 1).unwrap();
+    assert!((first.z_offset - 0.15).abs() < 1e-9);
+    assert!((second.z_offset + 0.05).abs() < 1e-9);
+}

@@ -132,6 +132,11 @@ pub struct PrintSettings {
     /// Travels shorter than this are made without retracting.
     pub retraction_minimum_travel: f64,
     pub z_hop: f64,
+    /// Added to every height the nozzle is sent to: the printer's
+    /// `z_offset` and this filament's `filament_z_offset`. The print
+    /// takes the first printing filament's (GCode.cpp `_do_export`,
+    /// "fold the first printing filament's Z offset into the job's").
+    pub z_offset: f64,
     pub lift: Lift,
     /// Steepness of a ramped lift, in degrees.
     pub travel_slope: f64,
@@ -468,6 +473,7 @@ impl Default for PrintSettings {
             deretraction_speed: 0.0,
             retraction_minimum_travel: 2.0,
             z_hop: 0.4,
+            z_offset: 0.0,
             lift: Lift::Slope,
             travel_slope: 3.0,
             retract_lift_above: 0.0,
@@ -936,6 +942,7 @@ impl PrintSettings {
                 defaults.retraction_minimum_travel,
             )?,
             z_hop: overridable("z_hop", defaults.z_hop)?,
+            z_offset: number("z_offset", 0.0)? + number("filament_z_offset", 0.0)?,
             lift,
             travel_slope: number("travel_slope", defaults.travel_slope)?,
             retract_lift_above: number("retract_lift_above", 0.0)?,
