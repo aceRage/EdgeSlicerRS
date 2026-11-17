@@ -964,6 +964,57 @@ fn lines_laid_in_turn_keep_their_order_and_direction() {
 }
 
 #[test]
+fn a_grids_lines_are_reordered_but_not_turned_unless_the_area_is() {
+    // (where each line starts, in the order laid)
+    let laid = |fill: &[ExtrusionPath]| -> Vec<(f64, f64)> {
+        let (text, _) = print(&one_layer(&[], &[], fill), &basic());
+        let mut at = (0.0, 0.0);
+        let mut found = Vec::new();
+        for line in moves(&text) {
+            let before = at;
+            at = (
+                word(line, 'X').unwrap_or(at.0),
+                word(line, 'Y').unwrap_or(at.1),
+            );
+            if word(line, 'E').is_some_and(|e| e > 0.0) && at != before {
+                found.push((before.0, before.1));
+            }
+        }
+        found
+    };
+    // Three rows of one grid area, each from left to right, given
+    // bottom, top, middle: taken nearest first, but each from its left
+    // end (Fill.cpp `params.can_reverse = false` for a grid).
+    let grid = ExtrusionPath::KEPT_WAY | 1;
+    let rows = [1.0, 9.0, 5.0].map(|y| ExtrusionPath {
+        part: grid,
+        ..line((1.0, y), (9.0, y), Role::SparseInfill)
+    });
+    assert_eq!(laid(&rows), [(1.0, 1.0), (1.0, 5.0), (1.0, 9.0)]);
+    // Begun at its far end, the area has every line turned
+    // (ExtrusionEntityCollection.cpp `reverse`): an area of solid fill
+    // ending beside the grid's last line sends the nozzle in there.
+    let fill = [
+        ExtrusionPath {
+            part: 2,
+            ..line((20.0, 3.0), (12.0, 3.0), Role::SolidInfill)
+        },
+        ExtrusionPath {
+            part: grid,
+            ..line((1.0, 1.0), (9.0, 1.0), Role::SparseInfill)
+        },
+        ExtrusionPath {
+            part: grid,
+            ..line((1.0, 3.0), (9.0, 3.0), Role::SparseInfill)
+        },
+    ];
+    assert_eq!(laid(&fill), [(20.0, 3.0), (9.0, 3.0), (9.0, 1.0)]);
+    // A grid area of a single line may be begun at either end too.
+    let single = [fill[0].clone(), fill[2].clone()];
+    assert_eq!(laid(&single), [(20.0, 3.0), (9.0, 3.0)]);
+}
+
+#[test]
 fn an_areas_own_gap_fill_is_chained_with_its_lines() {
     // Two bottom lines far apart and, given after them, a gap line of the
     // same area beside the first: it is laid between the two, where it

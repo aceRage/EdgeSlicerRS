@@ -11,13 +11,16 @@
 
 mod anchored;
 mod bridges;
+mod connect;
 mod counterbore;
 mod curves;
+mod cxx_sort;
 mod fill;
 mod internal_bridges;
 mod ironing;
 pub mod lines;
 mod narrow;
+mod rectilinear;
 mod settings;
 mod surfaces;
 
