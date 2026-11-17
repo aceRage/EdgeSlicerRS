@@ -5322,3 +5322,67 @@ fn a_filament_changed_by_hand_is_a_comment_and_starts_without_the_change_gcode()
     let (text, _) = in_filaments(&[&[0, 1], &[1, 0]], &named);
     assert_eq!(text.matches("; MANUAL_TOOL_CHANGE T1").count(), 1, "{text}");
 }
+
+#[test]
+fn a_layer_too_short_even_slowed_is_paused_off_the_print() {
+    // Four small layers on a 200 mm bed; the minimum layer time pause asks
+    // each layer for 30 s, which no slowdown of a 10 mm square reaches.
+    let settings = PrintSettings {
+        bed: Some([0.0, 0.0, 200.0, 200.0]),
+        retraction_length: 0.8,
+        min_layer_time_pause: 30.0,
+        ..basic()
+    };
+    let (text, summary) = printed_with_summary(4, &settings);
+    // Not on the first layer nor the last: the second and third.
+    assert_eq!(summary.paused_layers, 2);
+    assert_eq!(text.matches(";MIN_LAYER_TIME_PAUSE ").count(), 2);
+    assert!(!text.contains("_MIN_LAYER_TIME_PAUSE"));
+    let second = text.split(";LAYER_CHANGE").nth(2).unwrap();
+    let at = second
+        .lines()
+        .position(|line| line.starts_with(";MIN_LAYER_TIME_PAUSE"))
+        .unwrap();
+    let lines: Vec<&str> = second.lines().collect();
+    // Pulled back, lifted a millimetre, parked at the bed's nearest edge
+    // 5 mm in, the wait, and back the way it came.
+    assert!(
+        lines[at - 3].starts_with("G1 E-0.80000"),
+        "{}",
+        lines[at - 3]
+    );
+    assert!(lines[at - 2].starts_with("G1 Z1.400"), "{}", lines[at - 2]);
+    assert!(
+        lines[at - 1].starts_with("G1 X5.000 Y"),
+        "{}",
+        lines[at - 1]
+    );
+    assert!(lines[at + 1].starts_with("G4 P"), "{}", lines[at + 1]);
+    assert!(lines[at + 3].starts_with("G1 Z0.400"), "{}", lines[at + 3]);
+    assert!(
+        lines[at + 4].starts_with("G1 E0.80000"),
+        "{}",
+        lines[at + 4]
+    );
+    assert!(lines[at + 5].starts_with("G1 F"), "{}", lines[at + 5]);
+    // The wait comes to the time the layer lacks.
+    let wait: f64 = lines[at + 1][4..].parse::<f64>().unwrap() / 1000.0;
+    assert!(wait > 25.0 && wait < 30.0, "{wait}");
+    // Long enough layers are left as they are, with nothing of the pause.
+    let quick = PrintSettings {
+        min_layer_time_pause: 0.4,
+        ..settings.clone()
+    };
+    let (kept, summary) = printed_with_summary(4, &quick);
+    assert_eq!(summary.paused_layers, 0);
+    assert_eq!(
+        kept,
+        printed(
+            4,
+            &PrintSettings {
+                min_layer_time_pause: 0.0,
+                ..settings
+            }
+        )
+    );
+}
