@@ -1372,12 +1372,15 @@ fn marlin_2_is_told_printing_and_travel_accelerations_apart() {
     };
     // GCodeWriter.cpp `set_acceleration_internal`: `M204 P` for printing,
     // `M204 T` for travel, each said again only when it changes, so the
-    // travel after the outer wall needs no line of its own.
+    // travel after the outer wall needs no line of its own. The printing
+    // one is set as each of the first two layers starts, before its
+    // first travel (GCode.cpp `process_layer`).
     assert_eq!(
         limits(&marlin2),
         [
-            "M204 T500",
             "M204 P500",
+            "M204 T500",
+            "M204 P10000",
             "M204 T12000",
             "M204 P5000",
             "M204 P10000",
@@ -1392,7 +1395,7 @@ fn marlin_2_is_told_printing_and_travel_accelerations_apart() {
     };
     assert_eq!(
         limits(&held)[2..],
-        ["M204 T9000", "M204 P5000", "M204 P8000"]
+        ["M204 P8000", "M204 T9000", "M204 P5000", "M204 P8000"]
     );
     // Repetier says them with M201 and M202; Marlin before 2 with one
     // `M204 S`, printing and travel alike.
@@ -1402,7 +1405,7 @@ fn marlin_2_is_told_printing_and_travel_accelerations_apart() {
     };
     assert_eq!(
         limits(&repetier)[..3],
-        ["M202 X500 Y500", "M201 X500 Y500", "M202 X12000 Y12000"]
+        ["M201 X500 Y500", "M202 X500 Y500", "M201 X10000 Y10000"]
     );
     let marlin = PrintSettings {
         acceleration_form: AccelerationForm::Single,
@@ -1410,7 +1413,7 @@ fn marlin_2_is_told_printing_and_travel_accelerations_apart() {
     };
     assert_eq!(
         limits(&marlin)[..3],
-        ["M204 S500", "M204 S12000", "M204 S5000"]
+        ["M204 S500", "M204 S10000", "M204 S12000"]
     );
 }
 
@@ -1519,9 +1522,12 @@ fn acceleration_follows_the_feature_and_the_first_layer() {
         [
             // The whole first layer, travel included, is gentle.
             "SET_VELOCITY_LIMIT ACCEL=500 ACCEL_TO_DECEL=250 MINIMUM_CRUISE_RATIO=0.5",
-            // Second layer: the outer wall, then fill at the default. With
-            // no travel acceleration set, travel keeps whatever is set
-            // (GCode.cpp `travel_to`; it went at the default before).
+            // Second layer: the default as it starts (GCode.cpp
+            // `process_layer`, "Reset acceleration at second layer"), the
+            // outer wall, then fill at the default. With no travel
+            // acceleration set, travel keeps whatever is set (GCode.cpp
+            // `travel_to`).
+            "SET_VELOCITY_LIMIT ACCEL=10000 ACCEL_TO_DECEL=5000 MINIMUM_CRUISE_RATIO=0.5",
             "SET_VELOCITY_LIMIT ACCEL=5000 ACCEL_TO_DECEL=2500 MINIMUM_CRUISE_RATIO=0.5",
             "SET_VELOCITY_LIMIT ACCEL=10000 ACCEL_TO_DECEL=5000 MINIMUM_CRUISE_RATIO=0.5",
         ]
@@ -1536,6 +1542,7 @@ fn acceleration_follows_the_feature_and_the_first_layer() {
     assert_eq!(
         limits(&travelling)[1..],
         [
+            "SET_VELOCITY_LIMIT ACCEL=10000 ACCEL_TO_DECEL=5000 MINIMUM_CRUISE_RATIO=0.5",
             "SET_VELOCITY_LIMIT ACCEL=12000 ACCEL_TO_DECEL=6000 MINIMUM_CRUISE_RATIO=0.5",
             "SET_VELOCITY_LIMIT ACCEL=5000 ACCEL_TO_DECEL=2500 MINIMUM_CRUISE_RATIO=0.5",
             "SET_VELOCITY_LIMIT ACCEL=12000 ACCEL_TO_DECEL=6000 MINIMUM_CRUISE_RATIO=0.5",
@@ -1548,7 +1555,7 @@ fn acceleration_follows_the_feature_and_the_first_layer() {
         accel_to_decel_factor: None,
         ..klipper.clone()
     };
-    assert_eq!(limits(&marlin)[..2], ["M204 S500", "M204 S5000"]);
+    assert_eq!(limits(&marlin)[..2], ["M204 S500", "M204 S10000"]);
     // With no accelerations set, the printer's own are left alone.
     assert!(limits(&basic()).is_empty());
 }
@@ -4294,7 +4301,8 @@ fn each_copy_is_labelled_round_its_own_islands() {
             "{name}: {xs:?}"
         );
     }
-    // The same lines laid, the first copy's first.
+    // The same lines laid, the copies in the reference's order: of two,
+    // the second first (`copy_order.rs`).
     let laid = |text: &str| -> f64 {
         moves(text)
             .filter_map(|line| word(line, 'E'))
@@ -4303,8 +4311,8 @@ fn each_copy_is_labelled_round_its_own_islands() {
     };
     assert!((laid(&klipper) - laid(&plain)).abs() < 1e-9);
     assert!(
-        klipper.find("NAME=a_b_id_0_copy_0\nG1").unwrap()
-            < klipper.find("START NAME=c_id").unwrap()
+        klipper.find("NAME=c_id_1_copy_0\nG1").unwrap()
+            < klipper.find("START NAME=a_b_id").unwrap()
     );
     // Bambu Lab's: numbered in the header, each by its bit, with comments.
     let bambu = labelled(Some(Labelling::Bambu), true);
@@ -4339,13 +4347,16 @@ fn copies_are_named_in_comments_without_being_labelled_for_cancelling() {
     let marks: Vec<&str> = (text.lines())
         .filter(|line| line.contains("printing object"))
         .collect();
+    // Two copies chain the same either way round; the reference's queue
+    // leaves the second on top (ShortestPath.cpp
+    // `chain_print_object_instances`, `copy_order.rs`).
     assert_eq!(
         marks,
         [
-            "; printing object a b id:0 copy 0",
-            "; stop printing object a b id:0 copy 0",
             "; printing object c id:1 copy 0",
             "; stop printing object c id:1 copy 0",
+            "; printing object a b id:0 copy 0",
+            "; stop printing object a b id:0 copy 0",
         ]
     );
     for none in ["EXCLUDE_OBJECT", "M486", "M624", "M625", "unique label id"] {
@@ -4587,4 +4598,31 @@ fn the_farthest_point_prefers_the_outer_wall() {
     );
     let layer = one_layer(&inner, &[0..1], &[])[0];
     assert_eq!(bambu_vars::farthest_point(&[layer]), None);
+}
+
+#[test]
+fn a_layer_with_nothing_to_lay_is_not_written_but_still_counted() {
+    // GCode.cpp `process_layer` writes nothing for a layer with no
+    // extruders: a pointed top can leave one whose slice holds no line.
+    // It still counts among the print's layers (`m_layer_count`); the
+    // header counts the layers written.
+    let loops = [wall(0.0, 0.0, 10.0, 0)];
+    let [first] = one_layer(&loops, &[0..1], &[]);
+    let second = Layer { z: 0.4, ..first };
+    let empty = Layer {
+        z: 0.6,
+        loops: &[],
+        islands: &[],
+        ..first
+    };
+    let settings = PrintSettings {
+        layer_change_gcode: Some(";AT {layer_num} OF {total_layer_count}".to_owned()),
+        ..basic()
+    };
+    let (text, _) = print(&[first, second, empty], &settings);
+    assert_eq!(text.matches(";LAYER_CHANGE").count(), 2, "{text}");
+    assert!(!text.contains(";Z:0.600"));
+    assert!(text.contains(";AT 1 OF 3"), "{text}");
+    assert!(text.contains("; total layer number: 2"));
+    assert!(text.contains("; total layers count = 3"));
 }

@@ -341,9 +341,20 @@ impl Project {
                         .unwrap_or_default();
                     objects.push(Object {
                         id: item.object,
+                        // A file with nothing on the object in
+                        // `model_settings.config` names it by its
+                        // `name`, or else "Object_" and its place
+                        // (bbs_3mf.cpp `_load_model_from_file`, "config
+                        // data not found"), which is what slicing it
+                        // writes in `; printing object`.
                         name: object_settings
                             .and_then(|s| s.name.clone())
-                            .or_else(|| raw.name.clone()),
+                            .or_else(|| raw.name.clone())
+                            .or_else(|| {
+                                object_settings
+                                    .is_none()
+                                    .then(|| format!("Object_{}", objects.len() + 1))
+                            }),
                         filament: object_settings
                             .and_then(|s| s.extruder)
                             .filter(|extruder| *extruder > 0)

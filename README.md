@@ -1834,11 +1834,16 @@ with them on and labels off the copies are printed copy after copy all the
 same (2026-11-16). Not as the reference, on purpose: where a tool is
 changed in place (the U1) the reference writes the stop after the change
 G-code, so a printer skipping that copy skips the retraction, wipe and lift
-before the change too; here the stop comes before the change. And the
-copies a tool prints on a layer with a prime tower are chained from the
-tower, as the reference means to, where it starts from the bed's corner
-(it makes its point from `wipe_tower_x` in millimetres taken as
-nanometres), so the copies come in another order there. With labels off
+before the change too; here the stop comes before the change. The
+copies on a layer come in the reference's order (2026-11-16,
+`copy_order.rs`): their middles chained as ShortestPath.cpp
+`chain_print_object_instances` chains them, its k-d tree and heap ported
+for the ties and, with no prime tower, for which end the chain starts
+from. And the copies a tool prints on a layer with a prime tower are
+chained from the tower, as the reference means to, where it starts from
+the first plate's corner (it makes its point from `wipe_tower_x` in
+millimetres taken as nanometres, unscaled and without the plate's place,
+GCode.cpp l.9725 at the pin), so the copies come in another order there. With labels off
 (`exclude_object` off, not a Bambu Lab printer) and `gcode_label_objects`
 off, nothing changes.
 
