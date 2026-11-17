@@ -237,11 +237,32 @@ def described_field(option, name, value, axis=None):
         option[name] = strings(value)
 
 
+COUNTED_LIST = re.compile(
+    r"for\s*\(\s*int\s+(\w+)\s*=\s*(-?\d+)\s*;\s*\1\s*<=\s*(-?\d+)\s*;\s*\+\+\s*\1\s*\)\s*\{((?:\s*\w+->enum_(?:values|labels)"
+    r"\.push_back\(\s*std::to_string\(\s*\1\s*\)\s*\)\s*;)+)\s*\}")
+
+
+def counted_lists(source):
+    """`source` with each loop that lists numbers as an option's values
+    written out, as `support_interface_bottom_layers` makes its 0 to 10:
+
+        for (int i = 0; i <= 10; ++ i) {
+            def->enum_values.push_back(std::to_string(i));
+            def->enum_labels.push_back(std::to_string(i));
+        }
+    """
+    def expand(found):
+        name, first, last, body = found.groups()
+        return "".join(body.replace(f"std::to_string({name})", f'"{i}"').replace(f"std::to_string( {name} )", f'"{i}"')
+                       for i in range(int(first), int(last) + 1))
+    return COUNTED_LIST.sub(expand, source)
+
+
 def options(source):
     """Every option `PrintConfigDef` defines, by key. The machine limits
     are made in a loop over the axes (`"machine_max_speed_" + axis.name`),
     an option for each axis, `%1%` in their texts being the axis."""
-    source = without_comments(source)
+    source = counted_lists(without_comments(source))
     found = {}
     by_variable = {}
     # The axes' names, from the list the loop goes through.
