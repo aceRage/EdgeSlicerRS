@@ -1698,10 +1698,6 @@ pub struct Plate {
     /// `wipe_tower_y`), which the copies a tool prints on a layer with a
     /// tower are ordered from.
     pub tower_at: Option<Point2>,
-    /// Where the plate sits in the project, in mm: the place among the
-    /// others the reference adds to every copy's position
-    /// (`get_plate_origin`); nothing for the first plate or a model.
-    pub origin: [f64; 2],
     /// Printing object by object (`print_sequence` "by object"): each
     /// copy in the order it is printed, with the entries of the layers
     /// handed to the writer that are its own. Empty for a print laid

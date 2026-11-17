@@ -3174,7 +3174,7 @@ impl Writer<'_> {
             let tower = (self.settings.prime_tower && self.file.filaments.len() > 1)
                 .then(|| self.settings.plate.tower_at.or(self.all[0].plate.tower_at))
                 .flatten();
-            for copy in labels::order(&copies, &present, tower, self.all[0].plate.origin) {
+            for copy in labels::order(&copies, &present, tower) {
                 self.stringing_copy(copy)?;
                 self.begin_copy(copy)?;
                 let own: Vec<&ExtrusionLoop> = (layer.around.iter().zip(&brims))

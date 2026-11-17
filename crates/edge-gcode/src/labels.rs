@@ -276,24 +276,17 @@ pub(crate) fn brim_owner(labels: &[ObjectLabel], brim: &ExtrusionLoop) -> Option
 /// whichever end the reference's chaining leaves first, once for the
 /// whole print (`print_object_instances_ordering`).
 ///
-/// On a layer with a prime tower (`tower`) it runs through every copy of
-/// each object printing on the layer and is taken backwards. The
-/// reference means to start it from the tower, but makes the point from
-/// `wipe_tower_x` and `_y` in millimetres taken as its own units
-/// (nanometres; GCode.cpp `process_layer`, `Point wt_pos(...)`), where
-/// the copies stand in the project's coordinates with the plate's place
-/// among the others added (`get_plate_origin`): it starts from the
-/// corner of the first plate, and so ends there. That is followed here,
-/// though it is plainly not what was meant, so that the copies come in
-/// the reference's order; nothing is printed differently for it but the
-/// travel between copies. `origin` is the plate's place in the project,
-/// in mm.
-pub(crate) fn order(
-    labels: &[ObjectLabel],
-    present: &[bool],
-    tower: Option<Point2>,
-    origin: [f64; 2],
-) -> Vec<usize> {
+/// On a layer with a prime tower (`tower`, where it is set to stand) it
+/// runs through every copy of each object printing on the layer, starts
+/// from the tower and is taken backwards, so the copy nearest the tower
+/// comes last, as the reference means it to. Not as the reference, on
+/// purpose: it builds its point from `wipe_tower_x` and `_y` in
+/// millimetres taken as its own units, unscaled, and without the plate's
+/// place among the others that its copies carry (GCode.cpp
+/// `process_layer`, l.9725 at the pin, `Point wt_pos(...)`), so its chain
+/// starts at the first plate's corner instead. Only the order of the
+/// copies and the travel between them differ for it.
+pub(crate) fn order(labels: &[ObjectLabel], present: &[bool], tower: Option<Point2>) -> Vec<usize> {
     // The tower's chain runs through every copy of each object printing
     // on the layer; the plate's through every copy.
     let chained: Vec<usize> = match tower {
@@ -312,13 +305,7 @@ pub(crate) fn order(
             [m.x as f64, m.y as f64]
         })
         .collect();
-    let start = tower.map(|at| {
-        let corner = Point2::from_mm(-origin[0], -origin[1]);
-        [
-            (corner.x as f64) + unscaled(at.x).round(),
-            (corner.y as f64) + unscaled(at.y).round(),
-        ]
-    });
+    let start = tower.map(|at| [at.x as f64, at.y as f64]);
     let mut ordered: Vec<usize> = copy_order::order(&points, start)
         .into_iter()
         .map(|at| chained[at])
@@ -395,36 +382,19 @@ mod tests {
         assert_eq!(owner(&labels, Point2::from_mm(41.0, 12.0)), 1);
         // Outside every outline: the nearest middle.
         assert_eq!(owner(&labels, Point2::from_mm(70.0, 30.0)), 2);
-        // With a tower the chain starts at the first plate's corner,
-        // wherever the tower is, and is taken backwards: the copy nearest
-        // that corner last (GCode.cpp `process_layer`, `wt_pos`).
+        // From the tower, taken backwards: the copy nearest the tower
+        // last, wherever the tower stands (not from the first plate's
+        // corner, where the reference's unscaled `wt_pos` starts it).
         let all = [true; 3];
         assert_eq!(
-            order(&labels, &all, Some(Point2::from_mm(100.0, 10.0)), [0.0; 2]),
-            [2, 1, 0]
-        );
-        // On a plate to the right of the first, the corner is to its left.
-        assert_eq!(
-            order(
-                &labels,
-                &all,
-                Some(Point2::from_mm(5.0, 10.0)),
-                [300.0, 0.0]
-            ),
-            [2, 1, 0]
-        );
-        // On a plate to the left (none is, but the corner decides): the
-        // other way.
-        assert_eq!(
-            order(
-                &labels,
-                &all,
-                Some(Point2::from_mm(5.0, 10.0)),
-                [-300.0, 0.0]
-            ),
+            order(&labels, &all, Some(Point2::from_mm(100.0, 10.0))),
             [0, 1, 2]
         );
-        let free = order(&labels, &[true, false, true], None, [0.0; 2]);
+        assert_eq!(
+            order(&labels, &all, Some(Point2::from_mm(0.0, 10.0))),
+            [2, 1, 0]
+        );
+        let free = order(&labels, &[true, false, true], None);
         assert!(free == [0, 2] || free == [2, 0], "{free:?}");
     }
 }

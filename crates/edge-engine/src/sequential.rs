@@ -524,7 +524,6 @@ mod tests {
             negatives: vec![Mesh::default(), Mesh::default()],
             parts: Vec::new(),
             plate: 0,
-            origin: (0.0, 0.0),
             first_layer_sequence: Vec::new(),
             plate_settings: Default::default(),
             bounds: ([20.0, 90.0, 0.0], [140.0, 110.0, 8.0]),

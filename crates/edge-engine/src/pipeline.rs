@@ -401,7 +401,6 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         calibration,
     } = job;
     let (mut bodies, objects, plate) = (loaded.bodies, loaded.objects, loaded.plate);
-    let plate_origin = loaded.origin;
     let instance_labels = loaded.labels;
     let negatives = loaded.negatives;
     let seam_parts = loaded.parts;
@@ -2341,7 +2340,6 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     };
     plate_facts.labels = object_labels(&meshes, &instance_labels, &settings)?;
     plate_facts.tower_at = Some(Point2::from_mm(tower_settings.x, tower_settings.y));
-    plate_facts.origin = [plate_origin.0, plate_origin.1];
     let mut around: Vec<Vec<ExtrusionLoop>> = vec![Vec::new(); layers.len()];
     for (index, lines) in around.iter_mut().enumerate() {
         if adhesion.has_skirt(index) {
@@ -2697,7 +2695,6 @@ fn plate_facts(
     Ok(edge_gcode::Plate {
         labels: Vec::new(),
         tower_at: None,
-        origin: [0.0; 2],
         by_object: Vec::new(),
         first_layer_box,
         first_layer_centre,
