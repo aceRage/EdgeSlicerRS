@@ -1218,6 +1218,10 @@ fn a_move_off_an_overhanging_wall_retracts_even_in_the_shelter() {
 
 /// A wall and one fill line on each of `count` layers, 0.2 mm apart.
 fn printed(count: usize, settings: &PrintSettings) -> String {
+    printed_with_summary(count, settings).0
+}
+
+fn printed_with_summary(count: usize, settings: &PrintSettings) -> (String, Summary) {
     let loops = [wall(0.0, 0.0, 10.0, 0)];
     let fill = [line((2.0, 2.0), (8.0, 2.0), Role::SparseInfill)];
     let layers: Vec<Layer<'_>> = (0..count)
@@ -1241,7 +1245,7 @@ fn printed(count: usize, settings: &PrintSettings) -> String {
             below: &[],
         })
         .collect();
-    print(&layers, settings).0
+    print(&layers, settings)
 }
 
 fn profile(templates: &[(&str, &str)]) -> PrintSettings {
@@ -4674,6 +4678,49 @@ fn the_timelapse_picture_is_taken_at_the_farthest_point() {
         );
         assert!(second.find("; TIMELAPSE").unwrap() < second.find("; LAYER CHANGE").unwrap());
     }
+}
+
+/// The reference's cooling follows a timelapse template's moves
+/// (CoolingBuffer.cpp `parse`), so the travel back from where the
+/// template left the head counts towards the layer's time and the
+/// travelled length; an arc that ends where it starts is a whole turn
+/// (Circle.cpp `calc_arc_radian`).
+#[test]
+fn the_way_back_from_a_timelapse_template_is_timed() {
+    let moves = template_seconds("G2 Z1.6 I0.86 J0.86 P1 F20000", [5.0, 5.0], 1.2, 600.0);
+    let turn = (TAU * 0.86f64.hypot(0.86)).hypot(0.4);
+    assert!(
+        (moves.seconds - turn / (20000.0 / 60.0)).abs() < 1e-9,
+        "{moves:?}"
+    );
+    assert_eq!((moves.end, moves.feedrate), ([5.0, 5.0], 20000.0));
+    let moves = template_seconds(
+        "G1 X0 Y128 F18000\n    G0 Z1.6 F4000\nG91\nG1 X-10\nG90",
+        [0.0, 0.0],
+        1.2,
+        600.0,
+    );
+    assert_eq!((moves.end, moves.feedrate), ([-10.0, 128.0], 4000.0));
+
+    let with = |template: &str| {
+        let settings = PrintSettings {
+            time_lapse: Some((template.into(), Timelapse::LayerStart { bambu: true })),
+            ..bambu(&[("start", "PRINT_START")])
+        };
+        printed_with_summary(2, &settings).1
+    };
+    let still = with("; TIMELAPSE");
+    let away = with("; TIMELAPSE\nG1 X100 Y100 F6000");
+    // The template's own move, and the way back from (100, 100) to the
+    // fill, each counted.
+    let template = 10.0f64.hypot(10.0).max(90.0f64.hypot(90.0));
+    assert!(
+        away.travel_mm - still.travel_mm > 100.0,
+        "{} against {}",
+        away.travel_mm,
+        still.travel_mm
+    );
+    assert!(away.seconds - still.seconds > template / 100.0, "{away:?}");
 }
 
 /// The farthest point is an outer wall's; on a layer with none, the

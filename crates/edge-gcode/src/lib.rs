@@ -1061,14 +1061,26 @@ fn drain(out: &[u8], whole: &mut Vec<u8>, changes: &mut Vec<(usize, usize, f64)>
     }
 }
 
-/// How long a template's moves take as the reference's cooling reckons a
-/// layer (CoolingBuffer.cpp `parse`): each move's length across x, y and z,
-/// or else the filament's, at its feed rate, the length of an arc round its
-/// centre, and the waits of `G4`. `from` is where the nozzle starts, at
+/// What a template's moves come to as the reference's cooling reckons a
+/// layer (CoolingBuffer.cpp `parse`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TemplateMoves {
+    /// Each move's length across x, y and z, or else the filament's, at
+    /// its feed rate, the length of an arc round its centre, and the
+    /// waits of `G4`.
+    seconds: f64,
+    /// Where the moves leave the nozzle across the bed, and at what feed
+    /// rate in mm/min.
+    end: [f64; 2],
+    feedrate: f64,
+}
+
+/// [`TemplateMoves`] of a template. `from` is where the nozzle starts, at
 /// `height`, with `feedrate` (mm/min) in force.
-fn template_seconds(text: &str, from: [f64; 2], height: f64, feedrate: f64) -> f64 {
+fn template_seconds(text: &str, from: [f64; 2], height: f64, feedrate: f64) -> TemplateMoves {
     let mut at = [from[0], from[1], height];
     let mut feed = feedrate / 60.0;
+    let mut last_feedrate = feedrate;
     let mut absolute = true;
     let mut seconds = 0.0;
     for line in text.lines() {
@@ -1094,6 +1106,7 @@ fn template_seconds(text: &str, from: [f64; 2], height: f64, feedrate: f64) -> f
             "G0" | "G1" | "G2" | "G3" => {
                 if let Some(f) = value('F') {
                     feed = f / 60.0;
+                    last_feedrate = f;
                 }
                 let mut to = at;
                 for (axis, letter) in ['X', 'Y', 'Z'].into_iter().enumerate() {
@@ -1107,7 +1120,13 @@ fn template_seconds(text: &str, from: [f64; 2], height: f64, feedrate: f64) -> f
                         let radius = i.hypot(j);
                         let start = (at[1] - centre[1]).atan2(at[0] - centre[0]);
                         let end = (to[1] - centre[1]).atan2(to[0] - centre[0]);
-                        let mut sweep = if command == "G3" {
+                        // One that ends where it starts goes all the way
+                        // round (Circle.cpp `calc_arc_radian`): a Bambu Lab
+                        // template's "spiral lift a little" is one.
+                        let closed = (to[0] - at[0]).hypot(to[1] - at[1]) < 1e-6;
+                        let mut sweep = if closed {
+                            std::f64::consts::TAU
+                        } else if command == "G3" {
                             end - start
                         } else {
                             start - end
@@ -1133,7 +1152,11 @@ fn template_seconds(text: &str, from: [f64; 2], height: f64, feedrate: f64) -> f
             _ => {}
         }
     }
-    seconds
+    TemplateMoves {
+        seconds,
+        end: [at[0], at[1]],
+        feedrate: last_feedrate,
+    }
 }
 
 /// The way a Bambu Lab printer's head goes to its filament cutter and back
@@ -1454,6 +1477,11 @@ impl<'a> Laid<'a> {
 struct State {
     /// Where the nozzle is, once it has been anywhere.
     position: Option<Point2>,
+    /// Where a template that moved the head across left it, in the
+    /// file's own coordinates, while `position` is unknown for it: what
+    /// the next travel's time is reckoned from, as the reference's
+    /// cooling follows the template's moves (CoolingBuffer.cpp `parse`).
+    left_at: Option<[f64; 2]>,
     /// A tool change on Bambu's tower is under way, framed in the tower
     /// writer's comments (WipeTower.cpp `tool_change`), which its block
     /// closes.
@@ -3339,16 +3367,19 @@ impl Writer<'_> {
             .state
             .position
             .map_or([0.0, 0.0], |at| [unscaled(at.x), unscaled(at.y)]);
-        let seconds = template_seconds(
+        let moves = template_seconds(
             text,
             from,
             self.state.height.unwrap_or(z),
             self.state.feedrate,
         );
-        self.spend(seconds);
+        self.spend(moves.seconds);
         if !bambu {
             return Ok(());
         }
+        // The head is wherever the template left it, which the next
+        // travel's time is reckoned from.
+        self.state.left_at = Some(moves.end);
         let before = self.state.height.unwrap_or(z);
         let last_z = text.lines().rev().find_map(|line| {
             let code = line.split(';').next()?.trim();
@@ -3360,6 +3391,10 @@ impl Writer<'_> {
         if let Some(last_z) = last_z {
             if (last_z - before).abs() > 1e-4 {
                 writeln!(self.out, "G1 Z{before:.3}")?;
+                // At the feed rate the template left in force.
+                if moves.feedrate > 0.0 {
+                    self.spend((last_z - before).abs() / (moves.feedrate / 60.0));
+                }
                 self.state.height = Some(before);
             } else {
                 self.state.height = Some(last_z);
@@ -5211,7 +5246,12 @@ impl Writer<'_> {
             let feed_word = self.feed_word();
             writeln!(self.out, "G1 Z{top:.3}{feed_word}")?;
             self.spend((top - height) / s.z_speed);
-            self.go(to, None, s.travel_speed, 0.0)?;
+            // Timed from where the template left the head, where that is
+            // known.
+            let across = self.state.left_at.map_or(0.0, |[x, y]| {
+                (self.gcode_x(to) - x).hypot(self.gcode_y(to) - y)
+            });
+            self.go(to, None, s.travel_speed, across)?;
             self.state.height = Some(top);
             return Ok(());
         }
@@ -5323,6 +5363,7 @@ impl Writer<'_> {
             self.spend(length / speed);
         }
         self.state.position = Some(to);
+        self.state.left_at = None;
         Ok(())
     }
 
