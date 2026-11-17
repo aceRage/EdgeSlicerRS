@@ -5000,10 +5000,12 @@ impl Writer<'_> {
             Role::Support => s.support_speed,
             Role::SupportInterface => s.support_interface_speed,
         };
-        let speed = if s.filament_max_volumetric_speed > 0.0 {
-            wanted.min(s.filament_max_volumetric_speed / self.melted(role, flow))
-        } else {
-            wanted
+        let melts = (s.filament_max_volumetric_speed > 0.0)
+            .then(|| s.filament_max_volumetric_speed / self.melted(role, flow));
+        let speed = melts.map_or(wanted, |melts| wanted.min(melts));
+        let speed = match s.resonance_avoidance {
+            Some(band) if role == Role::ExternalPerimeter => out_of_resonance(speed, band, melts),
+            _ => speed,
         };
         let own = match role {
             _ if first_layer && s.initial_layer_acceleration > 0.0 => s.initial_layer_acceleration,
@@ -6495,6 +6497,25 @@ fn address<T>(kept: &T) -> usize {
 fn thousandths(mm: f64) -> f64 {
     let rounded = (mm * 1000.0).round() / 1000.0;
     if rounded == 0.0 { 0.0 } else { rounded }
+}
+
+/// An outer wall's speed moved out of the printer's resonance band
+/// `(min, max)` (GCode.cpp `_extrude`, "resonance-avoidance", ported
+/// from QIDI Studio through Orca): a speed at or above `max` is kept;
+/// one below it goes down to `min` (if it is not lower already) from
+/// the band's lower half, up to `max` from its upper half. `melts` is
+/// what the hot end can melt at this line's section: EdgeSlicer sends
+/// the speed down to `min` where `max` would be more than that.
+pub(crate) fn out_of_resonance(speed: f64, (min, max): (f64, f64), melts: Option<f64>) -> f64 {
+    if speed >= max {
+        return speed;
+    }
+    let max_melts = melts.is_none_or(|melts| max <= melts);
+    if speed < min + (max - min) / 2.0 || !max_melts {
+        speed.min(min)
+    } else {
+        max
+    }
 }
 
 fn distance(a: Point2, b: Point2) -> f64 {

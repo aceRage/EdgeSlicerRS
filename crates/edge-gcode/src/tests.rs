@@ -381,6 +381,75 @@ fn a_small_wall_loop_goes_at_its_own_speed() {
     assert_eq!(speeds(&unset), [100.0, 50.0]);
 }
 
+#[test]
+fn outer_wall_speeds_leave_the_resonance_band_the_nearer_way() {
+    let band = (70.0, 120.0);
+    // Above the band and at its top: kept.
+    assert_eq!(out_of_resonance(200.0, band, None), 200.0);
+    assert_eq!(out_of_resonance(120.0, band, None), 120.0);
+    // Its lower half down to the bottom, its upper half up to the top.
+    assert_eq!(out_of_resonance(90.0, band, None), 70.0);
+    assert_eq!(out_of_resonance(95.0, band, None), 120.0);
+    assert_eq!(out_of_resonance(110.0, band, None), 120.0);
+    // Below the band: kept.
+    assert_eq!(out_of_resonance(50.0, band, None), 50.0);
+    // Up to the top only where the hot end melts that much.
+    assert_eq!(out_of_resonance(110.0, band, Some(115.0)), 70.0);
+    assert_eq!(out_of_resonance(110.0, band, Some(125.0)), 120.0);
+
+    // Through the writer: the outer wall's own lines, on a layer above
+    // the first, the inner wall's not.
+    let loops = [wall(0.0, 0.0, 10.0, 0), wall(0.5, 0.5, 9.0, 1)];
+    let islands = [0..2];
+    let feeds = |settings: &PrintSettings| -> Vec<(String, f64)> {
+        let layer = one_layer(&loops, &islands, &[])[0];
+        let layers = [layer, Layer { z: 0.4, ..layer }];
+        let (text, _) = print(&layers, settings);
+        let second = text.split(";LAYER_CHANGE").last().unwrap().to_owned();
+        let (mut kind, mut feed) = (String::new(), 0.0);
+        let mut found = Vec::new();
+        for line in second.lines() {
+            if let Some(name) = line.strip_prefix(";TYPE:") {
+                kind = name.to_owned();
+            }
+            if line.starts_with("G1 ") {
+                feed = word(line, 'F').unwrap_or(feed);
+                if word(line, 'E').is_some_and(|e| e > 0.0) && word(line, 'X').is_some() {
+                    found.push((kind.clone(), feed / 60.0));
+                }
+            }
+        }
+        found.dedup();
+        found
+    };
+    let base = PrintSettings {
+        outer_wall_speed: 100.0,
+        inner_wall_speed: 100.0,
+        ..basic()
+    };
+    let wall_speeds = |settings: &PrintSettings| {
+        let found = feeds(settings);
+        ["Outer wall", "Inner wall"].map(|kind| {
+            found
+                .iter()
+                .find(|(name, _)| name == kind)
+                .map(|(_, speed)| *speed)
+                .unwrap()
+        })
+    };
+    assert_eq!(wall_speeds(&base), [100.0, 100.0]);
+    let avoiding = PrintSettings {
+        resonance_avoidance: Some(band),
+        ..base.clone()
+    };
+    assert_eq!(wall_speeds(&avoiding), [120.0, 100.0]);
+    let lower = PrintSettings {
+        outer_wall_speed: 80.0,
+        ..avoiding
+    };
+    assert_eq!(wall_speeds(&lower), [70.0, 100.0]);
+}
+
 /// The x each wall in `text` starts at, less the island's own: 0 for the
 /// outermost of [`wall`]'s squares nested half a millimetre apart.
 fn wall_depths(text: &str) -> Vec<usize> {

@@ -134,15 +134,6 @@ const SILENT: &[Silent] = &[
         Is("0"),
         &["overhang_shadow_distance", "overhang_shadow_speed_ratio"],
     ),
-    // GCode.cpp l.11486: outer-wall speeds moved out of a band.
-    gate(
-        "resonance_avoidance",
-        Is("0"),
-        &[
-            "min_resonance_avoidance_speed",
-            "max_resonance_avoidance_speed",
-        ],
-    ),
     // GCode.cpp l.11433: a ramp over more than one layer.
     silent("slow_down_layers", Below(2.0, "0")),
     // GCode.cpp l.10908: small support loops at their own speed.
