@@ -313,19 +313,23 @@ fn drop_near_duplicates(ring: &mut edge_geom::Polygon) {
     }
 }
 
+/// Five times the reference's `EPSILON` (1e-4 mm), in scaled units.
+const PAINT_OPENING: edge_geom::Coord = 500;
+/// Ten times the reference's `EPSILON`, in scaled units.
+const PAINT_MERGE: edge_geom::Coord = 1_000;
+
 /// Gives the painted areas of a layer to the filaments they are painted
 /// for, and takes them from whichever had them: `painted` holds each
 /// painted object's areas in turn. A layer that was all one filament's,
 /// `base`, is first set down as that filament's.
 ///
-/// What a filament is given is united with what it had, cracks and all:
-/// two parts of an object seldom meet exactly, and while the colours are
-/// shared out over an outline that keeps the cracks between them
-/// ([`outlines`]), the layer they are given out of has them closed. The
-/// reference leaves them in the layer too, so where paint makes both
-/// sides of a crack one filament it lays walls round the crack, loops as
-/// wide as two half walls in the middle of a solid area. That is not
-/// copied.
+/// What a filament keeps of what it had is opened by [`PAINT_OPENING`]
+/// and what it is given is put together with it by a closing of
+/// [`PAINT_MERGE`], as the reference does (PrintObjectSlice.cpp
+/// `apply_mm_segmentation`). Painted areas are cut to the layer, whose
+/// parts are each closed by themselves (`edge_slice`), so a crack between
+/// two parts stays a crack when paint makes both sides one filament, and
+/// is walled round, as in the reference.
 pub(crate) fn apply(
     layer: &mut LayerRegions,
     painted: &[&[Share]],
@@ -337,6 +341,8 @@ pub(crate) fn apply(
             *shares = vec![(base, regions.clone())];
         }
         let mut by_filament: BTreeMap<usize, Vec<ExPolygon>> = shares.drain(..).collect();
+        // What each filament keeps of what it had, and what it is given.
+        let mut given: BTreeMap<usize, Vec<ExPolygon>> = BTreeMap::new();
         for (colour, area) in painted.iter().flat_map(|object| object.iter()) {
             let colour = usize::from(*colour);
             let area = edge_clip::intersection(area, &regions)?;
@@ -346,9 +352,39 @@ pub(crate) fn apply(
             for (_, own) in by_filament.iter_mut().filter(|(is, _)| **is != colour) {
                 *own = edge_clip::difference(own, &area)?;
             }
-            let own = by_filament.entry(colour).or_default();
+            for (_, own) in given.iter_mut().filter(|(is, _)| **is != colour) {
+                *own = edge_clip::difference(own, &area)?;
+            }
+            let own = given.entry(colour).or_default();
             own.extend(area);
             *own = edge_clip::union_ex(own)?;
+        }
+        // What is left of a filament's own once paint is taken out of it
+        // is opened by 5 `EPSILON`, as the reference filters it: the
+        // painted areas do not match the layer's to the nanometre, and
+        // taking one from the other leaves slits and slivers that would
+        // otherwise be walled round (PrintObjectSlice.cpp
+        // `apply_mm_segmentation`: "Filter out unprintable polygons
+        // produced by subtraction"). What it is given is added after.
+        for (filament, own) in by_filament.iter_mut() {
+            if !given.keys().any(|colour| colour != filament) {
+                continue;
+            }
+            *own = edge_clip::opening(own, PAINT_OPENING, edge_clip::Join::MITER)?;
+        }
+        // Put together by a closing of 10 `EPSILON`, as the reference
+        // merges the pieces a region is given from several (`ByRegion`
+        // `needs_merge`, `closing_ex(..., 10. * EPSILON)`): the pieces
+        // were cut from outlines that meet only to within a hair, and
+        // united as they are they would leave slits between them.
+        for (colour, area) in given {
+            let own = by_filament.entry(colour).or_default();
+            if own.is_empty() {
+                *own = area;
+            } else {
+                own.extend(area);
+                *own = edge_clip::closing(own, PAINT_MERGE, edge_clip::Join::MITER)?;
+            }
         }
         *shares = by_filament
             .into_iter()

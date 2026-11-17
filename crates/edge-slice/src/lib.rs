@@ -178,27 +178,26 @@ pub struct LayerRegions {
     pub regions: Vec<ExPolygon>,
     /// The same material shared out among the filaments it is printed in,
     /// in ascending order of filament; empty when there is only one.
-    /// Where bodies of different filaments overlap, the higher-numbered
-    /// filament has the overlap. (The reference gives it to whichever part
-    /// comes later in its object.)
+    /// Where bodies of one object overlap, the later one has the overlap,
+    /// as the reference gives it to whichever part comes later in its
+    /// object.
     pub by_filament: Vec<(usize, Vec<ExPolygon>)>,
-    /// Each filament's own material as cut, before any of it is shared
-    /// out or closed up, in ascending order of filament; empty when there
-    /// is only one.
+    /// Each filament's own material as cut, in ascending order of
+    /// filament; empty when there is only one. As sliced it is
+    /// `by_filament`; it stays as it is where later stages change that.
     pub cut_by_filament: Vec<(usize, Vec<ExPolygon>)>,
     /// See [`Layer::open_chains`]; summed over every mesh cut at this height.
     pub open_chains: usize,
 }
 
 /// Cuts every body at each plane and resolves the contours into regions:
-/// each body's negative volume is removed from that body, everything that
-/// overlaps is united, and cracks narrower than twice `closing_radius` are
-/// filled (the reference's `slice_closing_radius`; zero leaves them open).
-/// `planes` must be sorted ascending.
+/// each body's cracks narrower than twice `closing_radius` are filled (the
+/// reference's `slice_closing_radius`; zero leaves them open), its
+/// negative volume is removed from it, and bodies that overlap or touch
+/// are united. `planes` must be sorted ascending.
 ///
-/// The bodies are taken as one object: closing joins any two standing
-/// closer than twice the radius. [`slice_regions_by_object`] closes each
-/// object by itself, as the reference does.
+/// The bodies are taken as the parts of one object
+/// ([`slice_regions_by_object`]).
 pub fn slice_regions(
     bodies: &[Body<'_>],
     planes: &[f64],
@@ -222,28 +221,19 @@ pub fn slice_regions_vase(
     slice_regions_by_object(bodies, &[], planes, closing_radius, largest_from, 0)
 }
 
-/// [`slice_regions_vase`], each object closed by itself and then
-/// simplified, as the reference makes each object's slices
+/// [`slice_regions_vase`], each part closed by itself and then
+/// simplified, as the reference makes each volume's slices
 /// (TriangleMeshSlicer.cpp `slice_mesh_ex`, `make_expolygons`: united,
 /// grown and shrunk by the closing radius, then `ExPolygon::simplify` by
-/// the slicing resolution). `objects` gives each body's object; bodies
-/// with the same entry are one object, closed together, as the parts of
-/// one object are in the reference; an empty list makes every body one
-/// object. Two objects standing closer than twice the radius are not
-/// joined, but where they overlap they are still united afterwards.
-/// `simplify` is the largest a ring may be moved by dropping its points
-/// (Douglas-Peucker), zero for none.
-///
-/// The reference closes and simplifies each part (volume) by itself
-/// before uniting an object's parts. Here, with `simplify`, each body of
-/// an object of several is closed and simplified by itself, as the
-/// reference does each part, and the bodies are then united and closed
-/// together; an object of one body is closed, then simplified. A body is
-/// an object's parts in one filament, which are closed and simplified
-/// together. Closing the bodies together again joins an object's parts
-/// standing closer than twice the radius, which the reference does not:
-/// it keeps two parts 0.05 mm apart in one object, in one filament, as two
-/// outlines (measured).
+/// the slicing resolution), and an object's parts then put together as
+/// the reference shares them out among its regions (see `object_layer`).
+/// Each body is one part; `objects` gives each body's object, and bodies
+/// with the same entry are one object's parts, in the object's order; an
+/// empty list makes every body one object. Bodies of one object with the
+/// same `filament` are one region. Parts and objects standing closer than
+/// twice the closing radius are not joined, but where objects overlap
+/// they are still united afterwards. `simplify` is the largest a ring may
+/// be moved by dropping its points (Douglas-Peucker), zero for none.
 pub fn slice_regions_by_object(
     bodies: &[Body<'_>],
     objects: &[Option<usize>],
@@ -252,7 +242,28 @@ pub fn slice_regions_by_object(
     largest_from: &[Option<usize>],
     simplify: Coord,
 ) -> Result<Vec<LayerRegions>, ClipError> {
-    let sliced: Vec<(Vec<Layer>, Option<Vec<Layer>>)> = bodies
+    // An object's parts each carry its negative volume: cut once.
+    let mut negative_of: Vec<Option<usize>> = Vec::with_capacity(bodies.len());
+    let mut negative_meshes: Vec<&Mesh> = Vec::new();
+    for body in bodies {
+        negative_of.push(body.negative.map(|mesh| {
+            match negative_meshes.iter().position(|seen| {
+                std::ptr::eq(*seen, mesh)
+                    || (seen.triangles == mesh.triangles && seen.vertices == mesh.vertices)
+            }) {
+                Some(at) => at,
+                None => {
+                    negative_meshes.push(mesh);
+                    negative_meshes.len() - 1
+                }
+            }
+        }));
+    }
+    let negatives: Vec<Vec<Layer>> = negative_meshes
+        .iter()
+        .map(|mesh| slice(mesh, planes))
+        .collect();
+    let sliced: Vec<(Vec<Layer>, Option<&Vec<Layer>>)> = bodies
         .iter()
         .enumerate()
         .map(|(at, body)| {
@@ -262,7 +273,7 @@ pub fn slice_regions_by_object(
                     keep_largest_contour(&mut layer.polygons);
                 }
             }
-            (solid, body.negative.map(|mesh| slice(mesh, planes)))
+            (solid, negative_of[at].map(|at| &negatives[at]))
         })
         .collect();
     // The objects, each with its bodies, in the order they first come.
@@ -331,98 +342,157 @@ pub fn slice_regions_by_object(
         .collect()
 }
 
+/// What the reference unites the parts of one region with: a closing by
+/// `EPSILON` (1e-4 mm), which joins parts that touch, or miss each other by
+/// less than a fifth of a micron, and nothing wider (PrintObjectSlice.cpp
+/// `slices_to_regions`, `closing_ex(expolygons, float(scale_(EPSILON)))`).
+const PARTS_MERGE: Coord = 100;
+
+/// What the reference unites a layer's regions with for its outline: a
+/// grow and shrink by `ClipperSafetyOffset` (10 units; Layer.cpp
+/// `Layer::make_slices`, `union_safety_offset_ex`), so regions that touch
+/// are one.
+const SAFETY_OFFSET: Coord = 10;
+
+/// One part's cut at one layer as the reference makes a volume's slice
+/// (TriangleMeshSlicer.cpp `slice_mesh_ex`, `make_expolygons`): united,
+/// grown and shrunk by the closing radius, then simplified.
+fn closed_part(
+    polygons: &[Polygon],
+    closing_radius: Coord,
+    simplify: Coord,
+) -> Result<Vec<ExPolygon>, ClipError> {
+    if polygons.is_empty() {
+        return Ok(Vec::new());
+    }
+    let united = edge_clip::union(polygons)?;
+    let closed = if closing_radius > 0 {
+        edge_clip::closing(&united, closing_radius, Join::MITER)?
+    } else {
+        united
+    };
+    if simplify > 0 {
+        edge_clip::simplify(&closed, simplify)
+    } else {
+        Ok(closed)
+    }
+}
+
+/// The box round some regions, `None` for none.
+fn extent(regions: &[ExPolygon]) -> Option<[Coord; 4]> {
+    let mut points = regions.iter().flat_map(|region| &region.contour.points);
+    let first = points.next()?;
+    Some(points.fold(
+        [first.x, first.y, first.x, first.y],
+        |[x0, y0, x1, y1], p| [x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y)],
+    ))
+}
+
 /// One object's layer, from its bodies and their cuts: what
-/// [`slice_regions_by_object`] gives for it alone.
+/// [`slice_regions_by_object`] gives for it alone. Each body is a part
+/// (volume), in the object's order, and is closed and simplified by
+/// itself, its negative volume closed and simplified the same way and
+/// taken out of it (PrintObjectSlice.cpp `slice_volumes_inner`). Where two
+/// parts overlap, the later one has the overlap: it carves every earlier
+/// one (`slices_to_regions`, with `enable_order_independent_overlap_carving`
+/// off, which is all this engine follows). The parts of one region are
+/// then put together by [`PARTS_MERGE`], and the regions into the layer's
+/// outline by [`SAFETY_OFFSET`]. Nothing joins two parts that stand apart:
+/// a crack between them stays, of one filament or of two (the reference
+/// keeps two parts 0.05 mm apart as two outlines, measured), and neither
+/// region reaches into what closing would have filled between them.
 fn object_layer<'a, 'b: 'a>(
-    members: impl Iterator<Item = (&'a Body<'b>, &'a (Vec<Layer>, Option<Vec<Layer>>))>,
+    members: impl Iterator<Item = (&'a Body<'b>, &'a (Vec<Layer>, Option<&'a Vec<Layer>>))>,
     index: usize,
     several: bool,
     closing_radius: Coord,
     simplify: Coord,
 ) -> Result<LayerRegions, ClipError> {
-    let members: Vec<_> = members.collect();
-    // An object of several bodies has each closed and simplified by
-    // itself first, as the reference does each part.
-    let apart = simplify > 0 && members.len() > 1;
-    // Contours that need no carving go straight into the final union.
-    let mut plain: Vec<&Polygon> = Vec::new();
-    let mut carved: Vec<ExPolygon> = Vec::new();
     let mut open_chains = 0;
-    // Each filament's own material, kept apart when there are several.
-    let mut own: Vec<(usize, Vec<ExPolygon>)> = Vec::new();
+    // Each part's material in the object's order, with its region.
+    let mut parts: Vec<(usize, Vec<ExPolygon>)> = Vec::new();
+    // Negative volumes already closed, by the cut they came from: an
+    // object's parts all carry the same one.
+    let mut negatives: Vec<(&Layer, Vec<ExPolygon>)> = Vec::new();
     for (body, (solid, negative)) in members {
         let solid = &solid[index];
         open_chains += solid.open_chains;
-        let negative = negative.as_ref().map(|layers| &layers[index]);
-        open_chains += negative.map_or(0, |layer| layer.open_chains);
-        let before = carved.len();
-        match negative.filter(|layer| !layer.polygons.is_empty()) {
-            None if !apart => plain.extend(&solid.polygons),
-            None => carved.extend(edge_clip::union(&solid.polygons)?),
-            Some(negative) => carved.extend(edge_clip::difference(
-                &edge_clip::union(&solid.polygons)?,
-                &edge_clip::union(&negative.polygons)?,
-            )?),
-        }
-        if apart {
-            let mine = carved.split_off(before);
-            let mine = if closing_radius > 0 {
-                edge_clip::closing(&mine, closing_radius, Join::MITER)?
-            } else {
-                mine
+        let mut mine = closed_part(&solid.polygons, closing_radius, simplify)?;
+        if let Some(negative) = negative.map(|layers| &layers[index]) {
+            let seen = (negatives.iter()).position(|(cut, _)| std::ptr::eq(*cut, negative));
+            let at = match seen {
+                Some(at) => at,
+                None => {
+                    open_chains += negative.open_chains;
+                    let closed = closed_part(&negative.polygons, closing_radius, simplify)?;
+                    negatives.push((negative, closed));
+                    negatives.len() - 1
+                }
             };
-            carved.extend(edge_clip::simplify(&mine, simplify)?);
+            if !mine.is_empty() && !negatives[at].1.is_empty() {
+                mine = edge_clip::difference(&mine, &negatives[at].1)?;
+            }
         }
-        if several {
-            let mut material = if carved.len() > before {
-                carved[before..].to_vec()
-            } else {
-                edge_clip::union(&solid.polygons)?
+        parts.push((body.filament, mine));
+    }
+    // A later part carves every earlier one it meets.
+    if parts.len() > 1 {
+        let boxes: Vec<Option<[Coord; 4]>> = parts.iter().map(|(_, own)| extent(own)).collect();
+        for later in 1..parts.len() {
+            let Some([x0, y0, x1, y1]) = boxes[later] else {
+                continue;
             };
-            match own
-                .iter_mut()
-                .find(|(filament, _)| *filament == body.filament)
-            {
-                Some((_, regions)) => regions.append(&mut material),
-                None => own.push((body.filament, material)),
+            let (earlier, rest) = parts.split_at_mut(later);
+            for (at, (_, own)) in earlier.iter_mut().enumerate() {
+                let meets = boxes[at]
+                    .is_some_and(|[a0, b0, a1, b1]| !(a1 < x0 || a0 > x1 || b1 < y0 || b0 > y1));
+                if meets && !own.is_empty() {
+                    *own = edge_clip::difference(own, &rest[0].1)?;
+                }
             }
         }
     }
-    let united = edge_clip::union(
-        plain
-            .into_iter()
-            .chain(carved.iter().flat_map(ExPolygon::rings)),
-    )?;
-    let regions = if closing_radius > 0 {
-        edge_clip::closing(&united, closing_radius, Join::MITER)?
-    } else {
-        united
-    };
-    let regions = if simplify > 0 && !apart {
-        edge_clip::simplify(&regions, simplify)?
-    } else {
-        regions
-    };
-    // Shared out from the highest filament down, each taking what
-    // no higher one has; then each is let into the cracks that
-    // closing filled, so neighbours meet as the whole does.
-    own.sort_by_key(|(filament, _)| *filament);
-    let mut by_filament: Vec<(usize, Vec<ExPolygon>)> = Vec::with_capacity(own.len());
-    let mut taken: Vec<ExPolygon> = Vec::new();
-    let mut cut_by_filament = Vec::with_capacity(own.len());
-    for (filament, material) in own.into_iter().rev() {
-        let mut mine = edge_clip::union_ex(&material)?;
-        cut_by_filament.push((filament, mine.clone()));
-        if closing_radius > 0 {
-            mine = edge_clip::offset(&mine, closing_radius, Join::MITER)?;
+    // Each region's parts put together, in ascending order of region.
+    let mut by_region: Vec<(usize, Vec<ExPolygon>, usize)> = Vec::new();
+    for (key, own) in parts {
+        if own.is_empty() {
+            continue;
         }
-        let mine = edge_clip::difference(&edge_clip::intersection(&mine, &regions)?, &taken)?;
-        taken.extend(mine.iter().cloned());
-        taken = edge_clip::union_ex(&taken)?;
-        by_filament.push((filament, mine));
+        match by_region.iter_mut().find(|(of, _, _)| *of == key) {
+            Some((_, material, count)) => {
+                material.extend(own);
+                *count += 1;
+            }
+            None => by_region.push((key, own, 1)),
+        }
     }
-    by_filament.reverse();
-    cut_by_filament.reverse();
+    let mut by_filament: Vec<(usize, Vec<ExPolygon>)> = Vec::with_capacity(by_region.len());
+    for (key, material, count) in by_region {
+        let material = if count > 1 {
+            edge_clip::closing(&material, PARTS_MERGE, Join::MITER)?
+        } else {
+            material
+        };
+        by_filament.push((key, material));
+    }
+    by_filament.sort_by_key(|(key, _)| *key);
+    let regions = match by_filament.as_mut_slice() {
+        [] => Vec::new(),
+        [(_, only)] if !several => std::mem::take(only),
+        [(_, only)] => only.clone(),
+        _ => edge_clip::closing(
+            &by_filament
+                .iter()
+                .flat_map(|(_, own)| own.iter().cloned())
+                .collect::<Vec<_>>(),
+            SAFETY_OFFSET,
+            Join::MITER,
+        )?,
+    };
+    if !several {
+        by_filament.clear();
+    }
+    let cut_by_filament = by_filament.clone();
     Ok(LayerRegions {
         z: 0.0,
         regions,
@@ -728,8 +798,13 @@ mod tests {
         ];
         let layers = slice_regions(&bodies, &[1.0, 5.0], 0).unwrap();
         // Below the drill both are whole; at z = 5 the block loses a 6 x 2 slot.
-        assert_eq!(shapes(&layers[0]), [(100.0, 0), (80.0, 0)]);
-        assert_eq!(shapes(&layers[1]), [(88.0, 0), (80.0, 0)]);
+        let sorted = |layer: &LayerRegions| {
+            let mut all = shapes(layer);
+            all.sort_by(|a, b| b.0.total_cmp(&a.0));
+            all
+        };
+        assert_eq!(sorted(&layers[0]), [(100.0, 0), (80.0, 0)]);
+        assert_eq!(sorted(&layers[1]), [(88.0, 0), (80.0, 0)]);
         assert!(layers.iter().all(|layer| layer.open_chains == 0));
     }
 
@@ -835,7 +910,10 @@ mod tests {
     }
 
     #[test]
-    fn closing_joins_the_parts_of_one_object_and_not_two_objects() {
+    fn closing_joins_neither_the_parts_of_one_object_nor_two_objects() {
+        // The reference closes each part by itself: two parts 0.05 mm
+        // apart stay two outlines (gap1.3mf, measured), in one object as
+        // in two.
         let (left, right) = (
             Mesh::from_triangle_soup(cube(0.0, 10.0)),
             Mesh::from_triangle_soup(cuboid([10.05, 0.0, 0.0], [20.0, 10.0, 10.0])),
@@ -846,21 +924,66 @@ mod tests {
             filament: 1,
         });
         let radius = edge_geom::scaled(0.049);
-        let one = slice_regions_by_object(&bodies, &[Some(0), Some(0)], &[5.0], radius, &[], 0);
-        assert_eq!(shapes(&one.unwrap()[0]), [(200.0, 0)]);
-        let two = slice_regions_by_object(&bodies, &[Some(0), Some(1)], &[5.0], radius, &[], 0);
-        let mut apart = shapes(&two.unwrap()[0]);
-        apart.sort_by(|a, b| a.0.total_cmp(&b.0));
-        assert_eq!(apart, [(99.5, 0), (100.0, 0)]);
-        // Objects that overlap are still one region.
+        for objects in [[Some(0), Some(0)], [Some(0), Some(1)]] {
+            let layers =
+                slice_regions_by_object(&bodies, &objects, &[5.0], radius, &[], 0).unwrap();
+            let mut apart = shapes(&layers[0]);
+            apart.sort_by(|a, b| a.0.total_cmp(&b.0));
+            assert_eq!(apart, [(99.5, 0), (100.0, 0)], "{objects:?}");
+        }
+        // Parts and objects that overlap are still one region.
         let over = Mesh::from_triangle_soup(cuboid([5.0, 0.0, 0.0], [15.0, 10.0, 10.0]));
         let bodies = [&left, &over].map(|solid| Body {
             solid,
             negative: None,
             filament: 1,
         });
-        let both = slice_regions_by_object(&bodies, &[Some(0), Some(1)], &[5.0], radius, &[], 0);
-        assert_eq!(shapes(&both.unwrap()[0]), [(150.0, 0)]);
+        for objects in [[Some(0), Some(0)], [Some(0), Some(1)]] {
+            let both = slice_regions_by_object(&bodies, &objects, &[5.0], radius, &[], 0);
+            assert_eq!(shapes(&both.unwrap()[0]), [(150.0, 0)]);
+        }
+    }
+
+    #[test]
+    fn parts_of_one_region_that_touch_are_one() {
+        // A face shared by two parts in one filament leaves no seam
+        // (`slices_to_regions` closes a region's parts by `EPSILON`).
+        let (left, right) = (
+            Mesh::from_triangle_soup(cube(0.0, 10.0)),
+            Mesh::from_triangle_soup(cuboid([10.0, 0.0, 0.0], [20.0, 10.0, 10.0])),
+        );
+        let bodies = [&left, &right].map(|solid| Body {
+            solid,
+            negative: None,
+            filament: 1,
+        });
+        let layers = slice_regions(&bodies, &[5.0], edge_geom::scaled(0.049)).unwrap();
+        assert_eq!(shapes(&layers[0]), [(200.0, 0)]);
+        assert_eq!(layers[0].regions[0].contour.points.len(), 4);
+    }
+
+    #[test]
+    fn each_part_is_closed_by_itself() {
+        // A notch 0.05 mm wide in one part is closed; the same gap between
+        // two parts is not.
+        let notched = Mesh::from_triangle_soup({
+            let mut soup = cuboid([0.0; 3], [10.0, 4.0, 10.0]);
+            soup.extend(cuboid([0.0, 4.05, 0.0], [10.0, 10.0, 10.0]));
+            soup.extend(cuboid([9.0, 3.0, 0.0], [10.0, 5.0, 10.0]));
+            soup
+        });
+        let body = Body {
+            solid: &notched,
+            negative: None,
+            filament: 1,
+        };
+        let layers = slice_regions(&[body], &[5.0], edge_geom::scaled(0.049)).unwrap();
+        let closed = shapes(&layers[0]);
+        assert_eq!(closed.len(), 1);
+        assert!(
+            (closed[0].0 - 100.0).abs() < 1e-6 && closed[0].1 == 0,
+            "{closed:?}"
+        );
     }
 }
 
@@ -933,9 +1056,10 @@ mod filament_tests {
     }
 
     #[test]
-    fn a_crack_between_filaments_is_closed_for_both() {
-        // Blocks 0.05 mm apart: closing fills the crack, and it must not
-        // be left belonging to neither.
+    fn a_crack_between_filaments_stays_open_for_both() {
+        // Blocks 0.05 mm apart: each is closed by itself, so neither
+        // reaches into the crack (the reference put both walls 0.21 mm
+        // either side of a face two filaments share, measured).
         let left = block([0.0; 3], [10.0; 3]);
         let right = block([10.05, 0.0, 0.0], [20.0, 10.0, 10.0]);
         let bodies = [(&left, 1), (&right, 2)].map(|(solid, filament)| Body {
@@ -945,8 +1069,54 @@ mod filament_tests {
         });
         let layers = slice_regions(&bodies, &[5.0], edge_geom::scaled(0.049)).unwrap();
         let layer = &layers[0];
+        assert_eq!(layer.regions.len(), 2);
+        assert!((area(&layer.by_filament[0].1) - 100.0).abs() < 1e-9);
+        assert!((area(&layer.by_filament[1].1) - 99.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn filaments_that_touch_keep_their_faces_and_are_one_outline() {
+        let left = block([0.0; 3], [10.0; 3]);
+        let right = block([10.0, 0.0, 0.0], [20.0, 10.0, 10.0]);
+        let bodies = [(&left, 1), (&right, 2)].map(|(solid, filament)| Body {
+            solid,
+            negative: None,
+            filament,
+        });
+        let layers = slice_regions(&bodies, &[5.0], edge_geom::scaled(0.049)).unwrap();
+        let layer = &layers[0];
         assert_eq!(layer.regions.len(), 1);
-        let shared: f64 = layer.by_filament.iter().map(|(_, r)| area(r)).sum();
-        assert!((shared - area(&layer.regions)).abs() < 0.02, "{shared}");
+        assert!((area(&layer.regions) - 200.0).abs() < 1e-6);
+        for (at, (_, own)) in layer.by_filament.iter().enumerate() {
+            assert!((area(own) - 100.0).abs() < 1e-9);
+            let xs: Vec<f64> = own[0]
+                .contour
+                .points
+                .iter()
+                .map(|p| unscaled(p.x))
+                .collect();
+            let (low, high) = (
+                xs.iter().copied().fold(f64::MAX, f64::min),
+                xs.iter().copied().fold(f64::MIN, f64::max),
+            );
+            assert_eq!((low, high), (10.0 * at as f64, 10.0 * (at + 1) as f64));
+        }
+    }
+
+    #[test]
+    fn the_later_part_has_the_overlap_whatever_its_filament() {
+        // The reference carves each earlier part by every later one
+        // (`slices_to_regions`), not by filament number.
+        let first = block([0.0; 3], [10.0; 3]);
+        let second = block([8.0, 0.0, 0.0], [20.0, 10.0, 10.0]);
+        let bodies = [(&first, 2), (&second, 1)].map(|(solid, filament)| Body {
+            solid,
+            negative: None,
+            filament,
+        });
+        let layers = slice_regions(&bodies, &[5.0], 0).unwrap();
+        let layer = &layers[0];
+        assert!((area(&layer.by_filament[0].1) - 120.0).abs() < 1e-6);
+        assert!((area(&layer.by_filament[1].1) - 80.0).abs() < 1e-6);
     }
 }
