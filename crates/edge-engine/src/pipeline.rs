@@ -3413,6 +3413,7 @@ impl Sliced {
             print.produced_at = Some(produced_at.to_owned());
             print.plate = self.plate_facts.clone();
             print.tower_envelope = self.tower.envelope;
+            print.tower_footprint = self.tower.footprint;
             print.own_heights = self.below.is_some();
         }
         if let Some(params) = &self.calibration {

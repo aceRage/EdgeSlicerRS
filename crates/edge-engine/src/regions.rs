@@ -530,14 +530,15 @@ pub(crate) fn per_region(key: &str) -> bool {
         && !PLATE_WIDE.contains(&key)
 }
 
-/// What the G-code writer reads from a region's own settings as it lays
-/// its walls alone, and so does not keep two regions' fill apart
-/// ([`written_alike`]): how an inner wall in an overhang's shadow is
-/// slowed.
-const WALLS_WRITTEN_BY_REGION: [&str; 3] = [
+/// What the G-code writer reads from a region's own settings that does
+/// not keep two regions' fill apart ([`written_alike`]): how an inner wall
+/// in an overhang's shadow is slowed, and the minimum layer time a layer
+/// with the region on it is paused to make up.
+const WALLS_WRITTEN_BY_REGION: [&str; 4] = [
     "overhang_shadow_inner_wall",
     "overhang_shadow_distance",
     "overhang_shadow_speed_ratio",
+    "min_layer_time_pause",
 ];
 
 /// What the stages worked out region by region read but take from the

@@ -183,7 +183,7 @@ pub(crate) fn layers(
 /// (`cyclic_order_from_customized_sequence`); empty for none at all.
 pub(crate) fn cyclic_sequence(text: &str, other_layers: &[Vec<i64>], count: usize) -> Vec<u32> {
     let mut sequence: Vec<u32> = Vec::new();
-    let mut keep = |number: i64, into: &mut Vec<u32>| {
+    let keep = |number: i64, into: &mut Vec<u32>| {
         if let Ok(number) = u32::try_from(number)
             && number >= 1
             && number as usize <= count

@@ -116,12 +116,6 @@ const SILENT: &[Silent] = &[
             "layer_time_speed_slowdown_scope",
         ],
     ),
-    // GCode.cpp l.9971: park and pause for the minimum layer time.
-    gate(
-        "min_layer_time_pause",
-        Is("0"),
-        &["min_layer_time_pause_park_x", "min_layer_time_pause_park_y"],
-    ),
     // Extrusion.
     // PerimeterGenerator.hpp l.149: surfaces and walls over support,
     // printed with their own speed and flow (GCode.cpp l.11261, l.11371).
@@ -742,7 +736,6 @@ mod tests {
             "brim_ears",
             "filament_grouping_mode",
             "has_scarf_joint_seam",
-            "min_layer_time_pause_park",
             "mixed_filament_auto_gradient_choice",
             "mixed_filament_auto_gradient_physical_count",
             "tree_support_with_infill",
