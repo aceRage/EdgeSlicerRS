@@ -44,7 +44,7 @@ impl Followed {
 /// The block that is sliced to find out: 12 mm square and 2.4 mm high, in
 /// one filament (`filament`, from 1). Large enough for walls, fill, a top
 /// and a bottom, small enough to take a few milliseconds.
-fn block(project: Option<&Settings>, filament: usize) -> Loaded {
+pub(crate) fn block(project: Option<&Settings>, filament: usize) -> Loaded {
     let (min, max) = ([0.0; 3], [12.0, 12.0, 2.4]);
     Loaded {
         bodies: vec![Body {

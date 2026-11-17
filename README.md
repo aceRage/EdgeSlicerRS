@@ -58,6 +58,13 @@ cargo run --release -p edge-cli -- slice reference/EdgeSlicer/resources/handy_mo
 cargo run --release -p edge-cli -- slice model.stl --vendor Snapmaker --machine "Snapmaker U1 (0.4 nozzle)" \
   --process "0.20mm Standard @Snapmaker U1 (0.4 nozzle)" --filament "Snapmaker PLA @U1" --bed-type "Textured PEI Plate" --gcode model.gcode
 cargo run --release -p edge-cli -- preset Snapmaker process "0.20mm Standard @Snapmaker U1 (0.4 nozzle)"
+# slice arranges a model that is not a project of the reference's kind (an STL or OBJ, a 3MF
+# another program wrote or one without printer settings) before slicing it, as the reference's
+# command line does; --arrange 0 leaves it where the file has it (--arrange takes the reference's
+# 0 off, 1 on, else as it decides). One difference on purpose: the pile goes where the printer
+# would rather have it (best_object_pos, the H2D's 0.3x0.5, the A1 mini's 0.7x0.5), as the
+# reference's application arranges; the pinned command line centres it on the bed because it never
+# sets align_center, an oversight that is not followed.
 # A project arranged as the reference's Arrange does (every plate, or --plate N), saved, and where
 # everything stands written as JSON, to compare with the reference's --arrange 1 --export-3mf
 cargo run --release -p edge-cli -- arrange reference/EdgeSlicer/tests/mcbrim_test.3mf --out arranged.3mf --layout arranged.json
