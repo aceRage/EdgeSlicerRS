@@ -623,19 +623,28 @@ fn wall_speeds(gcode: &str) -> Vec<(f64, Option<f64>)> {
             let after = text
                 .split_once(";_SET_FAN_SPEED_CHANGING_LAYER\n")
                 .map_or(*text, |(_, rest)| rest);
+            let feed = |line: &str| {
+                line.split_whitespace()
+                    .find_map(|word| word.strip_prefix('F'))
+                    .map(|f| f.parse::<f64>().unwrap() / 60.0)
+            };
+            // A feedrate set on a line of its own before the move counts
+            // (a vase's first move too short to keep leaves it so).
+            let mut set = None;
             let speed = after
                 .lines()
-                .filter(|line| {
-                    line.starts_with("G1 ")
-                        && line.contains(" X")
-                        && line.contains(" E")
-                        && !line.contains(" E-")
-                })
+                .filter(|line| line.starts_with("G1 "))
                 .find_map(|line| {
-                    line.split_whitespace()
-                        .find_map(|word| word.strip_prefix('F'))
-                        .map(|f| f.parse::<f64>().unwrap() / 60.0)
+                    if line.contains(" X") && line.contains(" E") && !line.contains(" E-") {
+                        Some(feed(line).or(set))
+                    } else {
+                        if !line.contains(" X") && !line.contains(" E") && !line.contains(" Z") {
+                            set = feed(line).or(set);
+                        }
+                        None
+                    }
                 });
+            let speed = speed.flatten();
             (z, speed)
         })
         .collect()

@@ -374,6 +374,15 @@ impl SpiralVase {
                 if line.retracting(reader)
                     || (line.extruding(reader) && line.dist_xy(reader) < min_segment_length)
                 {
+                    // The feedrate it sets is kept. The reference writes a
+                    // move's feedrate on a line of its own before it
+                    // (GCodeWriter.cpp `set_speed`), which this filter
+                    // leaves; this writer puts it on the move, and without
+                    // this the moves after went at the layer change's speed.
+                    let feed = feed_only(&line);
+                    if line.extruding(reader) && line.has_xy() && !feed.raw.is_empty() {
+                        push(&mut new_gcode, &feed);
+                    }
                     return;
                 }
                 if line.has(Z) && !line.has_xy() {
@@ -417,7 +426,8 @@ impl SpiralVase {
                                         ];
                                         let modified_dist_xy = distance(last_point, target);
                                         if modified_dist_xy < min_segment_length {
-                                            line.raw.clear();
+                                            // Its feedrate is kept, as above.
+                                            line = feed_only(&line);
                                         } else {
                                             line.set(X, target[0], 3);
                                             line.set(Y, target[1], 3);
@@ -452,6 +462,15 @@ impl SpiralVase {
         }
         (new_gcode, fed_after - fed_before)
     }
+}
+
+/// What of a move left out is kept: its feedrate, as `G1 F…` on a line
+/// of its own, or an empty line when it sets none.
+fn feed_only(line: &Line) -> Line {
+    let raw = (line.raw.split_whitespace())
+        .find(|word| word.starts_with('F'))
+        .map_or_else(String::new, |word| format!("G1 {word}"));
+    Line::parse(&raw)
 }
 
 fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
@@ -518,6 +537,22 @@ mod tests {
         assert_eq!(vase.process_layer(&text, false), (text.clone(), 0.0));
         assert_eq!(vase.reader.position[Z], 0.2);
         assert_eq!(vase.reader.position[X], 10.0);
+    }
+
+    #[test]
+    fn a_move_left_out_keeps_the_feedrate_it_sets() {
+        let mut vase = SpiralVase::new(plain(), 0.012);
+        vase.process_layer(&square(0.2), false);
+        vase.enable(true);
+        vase.process_layer(&square(0.4), false);
+        vase.enable(true);
+        // The layer's first move, too short to lay anything, sets the
+        // speed of the moves after it.
+        let layer = ";LAYER_CHANGE\nG1 Z0.600 F1200\n;TYPE:Outer wall\n\
+                     G1 X10.01 Y10 E.001 F3000\nG1 X20 Y10 E.4\nG1 X20 Y20 E.4\n\
+                     G1 X10 Y20 E.4\nG1 X10 Y10 E.4\n";
+        let (text, _) = vase.process_layer(layer, false);
+        assert!(text.contains("\nG1 F3000\nG1 Z"), "{text}");
     }
 
     #[test]
