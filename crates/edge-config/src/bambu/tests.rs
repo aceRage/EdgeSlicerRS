@@ -357,6 +357,33 @@ fn bambus_own_constraints_are_kept() {
     )));
 }
 
+/// Since the reference reads Bambu Studio's switch as its own setting
+/// (c9aec301bd, BambuExport.cpp `convert_impl`), a project's own value
+/// goes out as it is, and on with any of ours.
+#[test]
+fn bambus_tower_interface_switch_of_the_project_goes_out_as_it_is() {
+    let (out, _, report) =
+        project(r##"{"nozzle_diameter": ["0.4"], "enable_tower_interface_features": "1"}"##);
+    assert_eq!(one(&out, "enable_tower_interface_features"), "1");
+    assert!(report.notes.is_empty(), "{:?}", report.notes);
+    let (out, _, report) = project(
+        r##"{"nozzle_diameter": ["0.4"], "enable_tower_interface_features": "1",
+            "wipe_tower_interface_temp": "1"}"##,
+    );
+    assert_eq!(one(&out, "enable_tower_interface_features"), "1");
+    assert!(
+        !report
+            .notes
+            .iter()
+            .any(|note| note.contains("written as on although")),
+        "{:?}",
+        report.notes
+    );
+    let (out, _, _) =
+        project(r##"{"nozzle_diameter": ["0.4"], "enable_tower_interface_features": "0"}"##);
+    assert_eq!(one(&out, "enable_tower_interface_features"), "0");
+}
+
 #[test]
 fn what_was_set_by_hand_is_named_in_bambus_words() {
     let (out, _, _) = project(
