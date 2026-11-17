@@ -9,7 +9,7 @@ use edge_adhesion::{AdhesionSettings, BrimKind, Footing};
 use edge_config::{ConfigError, FloatOrPercent, Settings};
 use edge_extrusion::{ExtrusionLoop, ExtrusionPath, Role};
 use edge_gcode::{PrintSettings, Summary};
-use edge_geom::{ExPolygon, Point2, Polygon, scaled, unscaled};
+use edge_geom::{Coord, ExPolygon, Point2, Polygon, scaled, unscaled};
 use edge_infill::{InfillSettings, Surface};
 use edge_mesh::Mesh;
 use edge_perimeter::{Perimeters, WallSettings};
@@ -195,6 +195,11 @@ pub struct Sliced {
     /// Skirt and brim, by layer; the skirt's loops come first.
     pub around: Vec<Vec<ExtrusionLoop>>,
     pub skirt_loops: usize,
+    /// The brim shared out among the filaments by the wall it lies
+    /// nearest (`brim_filament_source` "nearest_wall"), each piece with
+    /// its filament by number from 1; None where each brim goes to the
+    /// tool that starts the first layer.
+    pub(crate) brim_shares: Option<Vec<(usize, edge_adhesion::BrimPiece)>>,
     /// The filaments printing on each layer, in order, as indices into `used`.
     pub orders: Vec<Vec<usize>>,
     /// Tool changes on each layer.
@@ -239,6 +244,67 @@ fn frame_of(
             origin: middle,
             bounds: Some((low, high)),
         })
+}
+
+/// An object's first layer as the brim sees it: its number, its
+/// footprint, how tall it stands, and the first layer as printed where its
+/// brim follows that (`edge_adhesion::Footing`).
+type Footprint = (usize, Vec<ExPolygon>, f64, Option<Vec<ExPolygon>>);
+
+/// The brim shared out among the filaments by the first layer's walls
+/// (`edge_adhesion::share_brim`): each region's walls in its filament
+/// (`used`, by number from 1), each wall's object the one of `footprints`
+/// whose bounds hold its first point, else the nearest, for the
+/// reference's tie between two filaments by object area.
+fn nearest_wall_brim(
+    brim: &[ExtrusionLoop],
+    footprints: &[Footprint],
+    walls_by: &[Vec<Perimeters>],
+    used: &[usize],
+) -> Option<Vec<(usize, edge_adhesion::BrimPiece)>> {
+    let bounds: Vec<(Point2, Point2, Point2)> = footprints
+        .iter()
+        .map(|(_, footprint, ..)| {
+            let points = footprint.iter().flat_map(|island| &island.contour.points);
+            let (mut low, mut high) = (
+                Point2 {
+                    x: Coord::MAX,
+                    y: Coord::MAX,
+                },
+                Point2 {
+                    x: Coord::MIN,
+                    y: Coord::MIN,
+                },
+            );
+            for point in points {
+                (low.x, low.y) = (low.x.min(point.x), low.y.min(point.y));
+                (high.x, high.y) = (high.x.max(point.x), high.y.max(point.y));
+            }
+            (low, high, low)
+        })
+        .collect();
+    let areas = footprints
+        .iter()
+        .map(|(_, footprint, ..)| footprint.iter().map(ExPolygon::area_mm2).sum())
+        .collect();
+    let mut samples = edge_adhesion::WallSamples::new(areas);
+    for (walls, filament) in walls_by.iter().zip(used) {
+        let Some(first) = walls.first() else {
+            continue;
+        };
+        for wall in &first.loops {
+            let Some(start) = wall.polygon.points.first() else {
+                continue;
+            };
+            let object = if bounds.is_empty() {
+                0
+            } else {
+                owner_of(&bounds, *start)
+            };
+            samples.add_wall(&wall.polygon.points, *filament, object);
+        }
+    }
+    edge_adhesion::share_brim(brim, &samples)
 }
 
 /// Which of `objects` (bounds and middle) an island starting at `point`
@@ -1513,6 +1579,22 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                         }
                     }
                 }
+                // Sparse fill made solid on the layers `extra_solid_infills`
+                // lists, before tops and bottoms reach into the fill beside
+                // them (PrintObject.cpp `discover_horizontal_shells`, which
+                // the reference runs ahead of `process_external_surfaces`).
+                let extra = &stages[filament].infill.extra_solid_infills;
+                if !extra.is_empty() {
+                    for (index, layer) in surfaces.iter_mut().enumerate() {
+                        if edge_infill::extra_solid_layer(extra, index) {
+                            for surface in layer.iter_mut() {
+                                if surface.kind == edge_infill::SurfaceKind::Sparse {
+                                    surface.kind = edge_infill::SurfaceKind::InternalSolid;
+                                }
+                            }
+                        }
+                    }
+                }
                 // Bridges, bottoms and tops reach into the fill beside them,
                 // and each bridge is turned to run from support to support.
                 let mut anchored =
@@ -1626,11 +1708,28 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         // A second layer of bridge over those, where the profile asks
         // (`enable_extra_bridge_layer`); over a bridge over air it is made
         // when surfaces are told apart.
-        let bridged_by = if infill.extra_bridge_layer.internal() {
+        let mut bridged_by = if infill.extra_bridge_layer.internal() {
             edge_infill::second_internal_bridges(&bridged_by, &infill.params(layer_height, false)?)?
         } else {
             bridged_by
         };
+        // Sparse fill laid once every few layers, thick, where the profile
+        // asks (`infill_combination`), after bridges over infill are laid
+        // as the reference combines it after `bridge_over_infill`.
+        let layer_heights: Vec<f64> = (0..layers.len()).map(|i| heights.height_of(i)).collect();
+        let mut combined_by: Vec<Vec<Option<edge_infill::Combined>>> =
+            Vec::with_capacity(bridged_by.len());
+        for (slot, surfaces) in bridged_by.iter_mut().enumerate() {
+            let own = &stages[slot].infill;
+            combined_by.push(match own.combination {
+                Some(most) => {
+                    let plan = edge_infill::combination_plan(&layer_heights, most);
+                    let (clearance, least) = own.combination_clearance(layer_height)?;
+                    edge_infill::combine_infill(surfaces, &layer_heights, &plan, clearance, least)?
+                }
+                None => vec![None; surfaces.len()],
+            });
+        }
         classify_time += classifying.elapsed();
         // Every filament's layers side by side, as the walls are.
         //
@@ -1645,6 +1744,43 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             .map(|at| {
                 let (filament, index) = (at / count, at % count);
                 let params = params_of(filament, index).map_err(|e| e.to_string())?;
+                // The sparse fill this layer lays for the layers under it
+                // too: laid as the layer's own is, turned by the group's
+                // count of layers (FillBase.cpp `_infill_direction`,
+                // `layer_id / thickness_layers`), each line as high as the
+                // layers together.
+                let combined = || -> Result<Vec<ExtrusionPath>, String> {
+                    let Some(combined) = &combined_by[filament][index] else {
+                        return Ok(Vec::new());
+                    };
+                    let surfaces: Vec<edge_infill::Surface> = combined
+                        .areas
+                        .iter()
+                        .map(|area| edge_infill::Surface {
+                            kind: edge_infill::SurfaceKind::Sparse,
+                            area: area.clone(),
+                            angle: None,
+                        })
+                        .collect();
+                    let thick = stages[filament]
+                        .infill
+                        .sparse_flow(combined.thickness)
+                        .map_err(|e| e.to_string())?;
+                    let mut paths = edge_infill::fill_within(
+                        &surfaces,
+                        index / combined.layers,
+                        &params,
+                        &frame,
+                        &[],
+                    )
+                    .map_err(|e| e.to_string())?;
+                    for path in &mut paths {
+                        if path.role == edge_extrusion::Role::SparseInfill {
+                            path.flow = thick;
+                        }
+                    }
+                    Ok(paths)
+                };
                 let mut alike = vec![filament];
                 if regions.any() {
                     let settings_of = |slot: usize| {
@@ -1663,16 +1799,31 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                     for (other, surfaces) in bridged_by.iter().enumerate() {
                         if other < filament && same(other)? && !surfaces[index].is_empty() {
                             // An earlier region lays this one's lines.
-                            return Ok(Vec::new());
+                            return combined();
                         }
                         if other > filament && same(other)? {
                             alike.push(other);
                         }
                     }
                 }
+                // The top surfaces of the layer above, in every filament,
+                // where the solid fill under them is laid apart
+                // (`undertop_surface_pattern`).
+                let upper_tops: Vec<ExPolygon> = if params.under_top.is_some() {
+                    bridged_by
+                        .iter()
+                        .filter_map(|layers| layers.get(index + 1))
+                        .flatten()
+                        .filter(|surface| surface.kind == edge_infill::SurfaceKind::Top)
+                        .map(|surface| surface.area.clone())
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 if alike.len() == 1 {
-                    return edge_infill::fill_within(
+                    let mut paths = edge_infill::fill_under_tops(
                         &bridged_by[filament][index],
+                        &upper_tops,
                         index,
                         &params,
                         &frame,
@@ -1680,7 +1831,9 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                         // for the fill's own gap fill.
                         &walls_by[filament][index].infill_no_overlap,
                     )
-                    .map_err(|e| e.to_string());
+                    .map_err(|e| e.to_string())?;
+                    edge_infill::append_parts(&mut paths, combined()?);
+                    return Ok(paths);
                 }
                 let (merged, no_overlap) = crate::regions::merge_surfaces(
                     alike.iter().map(|slot| bridged_by[*slot][index].as_slice()),
@@ -1689,8 +1842,17 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                         .map(|slot| walls_by[*slot][index].infill_no_overlap.as_slice()),
                 )
                 .map_err(|e| e.to_string())?;
-                edge_infill::fill_within(&merged, index, &params, &frame, &no_overlap)
-                    .map_err(|e| e.to_string())
+                let mut paths = edge_infill::fill_under_tops(
+                    &merged,
+                    &upper_tops,
+                    index,
+                    &params,
+                    &frame,
+                    &no_overlap,
+                )
+                .map_err(|e| e.to_string())?;
+                edge_infill::append_parts(&mut paths, combined()?);
+                Ok(paths)
             })
             .collect::<Result<_, String>>()?;
         let mut filled = filled.into_iter();
@@ -2371,7 +2533,19 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         .collect::<Result<_, _>>()?;
     let any_brim = adhesion.brim != BrimKind::None
         || (own_brims.iter().flatten()).any(|theirs| theirs.brim != BrimKind::None);
-    let footprints: Vec<(usize, Vec<ExPolygon>, f64)> = if !any_brim {
+    // The amount and the outer wall's width the first layer is shrunk by
+    // against elephant foot, for a brim that follows it.
+    let shrink_first = if elephant_layers > 0 {
+        let outer = walls.params(heights.height_of(0), true)?.outer;
+        Some((scaled(outer.width + outer.spacing), scaled(elephant_foot)))
+    } else {
+        None
+    };
+    #[expect(
+        clippy::type_complexity,
+        reason = "one use, named field by field below"
+    )]
+    let footprints: Vec<(usize, Vec<ExPolygon>, f64, Option<Vec<ExPolygon>>)> = if !any_brim {
         Vec::new()
     } else {
         let alone = meshes.len() == 1 && bodies.iter().all(|body| body.negative.is_none());
@@ -2388,20 +2562,33 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 }];
                 // The object's own first layer, grown as the plate's was
                 // where overhangs were made printable down to the bed.
-                Some(
-                    printable
-                        .first_layer(&body, alone, &planes, scaled(closing_radius), &heights)
-                        .map(|first| (object, first, f64::from(high[2] - low[2]))),
-                )
+                let first =
+                    printable.first_layer(&body, alone, &planes, scaled(closing_radius), &heights);
+                // And as printed, where its brim follows that
+                // (`brim_use_efc_outline`; Brim.cpp `use_brim_efc_outline`:
+                // only where the first layer is shrunk at all).
+                let follows = (own_brims.get(object).and_then(Option::as_ref))
+                    .unwrap_or(&adhesion)
+                    .efc_outline;
+                Some(first.and_then(|first| {
+                    let shrunk = match shrink_first {
+                        Some((width, amount)) if follows => {
+                            Some(edge_slice::compensate_elephant_foot(&first, width, amount)?)
+                        }
+                        _ => None,
+                    };
+                    Ok((object, first, f64::from(high[2] - low[2]), shrunk))
+                }))
             })
             .collect::<Result<_, _>>()?
     };
     let footings: Vec<Footing<'_>> = footprints
         .iter()
-        .map(|(object, footprint, height)| Footing {
+        .map(|(object, footprint, height, shrunk)| Footing {
             footprint,
             height: *height,
             own: own_brims.get(*object).and_then(Option::as_ref),
+            outline: shrunk.as_deref(),
         })
         .collect();
     // The prime tower's ground, brim included: no brim is laid on it,
@@ -2428,6 +2615,18 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         .flat_map(|ground| ground.contour.points.iter().copied())
         .collect();
     let brim = edge_adhesion::brim(&footings, &tower_ground, &adhesion, first_layer_height)?;
+    // The brim shared out among the filaments by the wall it lies nearest
+    // (`brim_filament_source` "nearest_wall"; Print.cpp l.6183): only
+    // with more than one filament printing and layer by layer, as there.
+    let brim_shares = if settings.text("brim_filament_source") == Some("nearest_wall")
+        && tools.len() > 1
+        && sequence.is_none()
+        && !brim.is_empty()
+    {
+        nearest_wall_brim(&brim, &footprints, &walls_by, &used)
+    } else {
+        None
+    };
     let mut plate_facts = plate_facts(
         PlateInput {
             beside,
@@ -2467,6 +2666,11 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 &adhesion,
                 height,
             )?;
+            // Above the first layer only the innermost loop, the last laid,
+            // with `single_loop_draft_shield` (GCode.cpp l.7129).
+            if index > 0 && adhesion.single_loop_above_first && lines.len() > 1 {
+                lines.drain(..lines.len() - 1);
+            }
         }
     }
     let skirt_loops = around.first().map_or(0, Vec::len);
@@ -2599,6 +2803,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         supports,
         around,
         skirt_loops,
+        brim_shares,
         orders,
         changes,
         tower,
@@ -2971,6 +3176,44 @@ impl Sliced {
         self.heights.top_of(index)
     }
 
+    /// The first layer's entries' skirt and brim loops, and their
+    /// support lines with the stretches of brim that go before them, where
+    /// the brim is shared out by filament (`brim_shares`): each piece to
+    /// the first entry on the first layer in its filament, laid after the
+    /// tool change and before anything else there (GCode.cpp
+    /// `process_layer`, the chameleon brim's block). A piece in a filament
+    /// with no turn on the first layer goes to the tool that starts it.
+    /// Empty where the brim is not shared out.
+    fn shared_brim(&self) -> Vec<(Vec<ExtrusionLoop>, Vec<ExtrusionPath>)> {
+        let Some(shares) = &self.brim_shares else {
+            return Vec::new();
+        };
+        let first: Vec<usize> = (self.entries.iter())
+            .take_while(|turn| turn.layer == 0)
+            .map(|turn| self.slots[turn.filament])
+            .collect();
+        let mut parts: Vec<(Vec<ExtrusionLoop>, Vec<ExtrusionPath>)> =
+            vec![(Vec::new(), Vec::new()); first.len()];
+        let Some((start, _)) = parts.first_mut() else {
+            return Vec::new();
+        };
+        let skirt = self.around.first().map_or(&[][..], |around| {
+            &around[..self.skirt_loops.min(around.len())]
+        });
+        start.extend(skirt.iter().cloned());
+        for (filament, piece) in shares {
+            let at = first.iter().position(|own| own == filament).unwrap_or(0);
+            match piece {
+                edge_adhesion::BrimPiece::Whole(line) => parts[at].0.push(line.clone()),
+                edge_adhesion::BrimPiece::Stretch(line) => parts[at].1.push(line.clone()),
+            }
+        }
+        if let (Some((_, support)), Some(lines)) = (parts.first_mut(), self.supports.first()) {
+            support.extend(lines.iter().cloned());
+        }
+        parts
+    }
+
     /// The part's outline on each layer as modelled.
     pub fn outlines(&self) -> Vec<&[ExPolygon]> {
         (0..self.layers.len())
@@ -3139,8 +3382,10 @@ impl Sliced {
             });
         }
         let outlines = self.outlines();
+        let shared = self.shared_brim();
         // Layer tops, measured from the bottom of the model as the bed.
-        // Skirt, brim and supports go to whichever tool starts the layer.
+        // Skirt, brim and supports go to whichever tool starts the layer,
+        // but for a brim shared out by filament (`shared_brim`).
         let base: Vec<edge_gcode::Layer<'_>> = self
             .entries
             .iter()
@@ -3172,8 +3417,16 @@ impl Sliced {
                         .layers
                         .get(index)
                         .is_some_and(|layer| layer.first_speed),
-                    around: if starts { &self.around[index] } else { &[] },
-                    support: if starts { &self.supports[index] } else { &[] },
+                    around: match shared.get(entry) {
+                        Some((around, _)) => around,
+                        None if starts => &self.around[index],
+                        None => &[],
+                    },
+                    support: match shared.get(entry) {
+                        Some((_, support)) => support,
+                        None if starts => &self.supports[index],
+                        None => &[],
+                    },
                     loops: &own.loops,
                     islands: &own.islands,
                     paths: &self.fills_by[*filament][index],

@@ -273,32 +273,7 @@ const SILENT: &[Silent] = &[
         ],
     ),
     // Brim and adhesion.
-    // Print.cpp l.6183.
-    silent("brim_filament_source", Is("object")).many(Many::Printing),
-    // Brim.cpp l.55.
-    silent("brim_use_efc_outline", Is("0")),
-    // TreeSupport.cpp l.2500: a fixed brim width under tree bases.
-    gate(
-        "tree_support_auto_brim",
-        Is("1"),
-        &["tree_support_brim_width"],
-    ),
-    // Print.cpp l.6727.
-    silent("combine_brims", Is("0")),
     // Fill.
-    // Fill.cpp l.1527: set from 0 degrees up.
-    silent("bottom_layer_direction", Below(0.0, "-1")),
-    // Fill.cpp l.1494.
-    silent("bottom_surface_fill_order", Is("default")),
-    // PrintObject.cpp l.5727.
-    silent("extra_solid_infills", Blank),
-    // Fill.cpp l.1523.
-    silent("sparse_infill_smooth_factor", Is("0%")),
-    // Fill.cpp l.1439.
-    silent("undertop_surface_pattern", Is("default")),
-    // PrintObject.cpp l.3126.
-    silent("bottom_surface_density", Is("100%")),
-    silent("top_surface_density", Is("100%")),
     // PrintObject.cpp l.2289: with top surface expansion on.
     with(
         "top_surface_expansion_margin",
@@ -312,18 +287,10 @@ const SILENT: &[Silent] = &[
         "top_surface_expansion",
         Is("0"),
     ),
-    // PrintObject.cpp l.5938.
-    gate(
-        "infill_combination",
-        Is("0"),
-        &["infill_combination_max_layer_height"],
-    ),
     // PrintObject.cpp l.554.
     silent("separated_infills", Is("0")),
     // Walls: PerimeterGenerator.cpp l.346.
     silent("offset_layers", Is("0")),
-    // Skirt: GCode.cpp l.7129.
-    silent("single_loop_draft_shield", Is("0")),
     // Order of objects: GCode.cpp l.3711.
     silent("print_order", Is("default")),
     // G-code of the profile's own: GCode.cpp l.11741, l.4345.
@@ -497,6 +464,18 @@ mod tests {
     }
 
     #[test]
+    fn the_older_tree_styles_brim_is_not_said_for_organic_trees() {
+        // The reference reads them only in the older styles' generator,
+        // which support_style's own note covers (measured: the same
+        // G-code for tree(auto) with either set otherwise).
+        let set = Settings::from_json(
+            r#"{"tree_support_auto_brim": "0", "tree_support_brim_width": "10"}"#,
+        )
+        .unwrap();
+        assert!(notes(&set, 1).is_empty());
+    }
+
+    #[test]
     fn settings_nothing_reads_are_said_when_they_change_the_print() {
         let on = Settings::from_json(
             r#"{"filament_shrink": ["100%", "98%"],
@@ -647,9 +626,15 @@ mod tests {
             "support_ironing_pattern",
             "support_ironing_spacing",
             "support_ironing_speed",
+            // Read only by the older tree styles' generator
+            // (TreeSupport.cpp l.2500, `draw_circles`), which organic
+            // trees never reach (`TreeSupport::generate` hands them to
+            // TreeSupport3D first): said by support_style's note.
+            "tree_support_auto_brim",
             "tree_support_branch_angle",
             "tree_support_branch_diameter",
             "tree_support_branch_distance",
+            "tree_support_brim_width",
         ];
         /// Changing nothing in the G-code or the slice: the GUI, the network, preset
         /// choice, showcase rendering, file names, cost and time estimates, warnings.
