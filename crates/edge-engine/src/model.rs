@@ -2442,11 +2442,20 @@ impl From<Opened> for Model {
                     kept: None,
                 }]);
                 let reach = shape.reach(&Transform::IDENTITY);
+                // Named after its file, as the reference names what it
+                // loads (STL.cpp `load_stl`, the file's name) and as reading the
+                // file to slice it does ([`crate::open`]): a project saved
+                // from here keeps the name, which `; printing object`
+                // writes either way.
+                let name = (path.as_deref())
+                    .and_then(Path::file_name)
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
                 Self {
                     path,
                     objects: vec![ModelObject {
                         id: fresh(),
-                        name: String::new(),
+                        name,
                         filament: None,
                         shape,
                         copies: vec![ModelCopy {
