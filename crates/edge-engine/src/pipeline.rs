@@ -532,14 +532,14 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 );
             }
             let filament = materials.first().copied().unwrap_or(1);
-            bodies = objects
-                .iter()
+            bodies = (objects.iter().enumerate())
                 .zip(negatives.iter().map(Some).chain(std::iter::repeat(None)))
-                .map(|(solid, negative)| Body {
+                .map(|((at, solid), negative)| Body {
                     solid: solid.clone(),
                     negative: negative.filter(|mesh| !mesh.triangles.is_empty()).cloned(),
                     filament,
                     part: None,
+                    object: Some(at),
                 })
                 .collect();
         }
@@ -830,11 +830,17 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         } else {
             Vec::new()
         };
-        let mut layers = edge_slice::slice_regions_vase(
+        // Each object is closed by itself, as the reference slices each
+        // object apart: two objects closer than twice the closing radius
+        // stay two.
+        let body_objects: Vec<Option<usize>> = bodies.iter().map(|body| body.object).collect();
+        let mut layers = edge_slice::slice_regions_by_object(
             &borrowed,
+            &body_objects,
             &planes,
             scaled(closing_radius),
             &largest_from,
+            0,
         )?;
         // Height ranges and modifiers lay their settings over what of an
         // object's parts they take (`crate::regions`).

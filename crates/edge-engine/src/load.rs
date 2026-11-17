@@ -214,6 +214,7 @@ fn own_objects(project: &Project, plate: Option<usize>) -> (Vec<OwnObject>, Vec<
                         negative: (!negative.triangles.is_empty()).then(|| negative.clone()),
                         filament: part.filament,
                         part: Some((at, volumes.len())),
+                        object: Some(place - 1),
                     });
                     (Some(part.filament), Mesh::default())
                 }
@@ -461,6 +462,7 @@ pub(crate) fn lone(path: &Path, solid: Mesh) -> Result<Loaded, Failure> {
         negative: None,
         filament: 1,
         part: None,
+        object: None,
     }];
     let bounds = bounds_of(path, &bodies)?;
     Ok(Loaded {
@@ -834,6 +836,7 @@ mod tests {
             negative: Some(cube),
             filament: 1,
             part: None,
+            object: None,
         }];
         shift(&mut bodies, 10.0, -5.0);
         for mesh in [&bodies[0].solid, bodies[0].negative.as_ref().unwrap()] {

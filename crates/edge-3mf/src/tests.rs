@@ -330,7 +330,8 @@ fn negative_parts_make_their_instances_separate_bodies() {
     .unwrap();
 
     let bodies = project.bodies(None);
-    // The two plain cubes share the first body; each drilled block has its own.
+    // Each plain cube is a body of its own, as is each drilled block, each
+    // tagged with its place among the instances.
     let volumes: Vec<_> = bodies
         .iter()
         .map(|b| {
@@ -342,10 +343,19 @@ fn negative_parts_make_their_instances_separate_bodies() {
         .collect();
     assert_eq!(
         volumes,
-        [(250.0, None), (1000.0, Some(80.0)), (1000.0, Some(80.0))]
+        [
+            (125.0, None),
+            (125.0, None),
+            (1000.0, Some(80.0)),
+            (1000.0, Some(80.0))
+        ]
     );
     assert_eq!(
-        bodies[2].negative.as_ref().unwrap().bounds().unwrap().0,
+        bodies.iter().map(|body| body.object).collect::<Vec<_>>(),
+        [Some(2), Some(3), Some(0), Some(1)]
+    );
+    assert_eq!(
+        bodies[3].negative.as_ref().unwrap().bounds().unwrap().0,
         [50.0, 0.0, 0.0]
     );
     // The merged mesh is the printed material only.

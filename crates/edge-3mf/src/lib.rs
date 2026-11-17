@@ -571,19 +571,29 @@ impl Project {
     }
 
     /// What to slice for one plate (or the whole project for `None`), in
-    /// world coordinates: one body for each filament. Objects without
-    /// negative parts share a filament's body; each instance of an object
-    /// that has them gets bodies of its own, so its negative parts carve it
-    /// and nothing else. Bodies come in ascending order of filament.
+    /// world coordinates: one body for each instance and filament, tagged
+    /// with the instance's place among [`Project::instance_meshes`], so
+    /// each object is closed by itself; an instance's negative parts carve
+    /// its own bodies and nothing else. Bodies come in ascending order of
+    /// filament, and within one filament those without negative parts
+    /// first, each in the order of its instance.
     pub fn bodies(&self, plate: Option<usize>) -> Vec<Body> {
         self.bodies_where(plate, |_| true)
     }
 
     /// [`Project::bodies`] of the objects `keep` keeps alone.
     pub fn bodies_where(&self, plate: Option<usize>, keep: impl Fn(&Object) -> bool) -> Vec<Body> {
-        let mut shared: std::collections::BTreeMap<usize, Mesh> = Default::default();
+        // By filament, then by the instance's place among those
+        // `instance_meshes` gives.
+        let mut shared: std::collections::BTreeMap<(usize, usize), Mesh> = Default::default();
         let mut carved = Vec::new();
-        for (object, instance) in self.printable(plate).filter(|(object, _)| keep(object)) {
+        let placed = self.printable(plate).filter(|(object, _)| {
+            (object.parts.iter())
+                .any(|part| part.kind == PartKind::Normal && !part.mesh.triangles.is_empty())
+        });
+        for (place, (object, instance)) in
+            placed.enumerate().filter(|(_, (object, _))| keep(object))
+        {
             let has_negative = object
                 .parts
                 .iter()
@@ -595,6 +605,7 @@ impl Project {
                         negative: Some(Mesh::default()),
                         filament,
                         part: None,
+                        object: Some(place),
                     };
                     append_parts(
                         &mut body.solid,
@@ -613,7 +624,7 @@ impl Project {
                     carved.push(body);
                 } else {
                     append_parts(
-                        shared.entry(filament).or_default(),
+                        shared.entry((filament, place)).or_default(),
                         object,
                         instance,
                         PartKind::Normal,
@@ -625,11 +636,12 @@ impl Project {
         let mut bodies: Vec<Body> = shared
             .into_iter()
             .filter(|(_, solid)| !solid.triangles.is_empty())
-            .map(|(filament, solid)| Body {
+            .map(|((filament, place), solid)| Body {
                 solid,
                 negative: None,
                 filament,
                 part: None,
+                object: Some(place),
             })
             .collect();
         bodies.extend(carved);
@@ -952,6 +964,11 @@ pub struct Body {
     /// A tag of whoever made the body from one part by itself, to find
     /// the part again by; none for every body [`Project::bodies`] makes.
     pub part: Option<(usize, usize)>,
+    /// Which of the plate's objects (copies) the body belongs to, by its
+    /// place among [`Project::instance_meshes`]: an object's layers are
+    /// closed by themselves, not together with another's. None for a body
+    /// that is not one object's, such as a bare model.
+    pub object: Option<usize>,
 }
 
 /// Millimetres in coordinate units, cut off toward zero (Point.hpp

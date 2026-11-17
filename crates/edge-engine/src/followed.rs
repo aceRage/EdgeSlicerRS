@@ -52,6 +52,7 @@ fn block(project: Option<&Settings>, filament: usize) -> Loaded {
             negative: None,
             filament,
             part: None,
+            object: None,
         }],
         painted: Vec::new(),
         settings: project.cloned(),
