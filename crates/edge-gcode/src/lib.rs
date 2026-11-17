@@ -5464,6 +5464,11 @@ impl Writer<'_> {
         }
         self.contour_role(role);
         self.prime()?;
+        // The line's acceleration before its kind is said, once the
+        // filament is forward (GCode.cpp `_extrude`: `unretract`, then
+        // `set_accel_and_jerk` or `set_print_acceleration`, then the
+        // role and width tags).
+        self.accelerate(motion.acceleration)?;
         if self.state.role != Some(role) {
             // Two roles may go by one name, which is then said once.
             if self.state.role.map(role_name) != Some(role_name(role)) {
@@ -5484,7 +5489,6 @@ impl Writer<'_> {
             writeln!(self.out, "{tag}{}", stream_double(flow.height))?;
             self.state.height_tag = flow.height;
         }
-        self.accelerate(motion.acceleration)?;
         // A layer's time is counted from its first line, as in the reference.
         if !self.extruding {
             self.extruding = true;

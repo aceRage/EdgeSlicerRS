@@ -1419,6 +1419,44 @@ fn fan_runs_faster_on_layers_that_take_less_time() {
 }
 
 #[test]
+fn a_feature_s_acceleration_is_set_before_its_kind_is_said() {
+    // GCode.cpp `_extrude`: the acceleration (and jerk) are set after the
+    // travel and the unretraction and before the `;TYPE:` and `;WIDTH:`
+    // tags, so no acceleration line comes between a feature's tag and its
+    // first move.
+    for form in [AccelerationForm::Klipper, AccelerationForm::PrintTravel] {
+        let settings = PrintSettings {
+            acceleration_form: form,
+            default_acceleration: 10000.0,
+            outer_wall_acceleration: 5000.0,
+            sparse_infill_acceleration: FloatOrPercent::Value(2000.0),
+            travel_acceleration: 12000.0,
+            ..basic()
+        };
+        let text = printed(2, &settings);
+        let second = text.split(";LAYER_CHANGE").last().unwrap();
+        let mut tagged = false;
+        let mut before_tags = Vec::new();
+        for line in second.lines() {
+            if line.starts_with(";TYPE:") {
+                tagged = true;
+            } else if line.starts_with("G1 ") {
+                tagged = false;
+            } else if line.starts_with("SET_VELOCITY_LIMIT") || line.starts_with("M204 P") {
+                assert!(!tagged, "{form:?}: {line} after a feature's tag:\n{second}");
+                before_tags.push(line.to_owned());
+            }
+        }
+        // The outer wall's and the infill's were both set, before their tags.
+        assert!(
+            before_tags.iter().any(|line| line.contains("5000"))
+                && before_tags.iter().any(|line| line.contains("2000")),
+            "{form:?}: {before_tags:?}"
+        );
+    }
+}
+
+#[test]
 fn marlin_2_is_told_printing_and_travel_accelerations_apart() {
     let limits = |settings: &PrintSettings| -> Vec<String> {
         let text = printed(2, settings);
