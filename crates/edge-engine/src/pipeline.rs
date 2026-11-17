@@ -2371,7 +2371,19 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         .collect::<Result<_, _>>()?;
     let any_brim = adhesion.brim != BrimKind::None
         || (own_brims.iter().flatten()).any(|theirs| theirs.brim != BrimKind::None);
-    let footprints: Vec<(usize, Vec<ExPolygon>, f64)> = if !any_brim {
+    // The amount and the outer wall's width the first layer is shrunk by
+    // against elephant foot, for a brim that follows it.
+    let shrink_first = if elephant_layers > 0 {
+        let outer = walls.params(heights.height_of(0), true)?.outer;
+        Some((scaled(outer.width + outer.spacing), scaled(elephant_foot)))
+    } else {
+        None
+    };
+    #[expect(
+        clippy::type_complexity,
+        reason = "one use, named field by field below"
+    )]
+    let footprints: Vec<(usize, Vec<ExPolygon>, f64, Option<Vec<ExPolygon>>)> = if !any_brim {
         Vec::new()
     } else {
         let alone = meshes.len() == 1 && bodies.iter().all(|body| body.negative.is_none());
@@ -2388,20 +2400,33 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 }];
                 // The object's own first layer, grown as the plate's was
                 // where overhangs were made printable down to the bed.
-                Some(
-                    printable
-                        .first_layer(&body, alone, &planes, scaled(closing_radius), &heights)
-                        .map(|first| (object, first, f64::from(high[2] - low[2]))),
-                )
+                let first =
+                    printable.first_layer(&body, alone, &planes, scaled(closing_radius), &heights);
+                // And as printed, where its brim follows that
+                // (`brim_use_efc_outline`; Brim.cpp `use_brim_efc_outline`:
+                // only where the first layer is shrunk at all).
+                let follows = (own_brims.get(object).and_then(Option::as_ref))
+                    .unwrap_or(&adhesion)
+                    .efc_outline;
+                Some(first.and_then(|first| {
+                    let shrunk = match shrink_first {
+                        Some((width, amount)) if follows => {
+                            Some(edge_slice::compensate_elephant_foot(&first, width, amount)?)
+                        }
+                        _ => None,
+                    };
+                    Ok((object, first, f64::from(high[2] - low[2]), shrunk))
+                }))
             })
             .collect::<Result<_, _>>()?
     };
     let footings: Vec<Footing<'_>> = footprints
         .iter()
-        .map(|(object, footprint, height)| Footing {
+        .map(|(object, footprint, height, shrunk)| Footing {
             footprint,
             height: *height,
             own: own_brims.get(*object).and_then(Option::as_ref),
+            outline: shrunk.as_deref(),
         })
         .collect();
     // The prime tower's ground, brim included: no brim is laid on it,

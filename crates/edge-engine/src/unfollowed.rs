@@ -323,8 +323,6 @@ const SILENT: &[Silent] = &[
     // Brim and adhesion.
     // Print.cpp l.6183.
     silent("brim_filament_source", Is("object")).many(Many::Printing),
-    // Brim.cpp l.55.
-    silent("brim_use_efc_outline", Is("0")),
     // TreeSupport.cpp l.2500: a fixed brim width under tree bases.
     gate(
         "tree_support_auto_brim",

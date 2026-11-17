@@ -40,6 +40,12 @@ pub struct Footing<'a> {
     /// Its own brim (`brim_type`, `brim_width`, `brim_object_gap` set for
     /// the object alone), where it has one; none takes the plate's.
     pub own: Option<&'a AdhesionSettings>,
+    /// The first layer as printed, shrunk against elephant foot, where
+    /// the brim follows that rather than the footprint
+    /// (`brim_use_efc_outline`): the brim is laid against it and kept off
+    /// it, while how wide an automatic brim is still goes by the
+    /// footprint (Brim.cpp `get_print_object_bottom_layer_expolygons`).
+    pub outline: Option<&'a [ExPolygon]>,
 }
 
 /// The settings skirt and brim depend on. Defaults are the reference's
@@ -63,6 +69,10 @@ pub struct AdhesionSettings {
     pub max_speed: f64,
     /// Gap between the part and its brim, in mm, so it breaks off cleanly.
     pub brim_object_gap: f64,
+    /// Whether the brim follows the first layer as shrunk against
+    /// elephant foot rather than the footprint as modelled
+    /// (`brim_use_efc_outline`); the caller gives that outline.
+    pub efc_outline: bool,
     pub line_width: FloatOrPercent,
     pub initial_layer_line_width: FloatOrPercent,
     pub inner_wall_line_width: FloatOrPercent,
@@ -84,6 +94,7 @@ impl Default for AdhesionSettings {
             filament_type: String::new(),
             max_speed: 100.0,
             brim_object_gap: 0.0,
+            efc_outline: false,
             line_width: FloatOrPercent::Value(0.4),
             initial_layer_line_width: FloatOrPercent::Value(0.4),
             inner_wall_line_width: FloatOrPercent::Value(0.4),
@@ -176,6 +187,9 @@ impl AdhesionSettings {
             brim_object_gap: settings
                 .float("brim_object_gap")?
                 .unwrap_or(defaults.brim_object_gap),
+            efc_outline: settings
+                .flag("brim_use_efc_outline")?
+                .unwrap_or(defaults.efc_outline),
             line_width: width("line_width", defaults.line_width)?,
             initial_layer_line_width: width(
                 "initial_layer_line_width",
@@ -421,7 +435,18 @@ pub fn brim(
         } else {
             own.brim_width
         };
-        for island in object.footprint {
+        // Following the shrunk first layer, each island is what of it is
+        // left after shrinking (Brim.cpp: the volume group's slices
+        // intersected with the compensated outline).
+        let shrunk;
+        let islands = match object.outline {
+            Some(outline) => {
+                shrunk = edge_clip::intersection(outline, object.footprint)?;
+                shrunk.as_slice()
+            }
+            None => object.footprint,
+        };
+        for island in islands {
             let width = island_width(island, width, object.height, automatic, flow.spacing);
             if width <= 0.0 {
                 continue;
@@ -439,7 +464,11 @@ pub fn brim(
     let mut by_gap: Vec<(f64, Vec<ExPolygon>)> = Vec::new();
     for object in objects {
         let gap = of(object, settings).brim_object_gap;
-        let islands = object.footprint.iter().map(filled);
+        let islands = object
+            .outline
+            .unwrap_or(object.footprint)
+            .iter()
+            .map(filled);
         match by_gap.iter_mut().find(|(own, _)| *own == gap) {
             Some((_, all)) => all.extend(islands),
             None => by_gap.push((gap, islands.collect())),
@@ -700,6 +729,7 @@ mod tests {
         let part = [square(0.0, 0.0, 10.0)];
         let on_bed = [Footing {
             own: None,
+            outline: None,
             footprint: &part,
             height: 5.0,
         }];
@@ -745,10 +775,51 @@ mod tests {
     }
 
     #[test]
+    fn a_brim_that_follows_the_shrunk_first_layer_lies_against_it() {
+        let part = [square(0.0, 0.0, 10.0)];
+        // The first layer as printed, 0.15 mm in from the footprint.
+        let shrunk = [square(0.15, 0.15, 9.7)];
+        let settings = AdhesionSettings {
+            brim_object_gap: 0.1,
+            efc_outline: true,
+            ..outer(3.0)
+        };
+        let flow = settings.brim_flow(0.2).unwrap();
+        let reach = |line: &ExtrusionLoop| -extent(&line.polygon)[0];
+        let laid = |outline| {
+            let on_bed = [Footing {
+                own: None,
+                outline,
+                footprint: &part,
+                height: 5.0,
+            }];
+            brim(&on_bed, &[], &settings, 0.2).unwrap()
+        };
+        let (plain, following) = (laid(None), laid(Some(&shrunk[..])));
+        // As many lines, each 0.15 mm further in, the innermost half a
+        // line beyond the gap from the shrunk outline.
+        assert_eq!(plain.len(), following.len());
+        for (a, b) in plain.iter().zip(&following) {
+            assert!((reach(a) - reach(b) - 0.15).abs() < 0.02);
+        }
+        let nearest = reach(following.last().unwrap());
+        let expected = 0.1 + flow.spacing / 2.0 - 0.15;
+        assert!((nearest - expected).abs() < 0.02, "{nearest}");
+        assert!(
+            AdhesionSettings::from_settings(
+                &Settings::from_json(r#"{"brim_use_efc_outline": "1"}"#).unwrap()
+            )
+            .unwrap()
+            .efc_outline
+        );
+    }
+
+    #[test]
     fn two_parts_close_together_share_a_brim_that_stays_off_both() {
         let parts = [square(0.0, 0.0, 10.0), square(11.0, 0.0, 10.0)];
         let on_bed = [Footing {
             own: None,
+            outline: None,
             footprint: &parts,
             height: 5.0,
         }];
@@ -798,6 +869,7 @@ mod tests {
                     footprint,
                     height,
                     own: None,
+                    outline: None,
                 },
                 settings,
             )
@@ -841,11 +913,13 @@ mod tests {
         let on_bed = [
             Footing {
                 own: None,
+                outline: None,
                 footprint: &tower,
                 height: 100.0,
             },
             Footing {
                 own: None,
+                outline: None,
                 footprint: &plate,
                 height: 2.0,
             },
@@ -914,11 +988,13 @@ mod tests {
         let on_bed = [
             Footing {
                 own: None,
+                outline: None,
                 footprint: &left,
                 height: 10.0,
             },
             Footing {
                 own: None,
+                outline: None,
                 footprint: &right,
                 height: 10.0,
             },
@@ -954,6 +1030,7 @@ mod tests {
         let part = [square(0.0, 0.0, 20.0)];
         let on_bed = [Footing {
             own: None,
+            outline: None,
             footprint: &part,
             height: 10.0,
         }];
