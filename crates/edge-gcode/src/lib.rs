@@ -5012,6 +5012,7 @@ impl Writer<'_> {
                     width: flow.width as f32,
                     speeds: &speeds,
                     fan_at,
+                    shadow: self.shadow(role, flow),
                 }
                 .readings(&stretch.points, known.as_deref());
                 // "with the slowdown off the points only carry the
@@ -5043,6 +5044,29 @@ impl Writer<'_> {
                 }
             })
             .collect()
+    }
+
+    /// How much further out over the layer beneath an inner wall is
+    /// graded, in mm, to slow and cool it with the overhang laid against
+    /// it (GCode.cpp `_extrude`, "Overhang Shadow",
+    /// `overhang_shadow_shift`): with the overhang slowdown on, for inner
+    /// walls alone, and not where the outer wall is laid first, as then
+    /// the overhang does not lean on it. 0 for none.
+    fn shadow(&self, role: Role, flow: &Flow) -> f32 {
+        let s = self.settings;
+        match s.overhang_shadow {
+            Some((ratio, reach))
+                if s.enable_overhang_speed
+                    && role == Role::Perimeter
+                    && s.wall_order != WallOrder::OuterInner =>
+            {
+                // In single precision, as the reference has them.
+                let ratio = (ratio / 100.0) as f32;
+                let reach = (f64::from(flow.width as f32) * reach / 100.0) as f32;
+                ratio * reach
+            }
+            _ => 0.0,
+        }
     }
 
     /// Lays a measured wall stretch by stretch. As in the reference

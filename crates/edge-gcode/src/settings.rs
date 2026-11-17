@@ -98,6 +98,13 @@ pub struct PrintSettings {
     /// (`slowdown_for_curled_perimeters`). Slowing over edges that have
     /// curled up, which the setting is named for, is not done.
     pub slowdown_for_curled_perimeters: bool,
+    /// EdgeSlicer's overhang shadow (`overhang_shadow_inner_wall`): an
+    /// inner wall is graded as if it were further out over the layer
+    /// beneath, by `overhang_shadow_speed_ratio` of
+    /// `overhang_shadow_distance` (each in percent, the distance of the
+    /// line's width), so the wall an overhang is laid against is slowed
+    /// and cooled as part of it. None when off.
+    pub overhang_shadow: Option<(f64, f64)>,
     /// The fan for bridges and overhangs; none when they get the layer's.
     pub overhang_fan: Option<OverhangFan>,
     /// A bridge's plastic as a share of a normal line's, and whether it
@@ -485,6 +492,7 @@ impl Default for PrintSettings {
             overhang_speeds: [FloatOrPercent::Value(0.0); 4],
             resonance_avoidance: None,
             slowdown_for_curled_perimeters: false,
+            overhang_shadow: None,
             overhang_fan: Some(OverhangFan {
                 speed: 100.0,
                 at: Some(0.05),
@@ -928,6 +936,22 @@ impl PrintSettings {
                 listed_share("overhang_4_4_speed", defaults.overhang_speeds[3])?,
             ],
             slowdown_for_curled_perimeters: flag("slowdown_for_curled_perimeters", false)?,
+            overhang_shadow: if flag("overhang_shadow_inner_wall", false)? {
+                let percent = |key: &str, default: f64| -> Result<f64, ConfigError> {
+                    Ok(match settings.float_or_percent(key)? {
+                        Some(FloatOrPercent::Percent(value) | FloatOrPercent::Value(value)) => {
+                            value
+                        }
+                        None => default,
+                    })
+                };
+                Some((
+                    percent("overhang_shadow_speed_ratio", 30.0)?,
+                    percent("overhang_shadow_distance", 200.0)?,
+                ))
+            } else {
+                None
+            },
             overhang_fan: if flag("enable_overhang_bridge_fan", true)? {
                 Some(OverhangFan {
                     speed: number("overhang_fan_speed", 100.0)?,

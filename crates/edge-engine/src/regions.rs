@@ -524,8 +524,21 @@ fn region_reads() -> &'static BTreeSet<String> {
 /// the G-code writer takes from a region's own settings as it lays the
 /// region's walls and fill.
 pub(crate) fn per_region(key: &str) -> bool {
-    (region_reads().contains(key) || WRITTEN_BY_REGION.contains(&key)) && !PLATE_WIDE.contains(&key)
+    (region_reads().contains(key)
+        || WRITTEN_BY_REGION.contains(&key)
+        || WALLS_WRITTEN_BY_REGION.contains(&key))
+        && !PLATE_WIDE.contains(&key)
 }
+
+/// What the G-code writer reads from a region's own settings as it lays
+/// its walls alone, and so does not keep two regions' fill apart
+/// ([`written_alike`]): how an inner wall in an overhang's shadow is
+/// slowed.
+const WALLS_WRITTEN_BY_REGION: [&str; 3] = [
+    "overhang_shadow_inner_wall",
+    "overhang_shadow_distance",
+    "overhang_shadow_speed_ratio",
+];
 
 /// What the stages worked out region by region read but take from the
 /// plate's settings all the same, where the work is done for every

@@ -104,12 +104,6 @@ use Off::{Blank, Is, Unless};
 /// numbers in the pinned reference's `src/libslic3r`).
 const SILENT: &[Silent] = &[
     // Speed and motion.
-    // GCode.cpp l.11573: inner walls under an overhang slowed like it.
-    gate(
-        "overhang_shadow_inner_wall",
-        Is("0"),
-        &["overhang_shadow_distance", "overhang_shadow_speed_ratio"],
-    ),
     // LayerTimeSpeedSmoothingFilter.
     gate(
         "layer_time_speed_smoothing",
