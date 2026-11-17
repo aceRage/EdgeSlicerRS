@@ -25,7 +25,9 @@ mod settings;
 mod surfaces;
 
 pub use counterbore::bridge_counterbores;
-pub use fill::{FillError, FillParams, Frame, GapFillTarget, fill, fill_from, fill_within};
+pub use fill::{
+    FillError, FillParams, Frame, GapFillTarget, fill, fill_from, fill_under_tops, fill_within,
+};
 pub use internal_bridges::{
     BridgeDirection, InternalBridgeFilter, OverInfill, bridge_over_infill_by,
     second_internal_bridges,

@@ -123,6 +123,10 @@ pub struct InfillSettings {
     /// 10%).
     pub top_surface_density: f64,
     pub bottom_surface_density: f64,
+    /// How the solid fill just under a top surface is laid, where
+    /// `undertop_surface_pattern` sets it apart: whether its lines are
+    /// joined and swept in order ([`crate::FillParams::under_top`]).
+    pub under_top: Option<(bool, bool)>,
     /// Whether the fill keeps one direction on every layer rather than
     /// turning a quarter on each odd one: Z contouring's
     /// `zaa_dont_alternate_fill_direction`, which counts only with
@@ -262,6 +266,7 @@ impl Default for InfillSettings {
             bottom_layer_direction: None,
             top_surface_density: 1.0,
             bottom_surface_density: 1.0,
+            under_top: None,
             steady_direction: false,
             lateral_lattice_angles: (-45.0, 45.0),
             infill_shift_step: 0.4,
@@ -548,6 +553,19 @@ impl InfillSettings {
             "internal_solid_infill_pattern",
             (defaults.solid_joined, defaults.solid_ordered),
         );
+        // The solid fill under a top surface has a pattern of its own only
+        // with more than two top shell layers and a top surface laid
+        // short of full (Fill.cpp `group_fills`); otherwise the setting
+        // changes nothing.
+        let top_shell_layers = count("top_shell_layers", defaults.top_shell_layers)?;
+        let under_top = match settings.text("undertop_surface_pattern") {
+            Some(pattern)
+                if pattern != "default" && top_shell_layers > 2 && top_surface_density < 1.0 =>
+            {
+                Some(joined("undertop_surface_pattern", (true, false)))
+            }
+            _ => None,
+        };
         // The order a bottom surface is laid in, from the middle out or
         // from the edge in, is followed by the reference only for the
         // patterns laid about the middle of the surface (Fill.cpp
@@ -613,7 +631,7 @@ impl InfillSettings {
             None => defaults.sparse_infill_density_percent,
         };
         Ok(Self {
-            top_shell_layers: count("top_shell_layers", defaults.top_shell_layers)?,
+            top_shell_layers,
             bottom_shell_layers: count("bottom_shell_layers", defaults.bottom_shell_layers)?,
             top_shell_thickness: thickness("top_shell_thickness", defaults.top_shell_thickness)?,
             bottom_shell_thickness: thickness(
@@ -645,6 +663,7 @@ impl InfillSettings {
                 .unwrap_or(defaults.solid_infill_direction),
             top_surface_density,
             bottom_surface_density,
+            under_top,
             top_layer_direction: surface_direction("top_layer_direction")?,
             bottom_layer_direction: surface_direction("bottom_layer_direction")?,
             steady_direction: steady_direction(settings)?,
@@ -994,6 +1013,7 @@ impl InfillSettings {
             bottom_angle: self.bottom_layer_direction.map(f64::to_radians),
             top_density: self.top_surface_density,
             bottom_density: self.bottom_surface_density,
+            under_top: self.under_top,
             alternate: !self.steady_direction,
             // Both are shares of the line spacing when given as percentages
             // (Fill.cpp), and an anchor is never longer than a join may be.
@@ -1300,6 +1320,35 @@ mod tests {
             read(r#"{"top_surface_pattern": "archimedeanchords", "top_surface_density": "50%"}"#)
                 .unwrap();
         assert!(spiral.unsupported[0].starts_with("top_surface_density"));
+    }
+
+    #[test]
+    fn the_pattern_under_a_top_counts_only_with_a_thinned_top_and_three_shells() {
+        let read = |json: &str| InfillSettings::from_settings(&Settings::from_json(json).unwrap());
+        let set = |json: &str| read(json).unwrap().params(0.2, false).unwrap().under_top;
+        assert_eq!(
+            set(r#"{"undertop_surface_pattern": "monotonicline", "top_surface_density": "80%"}"#),
+            Some((false, true))
+        );
+        // Full top, two shell layers, or the default: nothing.
+        assert_eq!(
+            set(r#"{"undertop_surface_pattern": "monotonicline"}"#),
+            None
+        );
+        assert_eq!(
+            set(
+                r#"{"undertop_surface_pattern": "monotonic", "top_surface_density": "80%",
+                    "top_shell_layers": "2"}"#
+            ),
+            None
+        );
+        assert_eq!(set(r#"{"top_surface_density": "80%"}"#), None);
+        // A pattern not laid here is said, and laid as joined lines.
+        let other =
+            read(r#"{"undertop_surface_pattern": "concentric", "top_surface_density": "80%"}"#)
+                .unwrap();
+        assert_eq!(other.under_top, Some((true, false)));
+        assert!(other.unsupported[0].starts_with("undertop_surface_pattern \"concentric\""));
     }
 
     #[test]

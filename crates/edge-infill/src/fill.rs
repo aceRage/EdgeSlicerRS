@@ -63,6 +63,12 @@ pub struct FillParams {
     /// surface density means walls only").
     pub top_density: f64,
     pub bottom_density: f64,
+    /// How the solid fill just under a top surface is laid where
+    /// `undertop_surface_pattern` sets it apart: whether its lines are
+    /// joined end to end and swept in order, as for the other solid
+    /// fill. None lays it as all solid fill inside the part is. See
+    /// [`fill_under_tops`].
+    pub under_top: Option<(bool, bool)>,
     /// Whether lines laid in the fill's own direction turn a quarter on
     /// odd layers, as they do unless Z contouring keeps them steady
     /// ([`crate::InfillSettings::steady_direction`]).
@@ -1157,6 +1163,106 @@ pub fn fill_within(
     Ok(paths)
 }
 
+/// As [`fill_within`], with the solid fill inside the part that lies
+/// under a top surface of the layer above (`upper_tops`) laid by
+/// [`FillParams::under_top`], where that is set (Fill.cpp `group_fills`,
+/// `is_undertop`: a surface of solid fill is under a top when the top's
+/// outline crosses it or it lies wholly within the top). The reference
+/// fills it as a group of its own, with its own pattern, and so it is
+/// filled here: after the rest of the layer, its narrow parts told
+/// from its wide ones by themselves.
+pub fn fill_under_tops(
+    surfaces: &[Surface],
+    upper_tops: &[ExPolygon],
+    layer_index: usize,
+    params: &FillParams,
+    frame_of: &dyn Fn(&Surface) -> Frame,
+    no_overlap: &[ExPolygon],
+) -> Result<Vec<ExtrusionPath>, FillError> {
+    let Some((joined, ordered)) = params.under_top else {
+        return fill_within(surfaces, layer_index, params, frame_of, no_overlap);
+    };
+    let mut under = Vec::new();
+    let mut rest = Vec::new();
+    for surface in surfaces {
+        let below = surface.kind == SurfaceKind::InternalSolid
+            && upper_tops
+                .iter()
+                .map(|top| overlaps(&surface.area, top))
+                .try_fold(false, |any, found| found.map(|found| any || found))?;
+        if below {
+            under.push(surface.clone());
+        } else {
+            rest.push(surface.clone());
+        }
+    }
+    if under.is_empty() {
+        return fill_within(surfaces, layer_index, params, frame_of, no_overlap);
+    }
+    let mut paths = fill_within(&rest, layer_index, params, frame_of, no_overlap)?;
+    let own = FillParams {
+        solid_joined: joined,
+        solid_ordered: ordered,
+        ..*params
+    };
+    // Its parts are numbered on from the rest's, so that no part of one
+    // runs into a part of the other.
+    let flags = ExtrusionPath::LOOPED | ExtrusionPath::KEPT_WAY;
+    let past = paths
+        .iter()
+        .map(|path| path.part & !flags)
+        .max()
+        .unwrap_or(0);
+    for mut path in fill_within(&under, layer_index, &own, frame_of, no_overlap)? {
+        path.part = (path.part & flags) | ((path.part & !flags) + past);
+        paths.push(path);
+    }
+    Ok(paths)
+}
+
+/// Whether `other` overlaps `area` (ExPolygon.cpp `ExPolygon::overlaps`):
+/// some of its outline lies inside `area`, or `area` lies within it.
+fn overlaps(area: &ExPolygon, other: &ExPolygon) -> Result<bool, ClipError> {
+    let rings: Vec<Vec<Point2>> = std::iter::once(&other.contour)
+        .chain(&other.holes)
+        .filter(|ring| !ring.points.is_empty())
+        .map(|ring| {
+            let mut line = ring.points.clone();
+            line.push(ring.points[0]);
+            line
+        })
+        .collect();
+    if !edge_clip::clip_lines(&rings, std::slice::from_ref(area))?.is_empty() {
+        return Ok(true);
+    }
+    Ok(area
+        .contour
+        .points
+        .first()
+        .is_some_and(|&point| expolygon_contains(other, point)))
+}
+
+/// Whether a point lies inside a region and none of its holes, by the
+/// crossings of a ray (Polygon.cpp `Polygon::contains`).
+fn expolygon_contains(region: &ExPolygon, point: Point2) -> bool {
+    let inside = |ring: &edge_geom::Polygon| {
+        let mut result = false;
+        let points = &ring.points;
+        for (at, &a) in points.iter().enumerate() {
+            let b = points[(at + 1) % points.len()];
+            if (a.y > point.y) != (b.y > point.y) {
+                let cross =
+                    (b.x - a.x) as f64 * (point.y - a.y) as f64 / (b.y - a.y) as f64 + a.x as f64;
+                if (point.x as f64) < cross {
+                    result = !result;
+                }
+            }
+        }
+        result
+    };
+    inside(&region.contour) && !region.holes.iter().any(inside)
+}
+
 /// A layer's surfaces to fill with lines, and its areas to fill with loops.
 type Told = (Vec<Surface>, Vec<ExPolygon>);
 
@@ -1583,6 +1689,7 @@ mod tests {
             bottom_angle: None,
             top_density: 1.0,
             bottom_density: 1.0,
+            under_top: None,
             alternate: true,
             sparse_link_max: 0.0,
             sparse_anchor: 0.0,
@@ -2518,6 +2625,52 @@ mod tests {
         let mut gaps: Vec<f64> = across.windows(2).map(|pair| pair[1] - pair[0]).collect();
         gaps.sort_by(f64::total_cmp);
         (gaps[gaps.len() / 2], across.len())
+    }
+
+    #[test]
+    fn solid_fill_under_a_top_is_laid_by_its_own_pattern() {
+        let frame = |_: &Surface| Frame {
+            origin: Point2::from_mm(0.0, 0.0),
+            bounds: None,
+        };
+        // Separate lines, swept in order, under a top.
+        let params = FillParams {
+            under_top: Some((false, true)),
+            ..params(Pattern::Grid, 0.2)
+        };
+        let solid = [surface(SurfaceKind::InternalSolid, 20.0)];
+        let joined = fill(&solid, 1, &params).unwrap();
+        let shifted = |dx: f64, side: f64| {
+            let mut top = surface(SurfaceKind::Top, side).area;
+            for point in &mut top.contour.points {
+                point.x += scaled(dx);
+            }
+            top
+        };
+        let lay =
+            |tops: &[ExPolygon]| fill_under_tops(&solid, tops, 1, &params, &frame, &[]).unwrap();
+        // A top crossing it, and a top it lies wholly within.
+        for top in [shifted(10.0, 20.0), shifted(-5.0, 40.0)] {
+            let apart = lay(std::slice::from_ref(&top));
+            assert!(
+                apart.len() > 2 * joined.len(),
+                "{} {}",
+                apart.len(),
+                joined.len()
+            );
+            assert!((length(&apart) - length(&joined)).abs() / length(&joined) < 0.05);
+        }
+        // A top beside it, or none, leaves it as it was.
+        assert_eq!(lay(&[shifted(30.0, 5.0)]), joined);
+        assert_eq!(lay(&[]), joined);
+        // Unset, a top above changes nothing.
+        let plain = FillParams {
+            under_top: None,
+            ..params
+        };
+        let unset =
+            fill_under_tops(&solid, &[shifted(10.0, 20.0)], 1, &plain, &frame, &[]).unwrap();
+        assert_eq!(unset, joined);
     }
 
     #[test]

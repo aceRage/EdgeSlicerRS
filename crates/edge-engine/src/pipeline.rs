@@ -1670,9 +1670,24 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                         }
                     }
                 }
+                // The top surfaces of the layer above, in every filament,
+                // where the solid fill under them is laid apart
+                // (`undertop_surface_pattern`).
+                let upper_tops: Vec<ExPolygon> = if params.under_top.is_some() {
+                    bridged_by
+                        .iter()
+                        .filter_map(|layers| layers.get(index + 1))
+                        .flatten()
+                        .filter(|surface| surface.kind == edge_infill::SurfaceKind::Top)
+                        .map(|surface| surface.area.clone())
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 if alike.len() == 1 {
-                    return edge_infill::fill_within(
+                    return edge_infill::fill_under_tops(
                         &bridged_by[filament][index],
+                        &upper_tops,
                         index,
                         &params,
                         &frame,
@@ -1689,8 +1704,15 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                         .map(|slot| walls_by[*slot][index].infill_no_overlap.as_slice()),
                 )
                 .map_err(|e| e.to_string())?;
-                edge_infill::fill_within(&merged, index, &params, &frame, &no_overlap)
-                    .map_err(|e| e.to_string())
+                edge_infill::fill_under_tops(
+                    &merged,
+                    &upper_tops,
+                    index,
+                    &params,
+                    &frame,
+                    &no_overlap,
+                )
+                .map_err(|e| e.to_string())
             })
             .collect::<Result<_, String>>()?;
         let mut filled = filled.into_iter();
