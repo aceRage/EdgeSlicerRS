@@ -122,6 +122,18 @@ impl Config<'_> {
     }
 }
 
+/// A point as the reference reads one (Config.hpp `ConfigOptionPoint::
+/// deserialize`): two numbers apart by a comma or an "x", spaces
+/// allowed round them, nothing after; "0.3x0.5" as the profiles write
+/// it, "0.5,0.5" as a saved project does.
+fn point_of(text: &str) -> Option<[f64; 2]> {
+    let split = |by: char| {
+        let (x, y) = text.split_once(by)?;
+        Some([x.trim().parse().ok()?, y.trim().parse().ok()?])
+    };
+    split(',').or_else(|| split('x'))
+}
+
 /// The object's own setting over the print's (`get_config_value`).
 fn own_or(object: &[(String, String)], config: &Config<'_>, key: &str) -> String {
     object
@@ -495,13 +507,16 @@ impl Model {
     /// filaments allowed on one plate, "auto" spacing and the printer's
     /// own alignment to Y. It differs from the application's Arrange
     /// ([`Model::arrange_with`]) where the command line sets its
-    /// parameters apart: the pile is centred on the bed whatever the
-    /// printer's `best_object_pos`; the clearance kept printing by object
+    /// parameters apart: the clearance kept printing by object
     /// is the extruder's radius alone, with no room for a skirt round each
     /// object and no tighter spacing for objects lower than the nozzle;
     /// the prime tower's ground is kept on a plate that will have one by
     /// the command line's own count of its filaments (l.5500); and an
     /// object taller than the printer prints is arranged with the rest.
+    /// The pile goes where the printer would rather have it
+    /// (`best_object_pos`), as the application puts it: the pinned
+    /// command line centres it on the bed whatever that says, because it
+    /// never sets `align_center`, which is not followed.
     pub fn arrange_as_command_line(
         &mut self,
         bed: &Bed,
@@ -692,22 +707,15 @@ impl Model {
             params.object_skirt_offset = object_skirt_offset(&config, all_short);
             params.clearance_radius = clearance_radius(&config) + params.object_skirt_offset * 2.0;
         }
-        // The command line keeps Arrange.hpp's middle of the bed: it never
-        // sets `align_center` from `best_object_pos` (Snapmaker_Orca.cpp
-        // l.5730-5752), so a printer that would rather have its objects
-        // off the middle (the H2D's 0.3x0.5) gets them in the middle.
-        let best = if command_line {
-            Vec::new()
-        } else {
-            config.texts("best_object_pos")
-        };
-        let best: Vec<f64> = best
-            .iter()
-            .flat_map(|t| t.split(','))
-            .filter_map(|v| v.trim().parse().ok())
-            .collect();
-        if best.len() == 2 {
-            params.align_center = [best[0], best[1]];
+        // Where the printer would rather have the pile, as the
+        // application's Arrange takes it (ArrangeJob.cpp l.880
+        // `init_arrange_params`). The pinned command line never sets
+        // `align_center` (Snapmaker_Orca.cpp l.5297-5317 and l.5730-5752)
+        // and so centres the pile on the bed whatever the printer says
+        // (the H2D's 0.3x0.5, the A1 mini's 0.7x0.5): an oversight, not
+        // followed here; the command line arranges as the application does.
+        if let Some(best) = point_of(&config.texts("best_object_pos").join(",")) {
+            params.align_center = best;
         }
         if let Some(at) = only
             && self.sequence_of(at, &config) != global_sequence
@@ -1004,5 +1012,23 @@ impl Model {
                 .map(|p| [p.x as f64 / 1e6, p.y as f64 / 1e6])
                 .collect(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::point_of;
+
+    #[test]
+    fn a_point_reads_as_the_reference_reads_one() {
+        assert_eq!(point_of("0.3x0.5"), Some([0.3, 0.5]));
+        assert_eq!(point_of("0.7x0.5"), Some([0.7, 0.5]));
+        assert_eq!(point_of("0.5,0.5"), Some([0.5, 0.5]));
+        assert_eq!(point_of(" 0.25 , 0.75 "), Some([0.25, 0.75]));
+        assert_eq!(point_of(" 0.25 x 0.75"), Some([0.25, 0.75]));
+        assert_eq!(point_of("0.5"), None);
+        assert_eq!(point_of(""), None);
+        assert_eq!(point_of("0.5,0.5,0.5"), None);
+        assert_eq!(point_of("ax0.5"), None);
     }
 }

@@ -26,10 +26,16 @@ fn block(dir: &Path, name: &str, at: [f32; 3], size: [f32; 3]) -> PathBuf {
 /// A printer of a 200 by 200 mm bed, `structure` its frame ("i3" turns
 /// what is arranged to run along Y).
 fn printer(structure: &str) -> Chosen {
+    printer_at(structure, "0.5x0.5")
+}
+
+/// [`printer`], with `best` its preferred spot for objects
+/// (`best_object_pos`).
+fn printer_at(structure: &str, best: &str) -> Chosen {
     let settings = Settings::from_json(&format!(
         r#"{{"machine_start_gcode": "G28", "printable_area": ["0x0", "200x0", "200x200", "0x200"],
             "nozzle_diameter": ["0.4"], "printable_height": "200", "printer_structure": "{structure}",
-            "skirt_loops": "0", "brim_type": "no_brim"}}"#
+            "skirt_loops": "0", "brim_type": "no_brim", "best_object_pos": "{best}"}}"#
     ))
     .unwrap();
     Chosen {
@@ -72,6 +78,23 @@ fn a_bare_model_is_arranged_in_the_middle_of_the_bed() {
         .unwrap()
         .to_string();
     assert!(refused.contains("no plate 2"), "{refused}");
+}
+
+#[test]
+fn a_model_goes_where_the_printer_would_rather_have_it() {
+    // The A1 mini's 0.7x0.5: the reference's application puts the pile
+    // there (ArrangeJob.cpp `init_arrange_params`); its command line
+    // never sets `align_center` and centres it, which is not followed.
+    let dir = tempfile::tempdir().unwrap();
+    let stl = block(dir.path(), "box.stl", [10.0, 20.0, 0.0], [20.0, 20.0, 15.0]);
+    for best in ["0.7x0.5", "0.7,0.5"] {
+        let chosen = printer_at("corexy", best);
+        let opened =
+            open_to_slice(&stl, None, Arrange::Auto, &chosen, &Overrides::default()).unwrap();
+        // Its middle at 0.7 of the bed shrunk by 1 mm each side: 1 + 0.7 × 198.
+        let at = extent(opened.loaded.bounds);
+        assert!(near(at, [129.6, 90.0, 149.6, 110.0]), "{best}: {at:?}");
+    }
 }
 
 #[test]
