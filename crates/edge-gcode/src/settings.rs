@@ -305,6 +305,13 @@ pub struct PrintSettings {
     /// and `m_max_travel_acceleration`; see [`acceleration_limits`]).
     pub max_print_acceleration: f64,
     pub max_travel_acceleration: f64,
+    /// The jerk each kind of move is set to, where the process sets a
+    /// default jerk (`default_jerk` above 0); none otherwise.
+    pub jerks: Option<Jerks>,
+    /// `M205 J` told on the first layer: the process's junction deviation
+    /// held to the machine's, on Marlin 2 with both above 0 (GCode.cpp
+    /// `process_layer`, GCodeWriter.cpp `set_junction_deviation`).
+    pub junction_deviation: Option<(f64, f64)>,
     /// RepRapFirmware's or Sprinter's G-code (`gcode_flavor` `reprapfirmware`
     /// or `reprap`), which sets pressure advance with `M572`.
     pub reprap: bool,
@@ -565,6 +572,8 @@ impl Default for PrintSettings {
             acceleration_form: AccelerationForm::Single,
             max_print_acceleration: 0.0,
             max_travel_acceleration: 0.0,
+            jerks: None,
+            junction_deviation: None,
             reprap: false,
             // The reference's: on, at 0.
             ram_advance: Some(0.0),
@@ -853,6 +862,11 @@ impl PrintSettings {
                 .round()
                 .clamp(0.0, 100.0),
         );
+        let bambu = settings
+            .text("printer_model")
+            .filter(|model| !model.is_empty())
+            .or(settings.text("printer_settings_id"))
+            .is_some_and(|name| name.starts_with("Bambu Lab"));
         Ok(Self {
             outer_wall_speed: number("outer_wall_speed", defaults.outer_wall_speed)?,
             inner_wall_speed: number("inner_wall_speed", defaults.inner_wall_speed)?,
@@ -1161,6 +1175,19 @@ impl PrintSettings {
             klipper: settings.text("gcode_flavor") == Some("klipper"),
             acceleration_form: AccelerationForm::of(settings.text("gcode_flavor")),
             max_print_acceleration: acceleration_limits(settings)?.0,
+            jerks: Jerks::of(settings, &number, bambu)?,
+            junction_deviation: {
+                let deviation = number("default_junction_deviation", 0.0)?;
+                // The machine's, as the writer keeps it for the flavours
+                // that use the machine's limits (GCodeWriter.cpp
+                // `apply_print_config`).
+                let max = settings
+                    .floats("machine_max_junction_deviation")?
+                    .and_then(|values| values.first().copied().flatten())
+                    .unwrap_or(0.0);
+                (settings.text("gcode_flavor") == Some("marlin2") && deviation > 0.0 && max > 0.0)
+                    .then_some((deviation, max))
+            },
             max_travel_acceleration: acceleration_limits(settings)?.1,
             reprap: matches!(
                 settings.text("gcode_flavor"),
@@ -1228,11 +1255,7 @@ impl PrintSettings {
                 .or(settings.text("printer_settings_id"))
                 .is_some_and(|name| name.starts_with("Bambu Lab"))
                 || settings.text("wipe_tower_type") == Some("type1"),
-            bambu: settings
-                .text("printer_model")
-                .filter(|model| !model.is_empty())
-                .or(settings.text("printer_settings_id"))
-                .is_some_and(|name| name.starts_with("Bambu Lab")),
+            bambu,
             labels: labelling(settings)?,
             label_comments: settings.flag("gcode_label_objects")?.unwrap_or(true),
             extruder_offset: settings
@@ -1609,6 +1632,117 @@ impl AccelerationForm {
             ),
             (Self::Single, _) => format!("M204 S{acceleration:.0}\n"),
         }
+    }
+}
+
+/// The jerks of a process with a default jerk (GCode.cpp `_extrude`,
+/// `travel_to`, `process_layer`), each 0 where it is not set, and how the
+/// printer is told one (GCodeWriter.cpp `set_jerk_xy`,
+/// `set_accel_and_jerk`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Jerks {
+    pub default: f64,
+    pub outer_wall: f64,
+    pub inner_wall: f64,
+    pub infill: f64,
+    pub top_surface: f64,
+    pub initial_layer: f64,
+    pub travel: f64,
+    /// `first_layer_travel_jerk`, a share of `travel_jerk` where it is a
+    /// percentage.
+    pub first_layer_travel: f64,
+    pub form: crate::JerkForm,
+    /// The machine's x and y jerk as the writer keeps them (`std::lrint`)
+    /// for the flavours that use the machine's limits, else 0.
+    pub max: [f64; 2],
+    /// A Bambu Lab printer's z and e jerk, told beside it.
+    pub bambu: Option<[f64; 2]>,
+}
+
+impl Jerks {
+    fn of(
+        settings: &Settings,
+        number: &dyn Fn(&str, f64) -> Result<f64, ConfigError>,
+        bambu: bool,
+    ) -> Result<Option<Self>, ConfigError> {
+        let default = number("default_jerk", 0.0)?;
+        if default <= 0.0 {
+            return Ok(None);
+        }
+        let flavor = settings.text("gcode_flavor").unwrap_or("marlin");
+        let machine = |key: &str| -> Result<f64, ConfigError> {
+            Ok(settings
+                .floats(key)?
+                .and_then(|values| values.first().copied().flatten())
+                .unwrap_or(0.0))
+        };
+        let limits = matches!(flavor, "marlin" | "marlin2" | "klipper" | "reprapfirmware");
+        let kept = |key: &str| -> Result<f64, ConfigError> {
+            Ok(if limits {
+                machine(key)?.round_ties_even()
+            } else {
+                0.0
+            })
+        };
+        let travel = number("travel_jerk", 0.0)?;
+        Ok(Some(Self {
+            default,
+            outer_wall: number("outer_wall_jerk", 0.0)?,
+            inner_wall: number("inner_wall_jerk", 0.0)?,
+            infill: number("infill_jerk", 0.0)?,
+            top_surface: number("top_surface_jerk", 0.0)?,
+            initial_layer: number("initial_layer_jerk", 0.0)?,
+            travel,
+            first_layer_travel: match settings.float_or_percent("first_layer_travel_jerk")? {
+                Some(FloatOrPercent::Value(value)) => value,
+                Some(FloatOrPercent::Percent(percent)) => percent / 100.0 * travel,
+                None => 0.0,
+            },
+            form: match flavor {
+                "klipper" => crate::JerkForm::Klipper,
+                "repetier" => crate::JerkForm::Repetier,
+                _ => crate::JerkForm::Marlin,
+            },
+            max: [kept("machine_max_jerk_x")?, kept("machine_max_jerk_y")?],
+            bambu: bambu
+                .then(|| -> Result<[f64; 2], ConfigError> {
+                    Ok([
+                        machine("machine_max_jerk_z")?,
+                        machine("machine_max_jerk_e")?,
+                    ])
+                })
+                .transpose()?,
+        }))
+    }
+
+    /// The jerk a line of `role` is laid with (GCode.cpp `_extrude`,
+    /// "adjust X Y jerk").
+    pub fn of_line(&self, role: edge_extrusion::Role, first_layer: bool) -> f64 {
+        use edge_extrusion::Role::*;
+        let set = |jerk: f64| (jerk > 0.0).then_some(jerk);
+        let own = if first_layer {
+            set(self.initial_layer)
+        } else {
+            None
+        };
+        own.or_else(|| match role {
+            ExternalPerimeter => set(self.outer_wall),
+            _ => None,
+        })
+        .or_else(|| match role {
+            Perimeter => set(self.inner_wall),
+            _ => None,
+        })
+        .or_else(|| match role {
+            TopSolidInfill => set(self.top_surface),
+            _ => None,
+        })
+        .or_else(|| match role {
+            BridgeInfill | InternalBridge | SparseInfill | SolidInfill | TopSolidInfill
+            | BottomSurface | Ironing => set(self.infill),
+            _ => None,
+        })
+        .unwrap_or(self.default)
     }
 }
 

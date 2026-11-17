@@ -5006,3 +5006,130 @@ fn support_interfaces_have_a_fan_speed_of_their_own_once_the_fan_is_on() {
     let plain = print(&layers, &basic()).0;
     assert!(!plain.contains("M106 S76"));
 }
+
+fn jerks(form: JerkForm) -> settings::Jerks {
+    settings::Jerks {
+        default: 8.0,
+        outer_wall: 6.0,
+        inner_wall: 7.0,
+        infill: 10.0,
+        top_surface: 5.0,
+        initial_layer: 4.0,
+        travel: 12.0,
+        first_layer_travel: 3.0,
+        form,
+        max: [0.0, 0.0],
+        bambu: None,
+    }
+}
+
+#[test]
+fn each_kind_of_line_has_its_jerk() {
+    let j = jerks(JerkForm::Marlin);
+    assert_eq!(j.of_line(Role::ExternalPerimeter, true), 4.0);
+    assert_eq!(j.of_line(Role::ExternalPerimeter, false), 6.0);
+    assert_eq!(j.of_line(Role::Perimeter, false), 7.0);
+    assert_eq!(j.of_line(Role::TopSolidInfill, false), 5.0);
+    assert_eq!(j.of_line(Role::SparseInfill, false), 10.0);
+    assert_eq!(j.of_line(Role::Ironing, false), 10.0);
+    // Overhang walls, gap fill and support are none of those.
+    assert_eq!(j.of_line(Role::OverhangPerimeter, false), 8.0);
+    assert_eq!(j.of_line(Role::GapFill, false), 8.0);
+    assert_eq!(j.of_line(Role::Support, false), 8.0);
+    let unset = settings::Jerks {
+        top_surface: 0.0,
+        ..j
+    };
+    assert_eq!(unset.of_line(Role::TopSolidInfill, false), 10.0);
+}
+
+#[test]
+fn jerks_are_set_with_the_acceleration_before_each_feature() {
+    // Marlin: `M205 X Y` after the acceleration, before the tag.
+    let marlin = PrintSettings {
+        acceleration_form: AccelerationForm::Single,
+        default_acceleration: 10000.0,
+        outer_wall_acceleration: 5000.0,
+        jerks: Some(jerks(JerkForm::Marlin)),
+        ..basic()
+    };
+    let text = printed(2, &marlin);
+    let (first, second) = text.split_at(text.rfind(";LAYER_CHANGE").unwrap());
+    // The first layer's jerk, and its travels' own.
+    assert!(
+        first.contains("M205 X4 Y4\n") && first.contains("M205 X3 Y3\n"),
+        "{first}"
+    );
+    assert!(
+        second.contains("M204 S5000\nM205 X6 Y6\n;TYPE:Outer wall"),
+        "{second}"
+    );
+    assert!(
+        second.contains("M205 X10 Y10\n;TYPE:Sparse infill"),
+        "{second}"
+    );
+    // Back to the default as the second layer starts, then the travel's.
+    assert!(second.contains("M205 X8 Y8\n") && second.contains("M205 X12 Y12\n"));
+    // Held to the machine's: no command for a jerk that comes out the same.
+    let held = PrintSettings {
+        jerks: Some(settings::Jerks {
+            max: [9.0, 9.0],
+            ..jerks(JerkForm::Marlin)
+        }),
+        ..marlin.clone()
+    };
+    assert!(!printed(2, &held).contains("M205 X10") && !printed(2, &held).contains("M205 X12"));
+    // Klipper: one line for both.
+    let klipper = PrintSettings {
+        acceleration_form: AccelerationForm::Klipper,
+        jerks: Some(jerks(JerkForm::Klipper)),
+        ..marlin.clone()
+    };
+    let text = printed(2, &klipper);
+    assert!(
+        text.contains("SET_VELOCITY_LIMIT ACCEL=5000 SQUARE_CORNER_VELOCITY=6\n;TYPE:Outer wall"),
+        "{text}"
+    );
+    // A template that sets a jerk is followed by the writer's again.
+    let told = PrintSettings {
+        layer_change_gcode: Some("M205 X20 Y20".into()),
+        ..marlin.clone()
+    };
+    let text = printed(2, &told);
+    let second = text.split(";LAYER_CHANGE").last().unwrap();
+    assert!(second.contains("M205 X20 Y20\n"), "{second}");
+    assert!(sets_jerk("m205 x5") && sets_jerk("SET_VELOCITY_LIMIT SQUARE_CORNER_VELOCITY=5"));
+    assert!(!sets_jerk("M205 J0.02") && !sets_jerk("SET_VELOCITY_LIMIT ACCEL=500"));
+    // Without a default jerk, none.
+    assert!(
+        !printed(
+            2,
+            &PrintSettings {
+                jerks: None,
+                ..marlin
+            }
+        )
+        .contains("M205")
+    );
+}
+
+#[test]
+fn marlin_2_is_told_its_junction_deviation_on_the_first_layer() {
+    let settings = PrintSettings {
+        junction_deviation: Some((0.02, 0.013)),
+        ..basic()
+    };
+    let text = printed(3, &settings);
+    assert_eq!(text.matches("M205 J").count(), 1, "{text}");
+    assert!(text.contains("M205 J0.013\n"));
+    let read = |json: &str| {
+        PrintSettings::from_settings(&edge_config::Settings::from_json(json).unwrap())
+            .unwrap()
+            .junction_deviation
+    };
+    let marlin2 = r#"{"gcode_flavor": "marlin2", "default_junction_deviation": "0.02",
+        "machine_max_junction_deviation": ["0.05", "0.05"]}"#;
+    assert_eq!(read(marlin2), Some((0.02, 0.05)));
+    assert_eq!(read(&marlin2.replace("marlin2", "klipper")), None);
+    assert_eq!(read(&marlin2.replace("\"0.05\"", "\"0\"")), None);
+}

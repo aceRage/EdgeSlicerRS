@@ -106,28 +106,6 @@ use Off::{Below, Blank, Is, Unless};
 /// numbers in the pinned reference's `src/libslic3r`).
 const SILENT: &[Silent] = &[
     // Speed and motion.
-    // GCode.cpp l.7596, l.7635: a jerk per feature is written only with a
-    // default jerk above 0.
-    gate(
-        "default_jerk",
-        Is("0"),
-        &[
-            "outer_wall_jerk",
-            "inner_wall_jerk",
-            "infill_jerk",
-            "top_surface_jerk",
-            "initial_layer_jerk",
-            "travel_jerk",
-            "first_layer_travel_jerk",
-        ],
-    ),
-    // GCode.cpp l.7600: M205 J, with Marlin 2 alone.
-    with(
-        "default_junction_deviation",
-        Is("0"),
-        "gcode_flavor",
-        Unless("marlin2", "marlin"),
-    ),
     // GCode.cpp l.11573: inner walls under an overhang slowed like it.
     gate(
         "overhang_shadow_inner_wall",
@@ -518,11 +496,10 @@ mod tests {
         assert!(said.is_empty(), "{said:?}");
         // Turned off in other words, nothing either.
         let off = Settings::from_json(
-            r#"{"z_offset": "0.0", "default_jerk": ["0"], "filament_shrink": ["100", "100%"],
+            r#"{"z_offset": "0.0", "filament_shrink": ["100", "100%"],
                 "slow_down_layers": "1",
                 "bottom_layer_direction": "-3", "use_relative_e_distances": "true",
                 "file_start_gcode": "", "mixed_filament_definitions": "\"\"",
-                "default_junction_deviation": "0.02", "gcode_flavor": "klipper",
                 "adaptive_pressure_advance": ["1"], "enable_pressure_advance": ["0"],
                 "prime_volume_mode": "Saving"}"#,
         )
@@ -535,7 +512,6 @@ mod tests {
     fn settings_nothing_reads_are_said_when_they_change_the_print() {
         let on = Settings::from_json(
             r#"{"filament_shrink": ["100%", "98%"], "slow_down_layers": "3",
-                "default_junction_deviation": "0.02", "gcode_flavor": "marlin2",
                 "adaptive_pressure_advance": ["1"], "enable_pressure_advance": ["1"],
                 "prime_volume_mode": "Fast", "stabilizer_supports": "auto",
                 "file_start_gcode": "M117 first line\nM117 second line"}"#,
@@ -545,7 +521,6 @@ mod tests {
         assert_eq!(
             said,
             [
-                "default_junction_deviation \"0.02\": not followed; the print is made as if it were \"0\"",
                 "slow_down_layers \"3\": not followed; the print is made as if it were \"0\"",
                 "adaptive_pressure_advance \"1\": not followed; the print is made as if it were \"0\"",
                 "filament_shrink \"98%\": not followed; the print is made as if it were \"100%\"",

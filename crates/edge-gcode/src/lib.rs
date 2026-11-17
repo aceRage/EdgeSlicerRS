@@ -1305,6 +1305,29 @@ fn sets_chamber(text: &str) -> bool {
     })
 }
 
+/// Whether G-code sets the jerk itself, which the writer then forgets
+/// (GCode.cpp `custom_gcode_motion_state_changes`): `M205`, `M207` or
+/// `M566` with an X or a Y, or `SET_VELOCITY_LIMIT` with a corner velocity.
+fn sets_jerk(text: &str) -> bool {
+    text.lines().any(|line| {
+        let code = line.split(';').next().unwrap_or("");
+        let Some(command) = code.split_whitespace().next() else {
+            return false;
+        };
+        if ["M205", "M207", "M566"]
+            .iter()
+            .any(|jerk| command.eq_ignore_ascii_case(jerk))
+        {
+            code.contains(['X', 'x', 'Y', 'y'])
+        } else {
+            command.eq_ignore_ascii_case("SET_VELOCITY_LIMIT")
+                && code
+                    .to_ascii_uppercase()
+                    .contains("SQUARE_CORNER_VELOCITY=")
+        }
+    })
+}
+
 fn sets_pressure_advance(text: &str) -> bool {
     ["SET_PRESSURE_ADVANCE", "M900", "M572", "M233"]
         .iter()
@@ -1573,9 +1596,10 @@ struct State {
     /// of the process's (GCode.cpp `process_layer`, `Calib_VFA_Tower` and
     /// `Calib_Vol_speed_Tower`: `m_calib_config`).
     calibration_outer_wall_speed: Option<f64>,
-    /// The jerk the cornering calibration last set (GCodeWriter.cpp
-    /// `m_last_jerk`; nothing else here sets a jerk).
-    calibration_jerk: f64,
+    /// The jerk last set (GCodeWriter.cpp `m_last_jerk`): by the process's
+    /// jerks ([`PrintSettings::jerks`]) or the cornering calibration; 0
+    /// once a template has set one of its own.
+    jerk: f64,
     /// The stringing grid's band last set (GCode.cpp
     /// `m_temp_retract_last_band`).
     stringing_band: Option<usize>,
@@ -2011,6 +2035,9 @@ impl Writer<'_> {
         let text = edge_template::expand(template, &self.variables)
             .map_err(|source| GcodeError::Template { name, source })?;
         self.state.flushed.read(&text, self.all);
+        if sets_jerk(&text) {
+            self.state.jerk = 0.0;
+        }
         self.out.write_all(text.as_bytes())?;
         if !text.ends_with('\n') {
             writeln!(self.out)?;
@@ -2835,12 +2862,8 @@ impl Writer<'_> {
             let tool = (self.all.len() > 1 && !s.single_nozzle).then_some(self.state.tool);
             let text = calib::at_layer(calibration, index, self.layer_count, layer.z, tool);
             self.out.extend_from_slice(text.as_bytes());
-            let corner = calib::corner_at(
-                calibration,
-                index,
-                self.layer_count,
-                &mut self.state.calibration_jerk,
-            );
+            let corner =
+                calib::corner_at(calibration, index, self.layer_count, &mut self.state.jerk);
             self.out.extend_from_slice(corner.as_bytes());
             if let Some(length) = calib::retraction_at(calibration, layer.z) {
                 self.state.calibration_retraction = Some(length);
@@ -2862,6 +2885,17 @@ impl Writer<'_> {
             s.default_acceleration > 0.0 && s.initial_layer_acceleration > 0.0;
         if own == 0 && first_layer_acceleration {
             self.accelerate(s.initial_layer_acceleration)?;
+        }
+        // And its jerk, and the junction deviation, set once there.
+        let first_layer_jerk = s.jerks.filter(|jerks| jerks.initial_layer > 0.0);
+        if own == 0 {
+            if let Some(jerks) = first_layer_jerk {
+                self.set_jerk(jerks.initial_layer);
+            }
+            if let Some((deviation, max)) = s.junction_deviation {
+                let line = calib::junction_deviation_line(deviation, max, false);
+                self.out.extend_from_slice(line.as_bytes());
+            }
         }
         if own == 1 {
             self.state.second_layer_done = true;
@@ -2887,11 +2921,20 @@ impl Writer<'_> {
             if first_layer_acceleration {
                 self.accelerate(s.default_acceleration)?;
             }
+            if let Some(jerks) = first_layer_jerk {
+                self.set_jerk(jerks.default);
+            }
             if s.default_acceleration > 0.0
                 && s.travel_acceleration > 0.0
                 && s.first_layer_travel_acceleration > 0.0
             {
                 self.accelerate_travel(s.travel_acceleration)?;
+            }
+            if let Some(jerks) = s
+                .jerks
+                .filter(|jerks| jerks.travel > 0.0 && jerks.first_layer_travel > 0.0)
+            {
+                self.set_jerk(jerks.travel);
             }
         }
         // The stringing grid sets the nozzle's temperature itself from the
@@ -5237,6 +5280,82 @@ impl Writer<'_> {
         self.set_acceleration(true, acceleration)
     }
 
+    /// GCodeWriter.cpp `set_jerk_xy`, where the process sets jerks.
+    fn set_jerk(&mut self, jerk: f64) {
+        if let Some(jerks) = self.settings.jerks {
+            let line = calib::jerk_line(
+                jerk,
+                &mut self.state.jerk,
+                jerks.form,
+                jerks.max,
+                jerks.bambu,
+                false,
+            );
+            self.out.extend_from_slice(line.as_bytes());
+        }
+    }
+
+    /// The acceleration and the jerk a line or a travel goes with: on
+    /// Klipper one `SET_VELOCITY_LIMIT` for both (GCodeWriter.cpp
+    /// `set_accel_and_jerk`), elsewhere each as it is set alone (GCode.cpp
+    /// `_extrude`, `travel_to`). Without jerks, the acceleration alone.
+    fn accelerate_and_jerk(
+        &mut self,
+        travel: bool,
+        acceleration: f64,
+        jerk: f64,
+    ) -> io::Result<()> {
+        let s = self.settings;
+        let Some(jerks) = s.jerks else {
+            return self.set_acceleration(travel, acceleration);
+        };
+        if jerks.form != JerkForm::Klipper {
+            self.set_acceleration(travel, acceleration)?;
+            self.set_jerk(jerk);
+            return Ok(());
+        }
+        let acceleration = if s.max_print_acceleration > 0.0 {
+            acceleration.min(s.max_print_acceleration)
+        } else {
+            acceleration
+        };
+        let jerk = jerks.max.iter().fold(jerk, |jerk, limit| {
+            if *limit > 0.0 && jerk > *limit {
+                *limit
+            } else {
+                jerk
+            }
+        });
+        let set_acceleration = acceleration > 0.0 && acceleration != self.state.acceleration;
+        let set_jerk = jerk > 0.01 && (jerk - self.state.jerk).abs() >= 1e-4;
+        if !set_acceleration && !set_jerk {
+            return Ok(());
+        }
+        let mut line = String::from("SET_VELOCITY_LIMIT");
+        if set_acceleration {
+            let alone = s
+                .acceleration_form
+                .command(travel, acceleration, s.accel_to_decel_factor);
+            line.push_str(
+                alone
+                    .trim_end()
+                    .strip_prefix("SET_VELOCITY_LIMIT")
+                    .unwrap_or_default(),
+            );
+            self.state.acceleration = acceleration;
+        }
+        if set_jerk {
+            line.push_str(&format!(
+                " SQUARE_CORNER_VELOCITY={}",
+                calib::general(jerk, 6)
+            ));
+            self.state.jerk = jerk;
+        }
+        line.push('\n');
+        self.out.extend_from_slice(line.as_bytes());
+        Ok(())
+    }
+
     /// GCodeWriter.cpp `set_acceleration_internal`: held to the machine's
     /// limit, then nothing for 0 or the value in force, which is kept
     /// apart for travel where the firmware has a travel acceleration.
@@ -5300,22 +5419,44 @@ impl Writer<'_> {
         // straight line.
         let straight = from.map_or(f64::INFINITY, |from| distance(from, to));
         let short = straight < s.retraction_minimum_travel;
-        if self.state.first_layer
+        let to_wall = short
+            && matches!(
+                role,
+                Some(Role::OverhangPerimeter | Role::ExternalPerimeter)
+            );
+        let acceleration = if self.state.first_layer
             && s.first_layer_travel_acceleration > 0.0
             && s.default_acceleration > 0.0
         {
-            self.accelerate_travel(s.first_layer_travel_acceleration.round())?;
+            s.first_layer_travel_acceleration.round()
         } else if self.state.first_layer && s.initial_layer_acceleration > 0.0 {
-            self.accelerate_travel(s.initial_layer_acceleration)?;
+            s.initial_layer_acceleration
         } else if s.default_acceleration > 0.0 {
             let bridge = s.bridge_acceleration.resolve(s.outer_wall_acceleration);
-            let wanted = match role {
+            match role {
                 Some(Role::OverhangPerimeter) if short => bridge,
                 Some(Role::ExternalPerimeter) if short => s.outer_wall_acceleration,
                 _ => s.travel_acceleration,
-            };
-            self.accelerate_travel(wanted)?;
-        }
+            }
+        } else {
+            0.0
+        };
+        // The jerk alike: the first layer's travel jerk, or else its
+        // own; the outer wall's into a wall, as its acceleration; else
+        // the travel jerk (GCode.cpp `travel_to`).
+        let jerk = match s.jerks {
+            Some(jerks) if self.state.first_layer => {
+                if jerks.first_layer_travel > 0.0 {
+                    jerks.first_layer_travel
+                } else {
+                    jerks.initial_layer
+                }
+            }
+            Some(jerks) if to_wall => jerks.outer_wall,
+            Some(jerks) => jerks.travel,
+            None => 0.0,
+        };
+        self.accelerate_and_jerk(true, acceleration, jerk)?;
         let exposed = !sheltered
             || matches!(
                 self.state.role,
@@ -5636,7 +5777,8 @@ impl Writer<'_> {
         // filament is forward (GCode.cpp `_extrude`: `unretract`, then
         // `set_accel_and_jerk` or `set_print_acceleration`, then the
         // role and width tags).
-        self.accelerate(motion.acceleration)?;
+        let jerk = (s.jerks).map_or(0.0, |jerks| jerks.of_line(role, self.state.first_layer));
+        self.accelerate_and_jerk(false, motion.acceleration, jerk)?;
         if self.state.role != Some(role) {
             // Two roles may go by one name, which is then said once.
             if self.state.role.map(role_name) != Some(role_name(role)) {
