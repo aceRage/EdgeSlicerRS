@@ -60,6 +60,7 @@ fn block(project: Option<&Settings>, filament: usize) -> Loaded {
         precise_seams: false,
         own: Vec::new(),
         objects: Vec::new(),
+        middles: Vec::new(),
         labels: Vec::new(),
         negatives: Vec::new(),
         parts: Vec::new(),

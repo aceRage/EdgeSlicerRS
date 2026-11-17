@@ -732,6 +732,34 @@ impl Project {
             .collect()
     }
 
+    /// Where the middle of each of those instances stands, in the same
+    /// order and in world coordinate units (nanometres, truncated as the
+    /// reference truncates them): the reference's instance shift
+    /// (PrintApply.cpp `print_instances_from_model_object`, PrintObject.cpp
+    /// `PrintObject::PrintObject` and `set_instances`), which its sparse
+    /// fill, ironing, seams and supports are laid about. The middle is that
+    /// of the box of the object's printed parts under its first instance
+    /// without that instance's offset (Model.cpp `raw_bounding_box`, in
+    /// double), turned about Z by how far this instance is turned from the
+    /// first; its modifiers and negative parts do not move it. The shift is
+    /// the instance's offset and that middle, each cut off toward zero.
+    pub fn instance_middles(&self, plate: Option<usize>) -> Vec<[i64; 2]> {
+        self.printable(plate)
+            .filter(|(object, _)| {
+                (object.parts.iter())
+                    .any(|part| part.kind == PartKind::Normal && !part.mesh.triangles.is_empty())
+            })
+            .map(|(object, instance)| {
+                let offset = instance.transform.rows[3];
+                let middle = object_middle(object, instance);
+                [
+                    new_scale(offset[0]) + middle[0],
+                    new_scale(offset[1]) + middle[1],
+                ]
+            })
+            .collect()
+    }
+
     /// The volumes cut out of each of those instances (its negative
     /// parts), in the same order and coordinates: an empty mesh for an
     /// instance with none. For what goes by an object's whole surface,
@@ -924,6 +952,62 @@ pub struct Body {
     /// A tag of whoever made the body from one part by itself, to find
     /// the part again by; none for every body [`Project::bodies`] makes.
     pub part: Option<(usize, usize)>,
+}
+
+/// Millimetres in coordinate units, cut off toward zero (Point.hpp
+/// `Point::new_scale`, libslic3r.h `scale_`: divided by `SCALING_FACTOR`).
+pub fn new_scale(mm: f64) -> i64 {
+    (mm / 0.000_001) as i64
+}
+
+/// The middle of `object` for its copy `instance`, in coordinate units
+/// about the instance's offset (PrintObject.cpp `PrintObject::PrintObject`):
+/// the middle of the box of its printed parts under its first instance
+/// without that instance's offset, worked out in double (Model.cpp
+/// `raw_bounding_box`, TriangleMesh.cpp `transformed_bounding_box`), turned
+/// about Z by how far `instance` is turned from the first
+/// (`Geometry::rotation_diff_z`), then cut off toward zero.
+fn object_middle(object: &Object, instance: &Instance) -> [i64; 2] {
+    let Some(first) = object.instances.first() else {
+        return [0, 0];
+    };
+    let mut first_linear = first.transform;
+    first_linear.rows[3] = [0.0; 3];
+    let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    for part in object
+        .parts
+        .iter()
+        .filter(|part| part.kind == PartKind::Normal)
+    {
+        let placed = part.transform.then(&first_linear);
+        for vertex in &part.mesh.vertices {
+            let p = placed.apply(vertex.map(f64::from));
+            for c in 0..2 {
+                lo[c] = lo[c].min(p[c]);
+                hi[c] = hi[c].max(p[c]);
+            }
+        }
+    }
+    if lo[0] > hi[0] {
+        return [0, 0];
+    }
+    let (mut x, mut y) = ((lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5);
+    // How far this copy is turned about Z from the first: the turn that
+    // takes the first's linear map to this one's. Copies that differ in
+    // anything else are cut apart by the reference too, and it reads the
+    // turn about Z alone off them as well.
+    let mut linear = instance.transform;
+    linear.rows[3] = [0.0; 3];
+    if let Some(back) = first_linear.inverse() {
+        let turn = back.then(&linear).rows;
+        let angle = turn[0][1].atan2(turn[0][0]);
+        // libslic3r.h `EPSILON`.
+        if angle.abs() > 1e-4 {
+            let (sin, cos) = angle.sin_cos();
+            (x, y) = (cos * x - sin * y, sin * x + cos * y);
+        }
+    }
+    [new_scale(x), new_scale(y)]
 }
 
 /// Adds an object's parts of one kind to a mesh; with `filament`, only

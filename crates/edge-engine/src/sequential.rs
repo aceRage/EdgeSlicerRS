@@ -520,6 +520,7 @@ mod tests {
             precise_seams: false,
             own: Vec::new(),
             objects: vec![tall.clone(), short.clone()],
+            middles: Vec::new(),
             labels: vec![label(0, "Tall"), label(1, "Short")],
             negatives: vec![Mesh::default(), Mesh::default()],
             parts: Vec::new(),

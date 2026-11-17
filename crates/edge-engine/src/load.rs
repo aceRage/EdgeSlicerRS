@@ -47,6 +47,12 @@ pub struct Loaded {
     /// For a project, each object on the plate by itself, for what depends
     /// on which object is which. Empty for a bare model, which is one object.
     pub objects: Vec<Mesh>,
+    /// Where the middle of each of those objects stands, in coordinate
+    /// units from the plate's origin: the reference's instance shift
+    /// (`edge_3mf::Project::instance_middles`), which sparse fill, ironing,
+    /// seams and supports are laid about. Empty for a bare model, and may
+    /// be where an object is not placed from a project.
+    pub middles: Vec<[i64; 2]>,
     /// Who each of those objects is, for labelling it in the G-code so a
     /// printer can cancel it: its object and copy, its name and its
     /// number in a sliced file. Empty for a bare model.
@@ -464,6 +470,7 @@ pub(crate) fn lone(path: &Path, solid: Mesh) -> Result<Loaded, Failure> {
         unread_paint: Vec::new(),
         precise_seams: false,
         objects: Vec::new(),
+        middles: Vec::new(),
         // One copy, named as the file is.
         labels: vec![InstanceLabel {
             object: 0,
@@ -506,6 +513,7 @@ pub(crate) fn placed(
     bodies.extend(own_bodies);
     let mut painted = project.painted(plate);
     let mut objects = project.instance_meshes(plate);
+    let mut middles = project.instance_middles(plate);
     let mut negatives = project.instance_negatives(plate);
     let mut parts = project.instance_parts(plate);
     let identify = edge_3mf::identify_numbers(project);
@@ -523,6 +531,12 @@ pub(crate) fn placed(
     if let Some((x, y)) = origin {
         shift(&mut bodies, -x, -y);
         shift_meshes(objects.iter_mut(), -x, -y);
+        // As the reference takes the plate's origin off a shift
+        // (Print.cpp `PrintInstance::shift_without_plate_offset`).
+        for middle in &mut middles {
+            middle[0] -= edge_3mf::new_scale(x);
+            middle[1] -= edge_3mf::new_scale(y);
+        }
         shift_meshes(negatives.iter_mut(), -x, -y);
         shift_meshes(
             parts.iter_mut().flat_map(|object| &mut object.parts),
@@ -561,6 +575,7 @@ pub(crate) fn placed(
         unread_paint: project.unread_paint.clone(),
         precise_seams: project.has_precise_seams(plate),
         objects,
+        middles,
         labels,
         negatives,
         parts,
