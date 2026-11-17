@@ -249,3 +249,41 @@ fn every_shipped_presets_numbers_read() {
     assert!(presets > 10_000);
     assert!(with_percent > 0);
 }
+
+/// Every option a filament preset holds in the reference (Preset.cpp
+/// `s_Preset_filament_options`) is laid out per filament here
+/// (`edge_config::filaments::is_per_filament`), but for those a project holds
+/// otherwise. A bump of the reference that adds one fails here.
+#[test]
+fn every_filament_option_of_the_reference_is_per_filament() {
+    let source = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../reference/EdgeSlicer/src/libslic3r/Preset.cpp"),
+    )
+    .unwrap();
+    let start = source
+        .find("s_Preset_filament_options")
+        .expect("the filament options");
+    let mut list = source[start..start + source[start..].find("};").unwrap()].to_owned();
+    // `/*,"filament_seam_gap"*/` is not on it.
+    while let Some(open) = list.find("/*") {
+        let close = open + list[open..].find("*/").unwrap() + 2;
+        list.replace_range(open..close, "");
+    }
+    let held_otherwise = [
+        "compatible_printers",
+        "compatible_printers_condition",
+        "compatible_prints",
+        "compatible_prints_condition",
+        "inherits",
+    ];
+    let missing: Vec<&str> = list
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or(""))
+        .flat_map(|line| line.split('"').skip(1).step_by(2))
+        .filter(|key| {
+            !held_otherwise.contains(key) && !edge_config::filaments::is_per_filament(key)
+        })
+        .collect();
+    assert!(missing.is_empty(), "{missing:?}");
+}
