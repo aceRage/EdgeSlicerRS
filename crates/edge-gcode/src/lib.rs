@@ -264,6 +264,19 @@ const CHANGE_MARK: &[u8] = b";_TOOL_CHANGE ";
 /// Where the fans are set back to the layer's speeds after a tool change,
 /// replaced once the layer's speeds are known.
 const RESUME_FAN_MARK: &[u8] = b";_RESUME_FAN_SPEED\n";
+/// What a tool is taken up with when the filament is changed by hand
+/// (`manual_filament_change`; GCodeWriter.cpp `toolchange_prefix`, the
+/// processor's `Manual_Tool_Change` tag): a comment, the number after it.
+const MANUAL_TOOL_CHANGE: &str = "; MANUAL_TOOL_CHANGE T";
+
+/// What [`Writer::swap`] did: whether the printer's change G-code ran, and
+/// the command that takes the tool up where it did not, to be written
+/// after the fans are set back (GCode.cpp `set_extruder`: the change
+/// G-code, `;_FORCE_RESUME_FAN_SPEED`, then the tool's command).
+struct Swapped {
+    templated: bool,
+    command: Option<String>,
+}
 
 /// A support wall's hook is six line spacings long, so its two ends are
 /// never further apart than a little more than that.
@@ -545,6 +558,9 @@ pub fn write_timed(
     variables.set("max_layer_z", Value::Float(top));
     variables.set("layer_num", Value::Int(0));
     variables.set("layer_z", Value::Float(0.0));
+    // With the first printing filament's offset in it (GCode.cpp
+    // `_do_export`, the `z_offset` placeholder set after it is folded in).
+    variables.set("z_offset", Value::Float(settings[first].z_offset));
     for name in [
         "initial_extruder",
         "initial_tool",
@@ -611,7 +627,11 @@ pub fn write_timed(
         settings: &settings[first],
         variables,
         filament_area: PI * (settings[first].filament_diameter / 2.0).powi(2),
+        z_offset: settings[first].z_offset,
         state: State {
+            // GCode.cpp `preamble`: the writer starts at the offset, so a
+            // lift before the first layer rises from there.
+            z: settings[first].z_offset,
             tool: first,
             parked: vec![(false, 0.0); settings.len()],
             used: vec![(0.0, 0.0); settings.len()],
@@ -1286,6 +1306,41 @@ fn extent(layer: &Layer<'_>) -> Option<[f64; 4]> {
 
 /// Whether a piece of G-code sets pressure advance itself, in any of the
 /// ways the firmwares take it.
+/// Whether G-code sets the chamber's temperature itself: a line that is
+/// `M141` or `M191` (GCode.cpp `custom_gcode_sets_temperature`).
+fn sets_chamber(text: &str) -> bool {
+    text.lines().any(|line| {
+        let Some(rest) = line.trim_start_matches([' ', '\t']).strip_prefix('M') else {
+            return false;
+        };
+        let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        matches!(rest[..digits].parse::<u32>(), Ok(141 | 191))
+    })
+}
+
+/// Whether G-code sets the jerk itself, which the writer then forgets
+/// (GCode.cpp `custom_gcode_motion_state_changes`): `M205`, `M207` or
+/// `M566` with an X or a Y, or `SET_VELOCITY_LIMIT` with a corner velocity.
+fn sets_jerk(text: &str) -> bool {
+    text.lines().any(|line| {
+        let code = line.split(';').next().unwrap_or("");
+        let Some(command) = code.split_whitespace().next() else {
+            return false;
+        };
+        if ["M205", "M207", "M566"]
+            .iter()
+            .any(|jerk| command.eq_ignore_ascii_case(jerk))
+        {
+            code.contains(['X', 'x', 'Y', 'y'])
+        } else {
+            command.eq_ignore_ascii_case("SET_VELOCITY_LIMIT")
+                && code
+                    .to_ascii_uppercase()
+                    .contains("SQUARE_CORNER_VELOCITY=")
+        }
+    })
+}
+
 fn sets_pressure_advance(text: &str) -> bool {
     ["SET_PRESSURE_ADVANCE", "M900", "M572", "M233"]
         .iter()
@@ -1316,6 +1371,11 @@ struct Writer<'a> {
     variables: Variables,
     /// Cross-section of the filament in mm².
     filament_area: f64,
+    /// Added to every height the nozzle is sent to: the printer's and the
+    /// first printing filament's Z offset ([`PrintSettings::z_offset`]).
+    /// The layers' own heights, their tags and what templates are told
+    /// (`layer_z`, `max_layer_z`) are without it, as the reference's.
+    z_offset: f64,
     state: State,
     /// How the layer being written spends its time.
     timing: Timing,
@@ -1513,6 +1573,9 @@ struct State {
     /// The speed of the wall loop being laid, where it is small enough
     /// to have one of its own (`small_perimeter_speed`).
     small_wall: Option<f64>,
+    /// The speed of the support line being laid, where it is short
+    /// enough to have one of its own (`small_support_perimeter_speed`).
+    small_support: Option<f64>,
     /// The speed of the wall loop being laid, where it goes round a
     /// circle the auto circle compensation resized (`circle.rs`).
     circle_wall: Option<f64>,
@@ -1527,6 +1590,8 @@ struct State {
     /// change G-code is given as `max_layer_z` (GCode.cpp
     /// `m_max_layer_z`).
     max_z: f64,
+    /// The support interfaces' own fan speed, while it is on.
+    interface_fan: Option<u8>,
     /// The temperature a one-nozzle printer's tower last set, which it
     /// does not set again above the first layer (WipeTower2.cpp
     /// `m_old_temperature`).
@@ -1547,9 +1612,10 @@ struct State {
     /// of the process's (GCode.cpp `process_layer`, `Calib_VFA_Tower` and
     /// `Calib_Vol_speed_Tower`: `m_calib_config`).
     calibration_outer_wall_speed: Option<f64>,
-    /// The jerk the cornering calibration last set (GCodeWriter.cpp
-    /// `m_last_jerk`; nothing else here sets a jerk).
-    calibration_jerk: f64,
+    /// The jerk last set (GCodeWriter.cpp `m_last_jerk`): by the process's
+    /// jerks ([`PrintSettings::jerks`]) or the cornering calibration; 0
+    /// once a template has set one of its own.
+    jerk: f64,
     /// The stringing grid's band last set (GCode.cpp
     /// `m_temp_retract_last_band`).
     stringing_band: Option<usize>,
@@ -1617,6 +1683,20 @@ impl Writer<'_> {
     /// What each filament the print uses asks of the exhaust fan
     /// (GCode.cpp `_do_export`, over `m_writer.extruders()`, the
     /// filaments used).
+    /// The chamber temperature the print heats to, where any of its
+    /// filaments asks for the chamber to be heated: the hottest any of
+    /// them gives (GCode.cpp `_do_export`, over the writer's extruders).
+    fn chamber(&self) -> Option<i64> {
+        let used = || {
+            (self.file.filaments.iter()).filter_map(|number| self.all.get(number.checked_sub(1)?))
+        };
+        let hottest = used()
+            .map(|s| s.chamber_temperature.round() as i64)
+            .max()
+            .unwrap_or(0);
+        (used().any(|s| s.activate_chamber_temp_control) && hottest > 0).then_some(hottest)
+    }
+
     fn exhaust_fans(&self) -> Vec<[Option<i64>; 2]> {
         (self.file.filaments.iter())
             .filter_map(|filament| self.all.get(filament - 1))
@@ -1860,7 +1940,26 @@ impl Writer<'_> {
         match &s.machine_start_gcode {
             Some(template) => {
                 writeln!(self.out, "{}Custom", self.tags().feature)?;
+                let at = self.out.len();
                 started = self.custom("machine_start_gcode", template)?;
+                // The chamber heated and waited for ahead of the start
+                // G-code, unless that sets it itself (GCode.cpp
+                // `_do_export`, `custom_gcode_sets_temperature`).
+                if let Some(chamber) = self.chamber()
+                    && !sets_chamber(&started)
+                {
+                    let mut heat = String::new();
+                    if s.auxiliary_fan {
+                        heat.push_str("M106 P2 S255 \n");
+                    }
+                    heat.push_str(&format!(
+                        "M191 S{chamber} ;set chamber_temperature and wait for it to be reached\n"
+                    ));
+                    if s.auxiliary_fan {
+                        heat.push_str("M106 P2 S0 \n");
+                    }
+                    self.out.splice(at..at, heat.into_bytes());
+                }
                 self.state.primed = true;
             }
             None => {
@@ -1912,9 +2011,15 @@ impl Writer<'_> {
                 let tool = line.trim().strip_prefix('T')?.parse::<i64>().ok()?;
                 (0..255).contains(&tool).then_some(tool)
             });
-            self.swap(from, self.state.tool, None, 0.0, 0.0)?;
-            // The reference leaves this marker of its own here.
-            writeln!(self.out, ";_FORCE_RESUME_FAN_SPEED")?;
+            let swapped = self.swap(from, self.state.tool, None, 0.0, 0.0)?;
+            // The reference leaves this marker of its own here, where the
+            // change G-code ran.
+            if swapped.templated {
+                writeln!(self.out, ";_FORCE_RESUME_FAN_SPEED")?;
+            }
+            if let Some(command) = swapped.command {
+                self.out.extend_from_slice(command.as_bytes());
+            }
             self.announce(self.state.tool, true)?;
             return Ok(());
         }
@@ -1926,7 +2031,12 @@ impl Writer<'_> {
         // when the project has more than one filament to choose from
         // (GCodeWriter.cpp `toolchange`).
         if s.machine_start_gcode.is_some() && s.filaments > 1 {
-            writeln!(self.out, "T0")?;
+            let prefix = if s.manual_filament_change {
+                MANUAL_TOOL_CHANGE
+            } else {
+                "T"
+            };
+            writeln!(self.out, "{prefix}0")?;
         }
         Ok(())
     }
@@ -1952,6 +2062,9 @@ impl Writer<'_> {
         let text = edge_template::expand(template, &self.variables)
             .map_err(|source| GcodeError::Template { name, source })?;
         self.state.flushed.read(&text, self.all);
+        if sets_jerk(&text) {
+            self.state.jerk = 0.0;
+        }
         self.out.write_all(text.as_bytes())?;
         if !text.ends_with('\n') {
             writeln!(self.out)?;
@@ -2013,7 +2126,7 @@ impl Writer<'_> {
         layer: Option<usize>,
         z: f64,
         toolchange_z: f64,
-    ) -> Result<(), GcodeError> {
+    ) -> Result<Swapped, GcodeError> {
         let first_layer = layer.is_none_or(|layer| layer == 0);
         let old = from.and_then(|tool| usize::try_from(tool).ok());
         let settings_of = |tool: Option<usize>| tool.and_then(|tool| self.all.get(tool));
@@ -2033,7 +2146,7 @@ impl Writer<'_> {
             .state
             .position
             .map_or((0.0, 0.0), |at| (self.gcode_x(at), self.gcode_y(at)));
-        let height = self.state.height.unwrap_or(z);
+        let height = self.state.height.unwrap_or(z + self.z_offset);
         // Every change so far and this one, the print's first taking up
         // of a tool included (GCode.cpp `m_toolchange_count`).
         self.state.swaps += 1;
@@ -2146,7 +2259,15 @@ impl Writer<'_> {
                 Value::Float(height),
             ],
         );
-        match &new_settings.change_filament_gcode {
+        // With the filament changed by hand, the print's first taking up of
+        // a tool goes without the change G-code (GCode.cpp `set_extruder`),
+        // and every change is a comment for the person to make it by
+        // (GCodeWriter.cpp `toolchange_prefix`).
+        let manual = new_settings.manual_filament_change;
+        let prefix = if manual { MANUAL_TOOL_CHANGE } else { "T" };
+        let template =
+            (new_settings.change_filament_gcode.as_ref()).filter(|_| !(manual && count == 1));
+        let swapped = match template {
             Some(template) => {
                 let text =
                     edge_template::expand_mut(template, &mut self.variables).map_err(|source| {
@@ -2162,19 +2283,28 @@ impl Writer<'_> {
                     writeln!(self.out)?;
                 }
                 writeln!(self.out, "; custom gcode end")?;
-                // The tool is selected by the template, or else here.
+                // The tool is selected by the template, or else after it
+                // (GCode.cpp `custom_gcode_changes_tool`). Not as the
+                // reference for a prefix of more than one letter (the hand
+                // change's comment), which it reads the number after the
+                // prefix's first letter for, and so never finds: here the
+                // template naming the change in it is taken as it is meant.
                 let named = text.lines().any(|line| {
                     line.trim()
-                        .strip_prefix('T')
+                        .strip_prefix(prefix)
                         .and_then(|rest| rest.split([' ', ';']).next())
                         .is_some_and(|number| number.parse() == Ok(to))
                 });
-                if !named {
-                    writeln!(self.out, "T{to}")?;
+                Swapped {
+                    templated: true,
+                    command: (!named).then(|| format!("{prefix}{to}\n")),
                 }
             }
-            None => writeln!(self.out, "T{to}")?,
-        }
+            None => Swapped {
+                templated: false,
+                command: Some(format!("{prefix}{to}\n")),
+            },
+        };
         self.variables.set("max_layer_z", top);
         self.variables
             .set("current_extruder", Value::Int(to as i64));
@@ -2187,7 +2317,7 @@ impl Writer<'_> {
         self.state.feedrate = 0.0;
         self.state.acceleration = 0.0;
         self.state.travel_acceleration = 0.0;
-        Ok(())
+        Ok(swapped)
     }
 
     /// Makes a tool the one whose settings are used, and tells the printer
@@ -2457,7 +2587,7 @@ impl Writer<'_> {
             Some(tower) if s.bambu_tower => tower,
             _ => z,
         };
-        self.swap(Some(from as i64), to, Some(layer), z, toolchange_z)?;
+        let swapped = self.swap(Some(from as i64), to, Some(layer), z, toolchange_z)?;
         self.state.flushed.select(to, self.all);
         // Each nozzle keeps its own filament's retraction; with one nozzle
         // for all the filaments it is the one retraction, carried on to
@@ -2477,6 +2607,9 @@ impl Writer<'_> {
         // (CoolingBuffer.cpp); not to the speeds in force, which before
         // the layer's own are set are the layer below's.
         self.out.extend_from_slice(RESUME_FAN_MARK);
+        if let Some(command) = swapped.command {
+            self.out.extend_from_slice(command.as_bytes());
+        }
         // Bambu's tower: to where its block starts and down to the layer,
         // the filament pushed back, straight after the change G-code and
         // before the new filament's start G-code (GCode.cpp `append_tcr`,
@@ -2569,7 +2702,10 @@ impl Writer<'_> {
             (Some(_), _) | (None, None) => self.state.z + s.z_hop,
             (None, Some(height)) => height,
         };
-        let up = lifted.max(self.state.max_z);
+        // The reference goes to the highest layer without the Z offset
+        // (GCode.cpp `_do_export`, `travel_to_z(m_max_layer_z)`), into the
+        // copy just printed when the offset is above 0; not copied.
+        let up = lifted.max(self.state.max_z + self.z_offset);
         if self.state.height.is_none_or(|height| height < up - 1e-9) {
             self.feed(s.z_speed);
             let feed_word = self.feed_word();
@@ -2738,14 +2874,15 @@ impl Writer<'_> {
         // move of its own, which the spiral starts its ramp from
         // (GCode.cpp `change_layer`: "force to normal lift immediately in
         // spiral vase mode").
+        let z = layer.z + self.z_offset;
         if s.spiral.is_some() {
             self.feed(s.z_speed);
             let feed_word = self.feed_word();
-            writeln!(self.out, "G1 Z{:.3}{feed_word}", layer.z)?;
+            writeln!(self.out, "G1 Z{z:.3}{feed_word}")?;
             if let Some(height) = self.state.height {
-                self.spend((layer.z - height).abs() / s.z_speed);
+                self.spend((z - height).abs() / s.z_speed);
             }
-            self.state.height = Some(layer.z);
+            self.state.height = Some(z);
             self.state.pending_lift = None;
         }
         self.variables.set("layer_num", Value::Int(index as i64));
@@ -2772,12 +2909,8 @@ impl Writer<'_> {
             let tool = (self.all.len() > 1 && !s.single_nozzle).then_some(self.state.tool);
             let text = calib::at_layer(calibration, index, self.layer_count, layer.z, tool);
             self.out.extend_from_slice(text.as_bytes());
-            let corner = calib::corner_at(
-                calibration,
-                index,
-                self.layer_count,
-                &mut self.state.calibration_jerk,
-            );
+            let corner =
+                calib::corner_at(calibration, index, self.layer_count, &mut self.state.jerk);
             self.out.extend_from_slice(corner.as_bytes());
             if let Some(length) = calib::retraction_at(calibration, layer.z) {
                 self.state.calibration_retraction = Some(length);
@@ -2799,6 +2932,17 @@ impl Writer<'_> {
             s.default_acceleration > 0.0 && s.initial_layer_acceleration > 0.0;
         if own == 0 && first_layer_acceleration {
             self.accelerate(s.initial_layer_acceleration)?;
+        }
+        // And its jerk, and the junction deviation, set once there.
+        let first_layer_jerk = s.jerks.filter(|jerks| jerks.initial_layer > 0.0);
+        if own == 0 {
+            if let Some(jerks) = first_layer_jerk {
+                self.set_jerk(jerks.initial_layer);
+            }
+            if let Some((deviation, max)) = s.junction_deviation {
+                let line = calib::junction_deviation_line(deviation, max, false);
+                self.out.extend_from_slice(line.as_bytes());
+            }
         }
         if own == 1 {
             self.state.second_layer_done = true;
@@ -2824,11 +2968,20 @@ impl Writer<'_> {
             if first_layer_acceleration {
                 self.accelerate(s.default_acceleration)?;
             }
+            if let Some(jerks) = first_layer_jerk {
+                self.set_jerk(jerks.default);
+            }
             if s.default_acceleration > 0.0
                 && s.travel_acceleration > 0.0
                 && s.first_layer_travel_acceleration > 0.0
             {
                 self.accelerate_travel(s.travel_acceleration)?;
+            }
+            if let Some(jerks) = s
+                .jerks
+                .filter(|jerks| jerks.travel > 0.0 && jerks.first_layer_travel > 0.0)
+            {
+                self.set_jerk(jerks.travel);
             }
         }
         // The stringing grid sets the nozzle's temperature itself from the
@@ -2896,7 +3049,7 @@ impl Writer<'_> {
         self.ways.clear();
         self.shelters.clear();
         // The nozzle itself moves up with the layer's first travel.
-        self.state.z = layer.z;
+        self.state.z = z;
         self.state.max_z = self.state.max_z.max(layer.z);
         self.below = if own == 0 {
             None
@@ -2973,6 +3126,7 @@ impl Writer<'_> {
         self.settle_fan(speed, over_air);
         self.settle_ironing_fan(speed);
         if self.state.fan != Some(speed) {
+            let speed = cooling::floored(speed, s.part_fan_floor);
             fans.push_str(&format!("M106 S{speed}\n"));
             self.state.fan = Some(speed);
         }
@@ -2994,6 +3148,7 @@ impl Writer<'_> {
                 text.push_str(&format!("M106 P2 S{speed}\n"));
             }
             if let Some(speed) = self.state.fan {
+                let speed = cooling::floored(speed, s.part_fan_floor);
                 text.push_str(&format!("M106 S{speed}\n"));
             }
             text.into_bytes()
@@ -3077,6 +3232,9 @@ impl Writer<'_> {
                 // (WipeTower.cpp `tool_change`).
                 self.state.framing = layer.wipe.is_some() && self.all[layer.filament].bambu_tower;
                 let before = self.state.position;
+                // The new filament starts at the layer's fan (CoolingBuffer.cpp
+                // closes the role fans at a tool change).
+                self.interface_fan(None)?;
                 let in_place = self.change_tool(
                     layer.filament,
                     index,
@@ -3121,14 +3279,15 @@ impl Writer<'_> {
                         .map_or(0.0, |at| distance(at, wipe.start));
                     let s = self.settings;
                     self.go(wipe.start, None, s.travel_speed, length)?;
-                    if self.state.height != Some(layer.z) {
+                    let z = layer.z + self.z_offset;
+                    if self.state.height != Some(z) {
                         self.feed(s.z_speed);
                         let feed_word = self.feed_word();
-                        writeln!(self.out, "G1 Z{:.3}{feed_word}", layer.z)?;
+                        writeln!(self.out, "G1 Z{z:.3}{feed_word}")?;
                         if let Some(height) = self.state.height {
-                            self.spend((height - layer.z).abs() / s.z_speed);
+                            self.spend((height - z).abs() / s.z_speed);
                         }
-                        self.state.height = Some(layer.z);
+                        self.state.height = Some(z);
                     }
                     self.state.pending_lift = None;
                 }
@@ -3231,6 +3390,7 @@ impl Writer<'_> {
         if self.state.farthest.take().is_some() && !self.state.pictured {
             self.timelapse(parts[0].z)?;
         }
+        self.interface_fan(None)?;
         self.fan_over_air(false)?;
         Ok(())
     }
@@ -3303,7 +3463,7 @@ impl Writer<'_> {
         self.flush_labels()?;
         self.variables.set("layer_z", Value::Float(z));
         let text = self.custom("time_lapse_gcode", template)?;
-        self.after_timelapse(&text, z, bambu)?;
+        self.after_timelapse(&text, z + self.z_offset, bambu)?;
         // The template moves the head, so where it is after is not known.
         if bambu {
             self.state.position = None;
@@ -3348,7 +3508,8 @@ impl Writer<'_> {
         self.state.farthest = None;
         self.state.pictured = true;
         let z = self.state.z;
-        self.variables.set("layer_z", Value::Float(z));
+        self.variables
+            .set("layer_z", Value::Float(z - self.z_offset));
         self.variables
             .set("timelapse_inline_photo", Value::Bool(true));
         let text = self.custom("time_lapse_gcode", template);
@@ -3441,6 +3602,7 @@ impl Writer<'_> {
                 continue;
             };
             if let Some(speed) = speed {
+                let speed = cooling::floored(speed, self.settings.part_fan_floor);
                 settled.extend_from_slice(format!("M106 S{speed}\n").as_bytes());
             }
             rest = &tail[length..];
@@ -3495,6 +3657,37 @@ impl Writer<'_> {
         self.state.routing.kind = Kind::Support;
         self.lines(lines, &[])?;
         self.state.routing.kind = Kind::Part;
+        Ok(())
+    }
+
+    /// Support interfaces have a fan speed of their own once the fan is
+    /// on at all, where the filament gives one (GCode.cpp
+    /// `apply_role_based_fan_speed`, CoolingBuffer.cpp
+    /// `supp_interface_fan_control`): turned on as a line of `role` is
+    /// laid, and off again as anything else is, or with `None`, told by
+    /// the markers ironing's is ([`Self::settle_ironing_fan`]).
+    fn interface_fan(&mut self, role: Option<Role>) -> io::Result<()> {
+        let s = self.settings;
+        let wanted = (s.support_interface_fan_speed)
+            .filter(|_| {
+                role == Some(Role::SupportInterface)
+                    && self.state.layer >= s.close_fan_the_first_x_layers
+            })
+            .map(cooling::pwm);
+        if wanted == self.state.interface_fan {
+            return Ok(());
+        }
+        // What is laid over air is behind: its fan gives way first.
+        self.fan_over_air(false)?;
+        if let Some(speed) = self.state.interface_fan.take() {
+            self.out.extend_from_slice(FAN_IRONING);
+            writeln!(self.out, "OFF {speed}")?;
+        }
+        if let Some(speed) = wanted {
+            self.out.extend_from_slice(FAN_IRONING);
+            writeln!(self.out, "ON {speed}")?;
+        }
+        self.state.interface_fan = wanted;
         Ok(())
     }
 
@@ -3634,6 +3827,7 @@ impl Writer<'_> {
             return self.lines(paths, shelter);
         };
         // What is laid over air is behind: its fan gives way first.
+        self.interface_fan(None)?;
         self.fan_over_air(false)?;
         self.out.extend_from_slice(FAN_IRONING);
         writeln!(self.out, "ON {fan}")?;
@@ -3663,6 +3857,7 @@ impl Writer<'_> {
             let ironing: Option<u8> = words.next().and_then(|word| word.parse().ok());
             if let Some(ironing) = ironing.filter(|ironing| *ironing != layer) {
                 let speed = if on { ironing } else { layer };
+                let speed = cooling::floored(speed, self.settings.part_fan_floor);
                 self.out
                     .extend_from_slice(format!("M106 S{speed}\n").as_bytes());
             }
@@ -4431,6 +4626,7 @@ impl Writer<'_> {
             return Ok(());
         }
         let layer = self.state.z;
+        let tower = tower + self.z_offset;
         self.plunge(tower)?;
         self.state.z = tower;
         self.state.lowered = Some(layer);
@@ -4633,6 +4829,7 @@ impl Writer<'_> {
         closed: bool,
     ) -> io::Result<()> {
         let s = self.settings;
+        self.state.small_support = self.small_support_speed(role, points);
         let motion = self.motion(role, flow, self.state.first_layer);
         // Bridges always get the overhang fan, and with no threshold set
         // so does every outer wall (GCode.cpp `overhang_fan_on_for_role`).
@@ -4660,6 +4857,7 @@ impl Writer<'_> {
         let measure = is_wall
             && self.below.is_some()
             && (s.enable_overhang_speed || s.detect_overhang_wall || fan.is_some());
+        self.interface_fan(Some(role))?;
         if known.is_none() && !measure {
             self.fan_over_air(cooled)?;
             match parts {
@@ -5052,8 +5250,17 @@ impl Writer<'_> {
             Role::InternalBridge => s.internal_bridge_speed.resolve(s.bridge_speed),
             Role::GapFill => s.gap_infill_speed,
             Role::Skirt | Role::Brim => self.outer_wall_speed(),
+            Role::Support | Role::SupportInterface if self.state.small_support.is_some() => {
+                self.state.small_support.unwrap_or_default()
+            }
             Role::Support => s.support_speed,
             Role::SupportInterface => s.support_interface_speed,
+        };
+        let wanted = match role {
+            Role::PrimeTower | Role::PrimeLine => wanted,
+            Role::Skirt if s.skirt_speed > 0.0 => wanted,
+            _ if first_layer => wanted,
+            _ => self.slowed_down(role, wanted),
         };
         let melts = (s.filament_max_volumetric_speed > 0.0)
             .then(|| s.filament_max_volumetric_speed / self.melted(role, flow));
@@ -5097,6 +5304,68 @@ impl Writer<'_> {
         }
     }
 
+    /// The speed of a support line no longer than a circle of
+    /// `small_support_perimeter_threshold` (GCode.cpp `extrude_support`,
+    /// `speed_for_path`): `small_support_perimeter_speed`, a percentage of
+    /// the support's or the interface's own, and at nothing half of it.
+    fn small_support_speed(&self, role: Role, points: &[Point2]) -> Option<f64> {
+        let s = self.settings;
+        let own = match role {
+            Role::Support => s.support_speed,
+            Role::SupportInterface => s.support_interface_speed,
+            _ => return None,
+        };
+        let threshold = s.small_support_perimeter_threshold;
+        if threshold <= 0.0 {
+            return None;
+        }
+        let length: f64 = points
+            .windows(2)
+            .map(|pair| distance(pair[0], pair[1]))
+            .sum();
+        if length > threshold * std::f64::consts::TAU {
+            return None;
+        }
+        let speed = match s.small_support_perimeter_speed {
+            FloatOrPercent::Value(0.0) | FloatOrPercent::Percent(0.0) => 0.5 * own,
+            share => share.resolve(own),
+        };
+        (speed > 0.0).then_some(speed)
+    }
+
+    /// A speed on the layers `slow_down_layers` covers: no more than the
+    /// first layer's speed (the walls', or the fill's for the rest) part
+    /// of the way to its own, as far along as the layer is (GCode.cpp
+    /// `_extrude`, l.11433; above a raft from the first layer on it).
+    fn slowed_down(&self, role: Role, speed: f64) -> f64 {
+        let s = self.settings;
+        let layer = self
+            .object_layer
+            .map_or(self.state.layer, |(number, _)| number);
+        let Some(above) = layer.checked_sub(s.raft_layers) else {
+            return speed;
+        };
+        if s.slow_down_layers <= 1 || above == 0 || above >= s.slow_down_layers {
+            return speed;
+        }
+        let perimeter = matches!(
+            role,
+            Role::ExternalPerimeter | Role::Perimeter | Role::OverhangPerimeter
+        );
+        let first = if perimeter {
+            s.initial_layer_speed
+        } else {
+            s.initial_layer_infill_speed
+        };
+        if first < speed {
+            let share = above as f64 / s.slow_down_layers as f64;
+            // `Slic3r::lerp`, in its order.
+            speed.min((1.0 - share) * first + share * speed)
+        } else {
+            speed
+        }
+    }
+
     /// What a line lays per mm where the hot end's limit is worked out,
     /// in mm³: its own cross-section with the flow ratios it is laid
     /// with, the filament's, the print's and its kind's (GCode.cpp
@@ -5128,6 +5397,82 @@ impl Writer<'_> {
     /// acceleration there is.
     fn accelerate_travel(&mut self, acceleration: f64) -> io::Result<()> {
         self.set_acceleration(true, acceleration)
+    }
+
+    /// GCodeWriter.cpp `set_jerk_xy`, where the process sets jerks.
+    fn set_jerk(&mut self, jerk: f64) {
+        if let Some(jerks) = self.settings.jerks {
+            let line = calib::jerk_line(
+                jerk,
+                &mut self.state.jerk,
+                jerks.form,
+                jerks.max,
+                jerks.bambu,
+                false,
+            );
+            self.out.extend_from_slice(line.as_bytes());
+        }
+    }
+
+    /// The acceleration and the jerk a line or a travel goes with: on
+    /// Klipper one `SET_VELOCITY_LIMIT` for both (GCodeWriter.cpp
+    /// `set_accel_and_jerk`), elsewhere each as it is set alone (GCode.cpp
+    /// `_extrude`, `travel_to`). Without jerks, the acceleration alone.
+    fn accelerate_and_jerk(
+        &mut self,
+        travel: bool,
+        acceleration: f64,
+        jerk: f64,
+    ) -> io::Result<()> {
+        let s = self.settings;
+        let Some(jerks) = s.jerks else {
+            return self.set_acceleration(travel, acceleration);
+        };
+        if jerks.form != JerkForm::Klipper {
+            self.set_acceleration(travel, acceleration)?;
+            self.set_jerk(jerk);
+            return Ok(());
+        }
+        let acceleration = if s.max_print_acceleration > 0.0 {
+            acceleration.min(s.max_print_acceleration)
+        } else {
+            acceleration
+        };
+        let jerk = jerks.max.iter().fold(jerk, |jerk, limit| {
+            if *limit > 0.0 && jerk > *limit {
+                *limit
+            } else {
+                jerk
+            }
+        });
+        let set_acceleration = acceleration > 0.0 && acceleration != self.state.acceleration;
+        let set_jerk = jerk > 0.01 && (jerk - self.state.jerk).abs() >= 1e-4;
+        if !set_acceleration && !set_jerk {
+            return Ok(());
+        }
+        let mut line = String::from("SET_VELOCITY_LIMIT");
+        if set_acceleration {
+            let alone = s
+                .acceleration_form
+                .command(travel, acceleration, s.accel_to_decel_factor);
+            line.push_str(
+                alone
+                    .trim_end()
+                    .strip_prefix("SET_VELOCITY_LIMIT")
+                    .unwrap_or_default(),
+            );
+            self.state.acceleration = acceleration;
+        }
+        if set_jerk {
+            line.push_str(&format!(
+                " SQUARE_CORNER_VELOCITY={}",
+                calib::general(jerk, 6)
+            ));
+            self.state.jerk = jerk;
+        }
+        line.push('\n');
+        self.out.extend_from_slice(line.as_bytes());
+        Ok(())
     }
 
     /// GCodeWriter.cpp `set_acceleration_internal`: held to the machine's
@@ -5193,22 +5538,44 @@ impl Writer<'_> {
         // straight line.
         let straight = from.map_or(f64::INFINITY, |from| distance(from, to));
         let short = straight < s.retraction_minimum_travel;
-        if self.state.first_layer
+        let to_wall = short
+            && matches!(
+                role,
+                Some(Role::OverhangPerimeter | Role::ExternalPerimeter)
+            );
+        let acceleration = if self.state.first_layer
             && s.first_layer_travel_acceleration > 0.0
             && s.default_acceleration > 0.0
         {
-            self.accelerate_travel(s.first_layer_travel_acceleration.round())?;
+            s.first_layer_travel_acceleration.round()
         } else if self.state.first_layer && s.initial_layer_acceleration > 0.0 {
-            self.accelerate_travel(s.initial_layer_acceleration)?;
+            s.initial_layer_acceleration
         } else if s.default_acceleration > 0.0 {
             let bridge = s.bridge_acceleration.resolve(s.outer_wall_acceleration);
-            let wanted = match role {
+            match role {
                 Some(Role::OverhangPerimeter) if short => bridge,
                 Some(Role::ExternalPerimeter) if short => s.outer_wall_acceleration,
                 _ => s.travel_acceleration,
-            };
-            self.accelerate_travel(wanted)?;
-        }
+            }
+        } else {
+            0.0
+        };
+        // The jerk alike: the first layer's travel jerk, or else its
+        // own; the outer wall's into a wall, as its acceleration; else
+        // the travel jerk (GCode.cpp `travel_to`).
+        let jerk = match s.jerks {
+            Some(jerks) if self.state.first_layer => {
+                if jerks.first_layer_travel > 0.0 {
+                    jerks.first_layer_travel
+                } else {
+                    jerks.initial_layer
+                }
+            }
+            Some(jerks) if to_wall => jerks.outer_wall,
+            Some(jerks) => jerks.travel,
+            None => 0.0,
+        };
+        self.accelerate_and_jerk(true, acceleration, jerk)?;
         let exposed = !sheltered
             || matches!(
                 self.state.role,
@@ -5529,7 +5896,8 @@ impl Writer<'_> {
         // filament is forward (GCode.cpp `_extrude`: `unretract`, then
         // `set_accel_and_jerk` or `set_print_acceleration`, then the
         // role and width tags).
-        self.accelerate(motion.acceleration)?;
+        let jerk = (s.jerks).map_or(0.0, |jerks| jerks.of_line(role, self.state.first_layer));
+        self.accelerate_and_jerk(false, motion.acceleration, jerk)?;
         if self.state.role != Some(role) {
             // Two roles may go by one name, which is then said once.
             if self.state.role.map(role_name) != Some(role_name(role)) {
@@ -5933,7 +6301,7 @@ impl Writer<'_> {
         self.state.feedrate = 0.0;
         self.state.z = top;
         self.state.height = Some(top);
-        self.state.max_z = top;
+        self.state.max_z = top - self.z_offset;
         Ok(())
     }
 
@@ -5983,6 +6351,10 @@ impl Writer<'_> {
                 self.custom("machine_end_gcode", template)?;
             }
             None => writeln!(self.out, "M104 S0\nM140 S0\nM84")?,
+        }
+        // The chamber's heater off (GCode.cpp `_do_export`).
+        if self.chamber().is_some() {
+            writeln!(self.out, "M141 S0;set chamber_temperature")?;
         }
         // The exhaust fan as the print's filaments ask once it is done,
         // after the end G-code (GCode.cpp `_do_export`).
@@ -6500,9 +6872,9 @@ const TOWER_RESOLUTION: f64 = 0.1;
 const FAN_MARK: &[u8] = b";_FAN_OVER_AIR_";
 const FAN_OVER_AIR: &[u8] = b";_FAN_OVER_AIR_ON\n";
 const FAN_AS_LAYER: &[u8] = b";_FAN_OVER_AIR_OFF\n";
-/// Starts the line a layer is written with where ironing begins and
-/// where it ends, when ironing has a fan speed of its own: `ON` or
-/// `OFF`, and that speed.
+/// Starts the line a layer is written with where ironing or a support
+/// interface begins and where it ends, when it has a fan speed of its
+/// own: `ON` or `OFF`, and that speed.
 const FAN_IRONING: &[u8] = b";_FAN_IRONING_";
 
 /// The arcs in a path, when arcs are asked for and it has the three

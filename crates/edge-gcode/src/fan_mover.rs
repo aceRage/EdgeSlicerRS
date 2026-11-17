@@ -41,6 +41,9 @@ pub struct FanTiming {
     /// How long, at most, the fan runs at full speed before it is set to a
     /// higher speed (`fan_kickstart`), for the whole rise from off.
     pub kickstart: f64,
+    /// The least the fan is run at where it runs at all, as `M106 S`
+    /// takes it (`part_cooling_fan_min_pwm`; FanMover.cpp `_set_fan`).
+    pub floor: u8,
 }
 
 impl FanTiming {
@@ -51,7 +54,12 @@ impl FanTiming {
             speedup: speedup.abs(),
             only_overhangs,
             kickstart,
+            floor: 0,
         })
+    }
+
+    pub fn with_floor(self, floor: u8) -> Self {
+        Self { floor, ..self }
     }
 }
 
@@ -153,6 +161,7 @@ pub struct FanMover {
     delay: f32,
     only_overhangs: bool,
     kickstart: f32,
+    floor: u8,
     /// Where the reader is: X, Y, Z, E.
     at: [f32; 4],
     /// The moves' speed in mm/s.
@@ -176,6 +185,7 @@ impl FanMover {
             delay: if delay > 0.0 { delay.max(0.01) } else { 0.0 },
             only_overhangs: timing.only_overhangs,
             kickstart: timing.kickstart as f32,
+            floor: timing.floor,
             at: [0.0; 4],
             speed: 1000.0 / 60.0,
             overhang: false,
@@ -223,11 +233,12 @@ impl FanMover {
     }
 
     /// FanMover.cpp `_set_fan`: GCodeWriter.cpp `set_fan`, in percent.
-    fn set_fan(speed: i32) -> String {
+    fn set_fan(&self, speed: i32) -> String {
         if speed <= 0 {
             "M106 S0".to_owned()
         } else {
-            format!("M106 S{}", (255.5 * f64::from(speed) / 100.0) as u32)
+            let pwm = (255.5 * f64::from(speed) / 100.0) as u32;
+            format!("M106 S{}", pwm.max(u32::from(self.floor)))
         }
     }
 
@@ -330,7 +341,7 @@ impl FanMover {
                     if front.is_kickstart && i32::from(front.fan_speed) < self.front_fan {
                         // Slower than the fan is running: written as a slow-down.
                         self.output
-                            .push_str(&Self::set_fan(i32::from(front.fan_speed)));
+                            .push_str(&self.set_fan(i32::from(front.fan_speed)));
                         self.output.push('\n');
                         self.front_fan = i32::from(front.fan_speed);
                     } else {
@@ -372,7 +383,7 @@ impl FanMover {
                 if self.kickstart > 0.0 && speed > self.front_fan {
                     self.remove_slow_fan(speed, (self.buffer_time + 1.0) as f32);
                     self.remove_slow_fan(255, self.kickstart);
-                    self.write_back(&Self::set_fan(100));
+                    self.write_back(&self.set_fan(100));
                     // The speed asked for, after the kick-start.
                     let duration = self.kickstart * (speed - self.front_fan) as f32 / 100.0;
                     let mut count = duration;
@@ -414,7 +425,7 @@ impl FanMover {
                 // Full speed first, then the speed asked for.
                 *time = -1.0;
                 let duration = self.kickstart * (speed - self.back_fan) as f32 / 100.0;
-                self.put(Held::new(&Self::set_fan(100), 0.0, speed as i16, true));
+                self.put(Held::new(&self.set_fan(100), 0.0, speed as i16, true));
                 self.kick = Held::new(raw, duration, speed as i16, false);
             }
         }
@@ -681,6 +692,17 @@ mod tests {
             ],
         );
         assert_eq!(out[1], "G1 X20 E.5\nG1 X30 E.5\n");
+    }
+
+    #[test]
+    fn a_fan_command_the_mover_writes_keeps_the_printers_floor() {
+        // 13 % reads back from S33 as 12 %, which the floor raises again
+        // (FanMover.cpp `_set_fan`); without it, S30.
+        let timing = FanTiming::of(0.0, true, 1.0).unwrap();
+        let floored = FanMover::new(timing.with_floor(crate::cooling::pwm(13.0)));
+        assert_eq!(floored.set_fan(12), "M106 S33");
+        assert_eq!(floored.set_fan(0), "M106 S0");
+        assert_eq!(FanMover::new(timing).set_fan(12), "M106 S30");
     }
 
     #[test]

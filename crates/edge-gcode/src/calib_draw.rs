@@ -39,6 +39,9 @@ pub struct Pen {
     pub max_jerk: [f64; 4],
     /// Where the tool's nozzle is off the first (`extruder_offset`).
     pub offset: [f64; 2],
+    /// Added to the heights the nozzle is sent to (`z_offset`; calib.cpp
+    /// `print_pa_lines`, `height_z_offset`).
+    pub z_offset: f64,
 }
 
 impl Pen {
@@ -59,6 +62,7 @@ impl Pen {
             z_speed: s.z_speed,
             max_jerk: calibration.max_jerk,
             offset: s.extruder_offset,
+            z_offset: s.z_offset,
         }
     }
 }
@@ -773,7 +777,9 @@ pub(crate) fn pa_line(
     let layer = test.layer_height;
     let num = f64::from(count);
 
-    d.travel_to_z(layer, "");
+    // The reference adds the Z offset to the height tags here too, which
+    // say the layer's height, not where it is; not copied.
+    d.travel_to_z(layer + pen.z_offset, "");
     d.height_tag(layer);
     let y_pos = start_y;
     // The anchor: a line along the test's left side.
@@ -829,7 +835,7 @@ pub(crate) fn pa_line(
         d.layer_change_tag();
         d.height_tag(layer * 2.0);
         d.role("Top surface");
-        d.travel_to_z(layer * 2.0, "");
+        d.travel_to_z(layer * 2.0 + pen.z_offset, "");
         top = layer * 2.0;
         for i in (0..count).step_by(2) {
             let fi = f64::from(i);
@@ -847,7 +853,7 @@ pub(crate) fn pa_line(
             );
         }
     }
-    (d.out, d.fed, d.retracted, top)
+    (d.out, d.fed, d.retracted, top + pen.z_offset)
 }
 
 /// One "PA Pattern" test (`CalibPressureAdvancePattern`), as its handle
@@ -1005,7 +1011,7 @@ pub fn pa_pattern(test: &PaPattern, pen: &Pen) -> Vec<(String, f64)> {
     d.out
         .push_str("; start pressure advance pattern for layer\n");
     d.move_to(start, "Move to start XY position", None);
-    d.travel_to_z(h1, "Move to start Z position");
+    d.travel_to_z(h1 + pen.z_offset, "Move to start Z position");
     d.set_pressure_advance(test.start);
     // The anchoring frame, at the outer wall's width and speed.
     let frame = BoxArgs {
@@ -1040,7 +1046,7 @@ pub fn pa_pattern(test: &PaPattern, pen: &Pen) -> Vec<(String, f64)> {
     let acceleration = test.acceleration;
     d.role("Outer wall");
     for i in 0..LAYERS {
-        let z = h1 + i as f64 * h;
+        let z = h1 + pen.z_offset + i as f64 * h;
         let hop = Some((z + lift, z));
         if i > 0 {
             d.out.push_str("; end pressure advance pattern for layer\n");
@@ -1171,6 +1177,7 @@ mod tests {
             max_print_acceleration: 0.0,
             accel_to_decel_factor: None,
             comments: false,
+            z_offset: 0.0,
             retraction_length: 0.8,
             retraction_speed: 30.0,
             deretraction_speed: 0.0,

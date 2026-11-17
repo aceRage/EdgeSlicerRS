@@ -23,8 +23,6 @@ enum Off {
     Is(&'static str),
     /// No text: empty, or every entry empty or 0.
     Blank,
-    /// Any number below this; the reference's default is shown.
-    Below(f64, &'static str),
     /// Anything but the first; the second is shown as the value that
     /// does nothing.
     Unless(&'static str, &'static str),
@@ -100,47 +98,17 @@ const fn with(key: &'static str, off: Off, other: &'static str, other_off: Off) 
     }
 }
 
-use Off::{Below, Blank, Is, Unless};
+use Off::{Blank, Is, Unless};
 
 /// What the reference does with each is in the comment over it (line
 /// numbers in the pinned reference's `src/libslic3r`).
 const SILENT: &[Silent] = &[
     // Speed and motion.
-    // GCode.cpp l.7596, l.7635: a jerk per feature is written only with a
-    // default jerk above 0.
-    gate(
-        "default_jerk",
-        Is("0"),
-        &[
-            "outer_wall_jerk",
-            "inner_wall_jerk",
-            "infill_jerk",
-            "top_surface_jerk",
-            "initial_layer_jerk",
-            "travel_jerk",
-            "first_layer_travel_jerk",
-        ],
-    ),
-    // GCode.cpp l.7600: M205 J, with Marlin 2 alone.
-    with(
-        "default_junction_deviation",
-        Is("0"),
-        "gcode_flavor",
-        Unless("marlin2", "marlin"),
-    ),
     // GCode.cpp l.11573: inner walls under an overhang slowed like it.
     gate(
         "overhang_shadow_inner_wall",
         Is("0"),
         &["overhang_shadow_distance", "overhang_shadow_speed_ratio"],
-    ),
-    // GCode.cpp l.11433: a ramp over more than one layer.
-    silent("slow_down_layers", Below(2.0, "0")),
-    // GCode.cpp l.10908: small support loops at their own speed.
-    gate(
-        "small_support_perimeter_threshold",
-        Is("0"),
-        &["small_support_perimeter_speed"],
     ),
     // LayerTimeSpeedSmoothingFilter.
     gate(
@@ -191,21 +159,6 @@ const SILENT: &[Silent] = &[
             "extrusion_rate_smoothing_external_perimeter_only",
         ],
     ),
-    // Fan.
-    // GCodeWriter.cpp l.1449: a floor under any fan speed but 0.
-    silent("part_cooling_fan_min_pwm", Is("0")),
-    // CoolingBuffer.cpp l.936: a fan speed of its own when 0 or more.
-    silent("support_material_interface_fan_speed", Below(0.0, "-1")),
-    // Temperature: GCode.cpp l.4541, M141 / M191 with a chamber temperature.
-    with(
-        "activate_chamber_temp_control",
-        Is("0"),
-        "chamber_temperature",
-        Is("0"),
-    ),
-    // Height: GCodeWriter adds it to every Z (GCode.cpp l.3742).
-    silent("z_offset", Is("0")),
-    silent("filament_z_offset", Is("0")),
     // Geometry.
     // PrintObjectSlice.cpp l.319.
     silent("enable_order_independent_overlap_carving", Is("0")),
@@ -225,9 +178,6 @@ const SILENT: &[Silent] = &[
         &["flush_multiplier_fast"],
     )
     .many(Many::Printing),
-    // GCodeWriter.cpp l.705, GCode.cpp l.13182: tool changes written as
-    // comments for a person to make.
-    silent("manual_filament_change", Is("0")).many(Many::Printing),
     // ToolOrdering.cpp l.1404: every filament of the project loaded.
     silent("preload_all_filaments", Is("0")).many(Many::InProject),
     // PrintRegion.cpp l.58: walls and fill in a filament of their own.
@@ -370,12 +320,6 @@ impl Off {
         match self {
             Is(off) => alike(entry, off),
             Blank => matches!(entry.trim(), "" | "0" | "\"\""),
-            Below(limit, _) => entry
-                .trim()
-                .strip_suffix('%')
-                .unwrap_or(entry.trim())
-                .parse::<f64>()
-                .is_ok_and(|number| number < limit),
             Unless(on, _) => entry.trim() != on,
         }
     }
@@ -383,7 +327,7 @@ impl Off {
     /// The value that does nothing, as the note gives it.
     fn shown(self) -> &'static str {
         match self {
-            Is(off) | Below(_, off) | Unless(_, off) => off,
+            Is(off) | Unless(_, off) => off,
             Blank => "",
         }
     }
@@ -500,11 +444,9 @@ mod tests {
         assert!(said.is_empty(), "{said:?}");
         // Turned off in other words, nothing either.
         let off = Settings::from_json(
-            r#"{"z_offset": "0.0", "default_jerk": ["0"], "filament_shrink": ["100", "100%"],
-                "slow_down_layers": "1", "support_material_interface_fan_speed": ["-1", "-5"],
+            r#"{"z_offset": "0.0", "filament_shrink": ["100", "100%"],
                 "bottom_layer_direction": "-3", "use_relative_e_distances": "true",
                 "file_start_gcode": "", "mixed_filament_definitions": "\"\"",
-                "default_junction_deviation": "0.02", "gcode_flavor": "klipper",
                 "adaptive_pressure_advance": ["1"], "enable_pressure_advance": ["0"],
                 "prime_volume_mode": "Saving"}"#,
         )
@@ -528,8 +470,7 @@ mod tests {
     #[test]
     fn settings_nothing_reads_are_said_when_they_change_the_print() {
         let on = Settings::from_json(
-            r#"{"z_offset": "0.2", "filament_shrink": ["100%", "98%"], "slow_down_layers": "3",
-                "default_junction_deviation": "0.02", "gcode_flavor": "marlin2",
+            r#"{"filament_shrink": ["100%", "98%"],
                 "adaptive_pressure_advance": ["1"], "enable_pressure_advance": ["1"],
                 "prime_volume_mode": "Fast", "stabilizer_supports": "auto",
                 "file_start_gcode": "M117 first line\nM117 second line"}"#,
@@ -539,10 +480,7 @@ mod tests {
         assert_eq!(
             said,
             [
-                "default_junction_deviation \"0.02\": not followed; the print is made as if it were \"0\"",
-                "slow_down_layers \"3\": not followed; the print is made as if it were \"0\"",
                 "adaptive_pressure_advance \"1\": not followed; the print is made as if it were \"0\"",
-                "z_offset \"0.2\": not followed; the print is made as if it were \"0\"",
                 "filament_shrink \"98%\": not followed; the print is made as if it were \"100%\"",
                 "prime_volume_mode \"Fast\": not followed; the print is made as if it were \"Default\"",
                 "stabilizer_supports \"auto\": not followed; the print is made as if it were \"off\"",
@@ -557,7 +495,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(followed.notes_on("slow_down").count(), 0);
-        assert_eq!(followed.notes_on("z_offset").count(), 1);
+        assert_eq!(followed.notes_on("filament_shrink").count(), 1);
         // Looking does not count as reading: what a slice reads is how the
         // desktop app tells a setting that changes nothing.
         let reads = edge_config::Reads::default();
@@ -570,7 +508,7 @@ mod tests {
     #[test]
     fn what_is_about_more_filaments_than_one_waits_for_them() {
         let one = Settings::from_json(
-            r#"{"manual_filament_change": "1", "wall_filament": "2",
+            r#"{"prime_volume_mode": "Fast", "wall_filament": "2",
                 "filament_diameter": ["1.75"]}"#,
         )
         .unwrap();
@@ -578,7 +516,7 @@ mod tests {
         // Two printing: tool changes are written.
         let said = notes(&one, 2);
         assert_eq!(said.len(), 1, "{said:?}");
-        assert!(said[0].starts_with("manual_filament_change \"1\""));
+        assert!(said[0].starts_with("prime_volume_mode \"Fast\""));
         // Two in the project: walls may go to the second though only the
         // first is printing.
         let two =

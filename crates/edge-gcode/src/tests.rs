@@ -2224,8 +2224,13 @@ fn the_tool_is_named_when_the_profile_does_not() {
     let silent = "; swapping\n";
     let (text, _) = in_filaments(&[&[0, 1]], &two_tools(Some(silent)));
     let layer = text.split(";LAYER_CHANGE").nth(1).unwrap();
-    let after: Vec<&str> = from(layer, "; swapping", 3);
-    assert_eq!(after[..3], ["; swapping", "; custom gcode end", "T1"]);
+    // After the fan is set back, as the reference writes the tool's
+    // command after its `;_FORCE_RESUME_FAN_SPEED` (GCode.cpp
+    // `set_extruder`).
+    let after: Vec<&str> = from(layer, "; swapping", 4);
+    assert_eq!(after[..2], ["; swapping", "; custom gcode end"]);
+    assert!(after[2].starts_with("M106 S"), "{after:?}");
+    assert_eq!(after[3], "T1");
     // With no template at all, the tool is simply selected.
     let (text, summary) = in_filaments(&[&[0, 1]], &two_tools(None));
     assert_eq!(summary.tool_changes, 1);
@@ -4830,4 +4835,462 @@ fn a_layer_with_nothing_to_lay_is_not_written_but_still_counted() {
     assert!(text.contains(";AT 1 OF 3"), "{text}");
     assert!(text.contains("; total layer number: 2"));
     assert!(text.contains("; total layers count = 3"));
+}
+
+#[test]
+fn the_z_offset_is_added_to_every_height_the_nozzle_is_sent_to() {
+    // Templates are told the layers' own heights, without the offset
+    // (GCode.cpp `process_layer`, `layer_z` and `max_layer_z`).
+    let plain = PrintSettings {
+        z_hop: 0.4,
+        ..profile(&[
+            ("before", ";BEFORE [layer_z] [max_layer_z]"),
+            ("start", ";START"),
+        ])
+    };
+    let shifted = PrintSettings {
+        z_offset: 0.3,
+        ..plain.clone()
+    };
+    let (without, with) = (printed(3, &plain), printed(3, &shifted));
+    assert_eq!(without.lines().count(), with.lines().count());
+    let mut heights = 0;
+    for (a, b) in without.lines().zip(with.lines()) {
+        let code = |line: &str| line.split(';').next().unwrap_or("").trim().to_owned();
+        let is_move = ["G0 ", "G1 ", "G2 ", "G3 "]
+            .iter()
+            .any(|start| code(a).starts_with(start));
+        match (is_move, word(&code(a), 'Z'), word(&code(b), 'Z')) {
+            (true, Some(low), Some(high)) => {
+                assert!((high - low - 0.3).abs() < 1e-9, "{a} / {b}");
+                heights += 1;
+            }
+            _ => assert_eq!(a, b),
+        }
+    }
+    assert!(heights >= 6, "{heights}");
+    assert!(with.contains(";BEFORE 0.4 0.4"), "{with}");
+    let told = PrintSettings {
+        machine_start_gcode: Some(";OFFSET [z_offset]".into()),
+        ..shifted
+    };
+    assert!(printed(1, &told).contains(";OFFSET 0.3"));
+    assert!(with.contains(";Z:0.600"));
+}
+
+#[test]
+fn a_filaments_z_offset_is_added_to_the_printers() {
+    let settings = edge_config::Settings::from_json(
+        r#"{"z_offset": "-0.1", "filament_z_offset": ["0.25", "0.05"]}"#,
+    )
+    .unwrap();
+    let first = PrintSettings::for_filament(&settings, 0).unwrap();
+    let second = PrintSettings::for_filament(&settings, 1).unwrap();
+    assert!((first.z_offset - 0.15).abs() < 1e-9);
+    assert!((second.z_offset + 0.05).abs() < 1e-9);
+}
+
+#[test]
+fn the_chamber_is_heated_before_the_start_gcode_and_put_off_at_the_end() {
+    let heated = PrintSettings {
+        activate_chamber_temp_control: true,
+        chamber_temperature: 45.0,
+        auxiliary_fan: true,
+        ..profile(&[("start", "START"), ("end", "END")])
+    };
+    let text = printed(1, &heated);
+    let custom = text.find(";TYPE:Custom\n").unwrap();
+    assert!(
+        text[custom..].starts_with(
+            ";TYPE:Custom\nM106 P2 S255 \nM191 S45 ;set chamber_temperature and wait for it to be reached\n\
+             M106 P2 S0 \nSTART\n"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("END\nM141 S0;set chamber_temperature\n"));
+    // A start G-code that sets the chamber itself is left to.
+    let own = PrintSettings {
+        machine_start_gcode: Some("  M191 S50\nSTART".into()),
+        ..heated.clone()
+    };
+    let text = printed(1, &own);
+    assert!(!text.contains("M191 S45"));
+    assert!(text.contains("M141 S0"));
+    // Without a temperature, or not asked for, nothing.
+    for off in [
+        PrintSettings {
+            chamber_temperature: 0.0,
+            ..heated.clone()
+        },
+        PrintSettings {
+            activate_chamber_temp_control: false,
+            ..heated
+        },
+    ] {
+        let text = printed(1, &off);
+        assert!(!text.contains("M191") && !text.contains("M141"));
+    }
+    assert!(sets_chamber("M141 S40") && sets_chamber("\tM191") && !sets_chamber("M1410 S2"));
+    assert!(!sets_chamber("; M141 S40") && !sets_chamber("G1 M141"));
+}
+
+#[test]
+fn a_running_part_fan_is_never_told_less_than_the_printers_floor() {
+    let ramped = PrintSettings {
+        fan_min_speed: 10.0,
+        fan_max_speed: 60.0,
+        full_fan_speed_layer: 5,
+        close_fan_the_first_x_layers: 1,
+        ..basic()
+    };
+    let speeds = |settings: &PrintSettings| -> Vec<u32> {
+        printed(6, settings)
+            .lines()
+            .filter_map(|line| line.strip_prefix("M106 S"))
+            .map(|speed| speed.parse().unwrap())
+            .collect()
+    };
+    let free = speeds(&ramped);
+    assert!(
+        free.iter().any(|speed| (1..102).contains(speed)),
+        "{free:?}"
+    );
+    let floored = speeds(&PrintSettings {
+        part_fan_floor: cooling::pwm(40.0),
+        ..ramped
+    });
+    // The same commands, each raised to the floor where it runs at all.
+    assert_eq!(free.len(), floored.len());
+    for (free, floored) in free.iter().zip(&floored) {
+        assert_eq!(*floored, if *free == 0 { 0 } else { (*free).max(102) });
+    }
+}
+
+#[test]
+fn support_interfaces_have_a_fan_speed_of_their_own_once_the_fan_is_on() {
+    let part = [wall(0.0, 0.0, 10.0, 0)];
+    let support = [
+        line((20.0, 0.0), (30.0, 0.0), Role::Support),
+        line((20.0, 6.0), (30.0, 6.0), Role::SupportInterface),
+    ];
+    let layers: Vec<Layer<'_>> = [0.2, 0.4]
+        .into_iter()
+        .map(|z| Layer {
+            z,
+            support: &support,
+            ..one_layer(&part, &[0..1], &[])[0]
+        })
+        .collect();
+    let settings = PrintSettings {
+        support_interface_fan_speed: Some(30.0),
+        close_fan_the_first_x_layers: 1,
+        ..basic()
+    };
+    let text = print(&layers, &settings).0;
+    let (first, second) = text.split_at(text.rfind(";LAYER_CHANGE").unwrap());
+    // Not while the fan is kept off.
+    assert!(!first.contains("M106 S76"), "{first}");
+    // On for the interface, back to the layer's for what follows.
+    let order: Vec<&str> = second
+        .lines()
+        .filter(|line| line.starts_with(";TYPE:") || line.starts_with("M106 S"))
+        .collect();
+    assert_eq!(
+        order,
+        [
+            ";TYPE:Support",
+            "M106 S76",
+            ";TYPE:Support interface",
+            "M106 S255",
+            ";TYPE:Outer wall",
+            "M106 S0"
+        ],
+        "{second}"
+    );
+    // None asked for: the layer's speed throughout.
+    let plain = print(&layers, &basic()).0;
+    assert!(!plain.contains("M106 S76"));
+}
+
+fn jerks(form: JerkForm) -> settings::Jerks {
+    settings::Jerks {
+        default: 8.0,
+        outer_wall: 6.0,
+        inner_wall: 7.0,
+        infill: 10.0,
+        top_surface: 5.0,
+        initial_layer: 4.0,
+        travel: 12.0,
+        first_layer_travel: 3.0,
+        form,
+        max: [0.0, 0.0],
+        bambu: None,
+    }
+}
+
+#[test]
+fn each_kind_of_line_has_its_jerk() {
+    let j = jerks(JerkForm::Marlin);
+    assert_eq!(j.of_line(Role::ExternalPerimeter, true), 4.0);
+    assert_eq!(j.of_line(Role::ExternalPerimeter, false), 6.0);
+    assert_eq!(j.of_line(Role::Perimeter, false), 7.0);
+    assert_eq!(j.of_line(Role::TopSolidInfill, false), 5.0);
+    assert_eq!(j.of_line(Role::SparseInfill, false), 10.0);
+    assert_eq!(j.of_line(Role::Ironing, false), 10.0);
+    // Overhang walls, gap fill and support are none of those.
+    assert_eq!(j.of_line(Role::OverhangPerimeter, false), 8.0);
+    assert_eq!(j.of_line(Role::GapFill, false), 8.0);
+    assert_eq!(j.of_line(Role::Support, false), 8.0);
+    let unset = settings::Jerks {
+        top_surface: 0.0,
+        ..j
+    };
+    assert_eq!(unset.of_line(Role::TopSolidInfill, false), 10.0);
+}
+
+#[test]
+fn jerks_are_set_with_the_acceleration_before_each_feature() {
+    // Marlin: `M205 X Y` after the acceleration, before the tag.
+    let marlin = PrintSettings {
+        acceleration_form: AccelerationForm::Single,
+        default_acceleration: 10000.0,
+        outer_wall_acceleration: 5000.0,
+        jerks: Some(jerks(JerkForm::Marlin)),
+        ..basic()
+    };
+    let text = printed(2, &marlin);
+    let (first, second) = text.split_at(text.rfind(";LAYER_CHANGE").unwrap());
+    // The first layer's jerk, and its travels' own.
+    assert!(
+        first.contains("M205 X4 Y4\n") && first.contains("M205 X3 Y3\n"),
+        "{first}"
+    );
+    assert!(
+        second.contains("M204 S5000\nM205 X6 Y6\n;TYPE:Outer wall"),
+        "{second}"
+    );
+    assert!(
+        second.contains("M205 X10 Y10\n;TYPE:Sparse infill"),
+        "{second}"
+    );
+    // Back to the default as the second layer starts, then the travel's.
+    assert!(second.contains("M205 X8 Y8\n") && second.contains("M205 X12 Y12\n"));
+    // Held to the machine's: no command for a jerk that comes out the same.
+    let held = PrintSettings {
+        jerks: Some(settings::Jerks {
+            max: [9.0, 9.0],
+            ..jerks(JerkForm::Marlin)
+        }),
+        ..marlin.clone()
+    };
+    assert!(!printed(2, &held).contains("M205 X10") && !printed(2, &held).contains("M205 X12"));
+    // Klipper: one line for both.
+    let klipper = PrintSettings {
+        acceleration_form: AccelerationForm::Klipper,
+        jerks: Some(jerks(JerkForm::Klipper)),
+        ..marlin.clone()
+    };
+    let text = printed(2, &klipper);
+    assert!(
+        text.contains("SET_VELOCITY_LIMIT ACCEL=5000 SQUARE_CORNER_VELOCITY=6\n;TYPE:Outer wall"),
+        "{text}"
+    );
+    // A template that sets a jerk is followed by the writer's again.
+    let told = PrintSettings {
+        layer_change_gcode: Some("M205 X20 Y20".into()),
+        ..marlin.clone()
+    };
+    let text = printed(2, &told);
+    let second = text.split(";LAYER_CHANGE").last().unwrap();
+    assert!(second.contains("M205 X20 Y20\n"), "{second}");
+    assert!(sets_jerk("m205 x5") && sets_jerk("SET_VELOCITY_LIMIT SQUARE_CORNER_VELOCITY=5"));
+    assert!(!sets_jerk("M205 J0.02") && !sets_jerk("SET_VELOCITY_LIMIT ACCEL=500"));
+    // Without a default jerk, none.
+    assert!(
+        !printed(
+            2,
+            &PrintSettings {
+                jerks: None,
+                ..marlin
+            }
+        )
+        .contains("M205")
+    );
+}
+
+#[test]
+fn marlin_2_is_told_its_junction_deviation_on_the_first_layer() {
+    let settings = PrintSettings {
+        junction_deviation: Some((0.02, 0.013)),
+        ..basic()
+    };
+    let text = printed(3, &settings);
+    assert_eq!(text.matches("M205 J").count(), 1, "{text}");
+    assert!(text.contains("M205 J0.013\n"));
+    let read = |json: &str| {
+        PrintSettings::from_settings(&edge_config::Settings::from_json(json).unwrap())
+            .unwrap()
+            .junction_deviation
+    };
+    let marlin2 = r#"{"gcode_flavor": "marlin2", "default_junction_deviation": "0.02",
+        "machine_max_junction_deviation": ["0.05", "0.05"]}"#;
+    assert_eq!(read(marlin2), Some((0.02, 0.05)));
+    assert_eq!(read(&marlin2.replace("marlin2", "klipper")), None);
+    assert_eq!(read(&marlin2.replace("\"0.05\"", "\"0\"")), None);
+}
+
+#[test]
+fn speeds_climb_from_the_first_layers_over_the_slowed_down_layers() {
+    let settings = PrintSettings {
+        slow_down_layers: 4,
+        initial_layer_speed: 40.0,
+        initial_layer_infill_speed: 80.0,
+        outer_wall_speed: 120.0,
+        sparse_infill_speed: 200.0,
+        ..basic()
+    };
+    let text = printed(6, &settings);
+    let layers: Vec<&str> = text.split(";LAYER_CHANGE").skip(1).collect();
+    let feeds = |feature: &str| -> Vec<f64> {
+        layers
+            .iter()
+            .map(|layer| feed_of(layer, feature).unwrap() / 60.0)
+            .collect()
+    };
+    // A quarter of the way more on each layer, the walls from the first
+    // layer's wall speed, the fill from its fill speed.
+    assert_eq!(feeds("Outer wall"), [40.0, 60.0, 80.0, 100.0, 120.0, 120.0]);
+    assert_eq!(
+        feeds("Sparse infill")[1..],
+        [110.0, 140.0, 170.0, 200.0, 200.0]
+    );
+    // Above a raft of two layers, from the first layer above it.
+    let raft = PrintSettings {
+        raft_layers: 2,
+        ..settings.clone()
+    };
+    let text = printed(6, &raft);
+    let walls: Vec<f64> = text
+        .split(";LAYER_CHANGE")
+        .skip(1)
+        .map(|layer| feed_of(layer, "Outer wall").unwrap() / 60.0)
+        .collect();
+    assert_eq!(walls[1..], [120.0, 120.0, 60.0, 80.0, 100.0]);
+    // One layer or none: nothing slowed.
+    let text = printed(
+        3,
+        &PrintSettings {
+            slow_down_layers: 1,
+            ..settings
+        },
+    );
+    let second = text.split(";LAYER_CHANGE").nth(2).unwrap();
+    assert_eq!(feed_of(second, "Outer wall"), Some(7200.0));
+}
+
+#[test]
+fn short_support_lines_go_at_their_own_speed() {
+    let part = [wall(0.0, 0.0, 10.0, 0)];
+    let support = [
+        line((20.0, 0.0), (30.0, 0.0), Role::Support),
+        line((20.0, 3.0), (25.0, 3.0), Role::Support),
+        line((20.0, 6.0), (25.0, 6.0), Role::SupportInterface),
+    ];
+    let layers: Vec<Layer<'_>> = [0.2, 0.4]
+        .into_iter()
+        .map(|z| Layer {
+            z,
+            support: &support,
+            ..one_layer(&part, &[0..1], &[])[0]
+        })
+        .collect();
+    let settings = PrintSettings {
+        support_speed: 150.0,
+        support_interface_speed: 80.0,
+        // 6.28 mm or shorter.
+        small_support_perimeter_threshold: 1.0,
+        small_support_perimeter_speed: FloatOrPercent::Percent(30.0),
+        ..basic()
+    };
+    let feeds = |settings: &PrintSettings| -> Vec<f64> {
+        let text = print(&layers, settings).0;
+        let second = text.split(";LAYER_CHANGE").nth(2).unwrap().to_owned();
+        let mut feed = 0.0;
+        let mut out = Vec::new();
+        let mut support = false;
+        for line in second.lines() {
+            if let Some(kind) = line.strip_prefix(";TYPE:") {
+                support = kind.starts_with("Support");
+            }
+            if let Some(f) = word(line, 'F') {
+                feed = f;
+            }
+            if support && line.starts_with("G1 X") && line.contains(" E") {
+                out.push(feed / 60.0);
+            }
+        }
+        out
+    };
+    let mut speeds = feeds(&settings);
+    speeds.sort_by(f64::total_cmp);
+    assert_eq!(speeds, [24.0, 45.0, 150.0]);
+    // At nothing, half the line's own.
+    let half = PrintSettings {
+        small_support_perimeter_speed: FloatOrPercent::Value(0.0),
+        ..settings.clone()
+    };
+    let mut speeds = feeds(&half);
+    speeds.sort_by(f64::total_cmp);
+    assert_eq!(speeds, [40.0, 75.0, 150.0]);
+    // A threshold of 0: none.
+    let off = PrintSettings {
+        small_support_perimeter_threshold: 0.0,
+        ..settings
+    };
+    let mut speeds = feeds(&off);
+    speeds.sort_by(f64::total_cmp);
+    assert_eq!(speeds, [80.0, 150.0, 150.0]);
+}
+
+#[test]
+fn a_filament_changed_by_hand_is_a_comment_and_starts_without_the_change_gcode() {
+    let manual = two_tools(Some("; change\nM400")).map(|tool| PrintSettings {
+        manual_filament_change: true,
+        ..tool
+    });
+    let (text, summary) = in_filaments(&[&[0, 1], &[1, 0]], &manual);
+    assert_eq!(summary.tool_changes, 2);
+    // The first tool is taken up without the change G-code, and no tool
+    // command is written: only the comment for the person.
+    let opening = from(&text, "M83 ; use relative", 3);
+    assert_eq!(
+        opening,
+        [
+            "M83 ; use relative distances for extrusion",
+            "; MANUAL_TOOL_CHANGE T0",
+            "; filament start"
+        ]
+    );
+    assert_eq!(text.matches("; change\n").count(), 2);
+    // The start G-code's own `T0` the only tool command.
+    assert_eq!(
+        text.lines().filter(|line| line.starts_with('T')).count(),
+        1,
+        "{text}"
+    );
+    // Each change after: the change G-code, the fan set back, the comment.
+    assert!(
+        text.contains("; MANUAL_TOOL_CHANGE T1\n") && text.contains("; MANUAL_TOOL_CHANGE T0\n")
+    );
+    let after = from(&text, "; custom gcode end", 4);
+    assert!(after[1].starts_with("M106 S"), "{after:?}");
+    assert_eq!(after[2], "; MANUAL_TOOL_CHANGE T1");
+    // A template that names the change itself is left to.
+    let named =
+        two_tools(Some("; MANUAL_TOOL_CHANGE T[next_extruder]")).map(|tool| PrintSettings {
+            manual_filament_change: true,
+            ..tool
+        });
+    let (text, _) = in_filaments(&[&[0, 1], &[1, 0]], &named);
+    assert_eq!(text.matches("; MANUAL_TOOL_CHANGE T1").count(), 1, "{text}");
 }
