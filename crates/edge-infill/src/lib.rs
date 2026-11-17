@@ -11,6 +11,7 @@
 
 mod anchored;
 mod bridges;
+mod combine;
 mod connect;
 mod counterbore;
 mod curves;
@@ -22,10 +23,15 @@ pub mod lines;
 mod narrow;
 mod rectilinear;
 mod settings;
+mod smooth;
 mod surfaces;
 
+pub use combine::{Combined, combination_plan, combine_infill};
 pub use counterbore::bridge_counterbores;
-pub use fill::{FillError, FillParams, Frame, GapFillTarget, fill, fill_from, fill_within};
+pub use fill::{
+    FillError, FillParams, Frame, GapFillTarget, append_parts, fill, fill_from, fill_under_tops,
+    fill_within,
+};
 pub use internal_bridges::{
     BridgeDirection, InternalBridgeFilter, OverInfill, bridge_over_infill_by,
     second_internal_bridges,
@@ -35,7 +41,9 @@ pub use ironing::{
     iron_ramped, ironing_areas,
 };
 pub use narrow::NarrowFill;
-pub use settings::{ExtraBridgeLayer, InfillSettings, Pattern, steady_direction};
+pub use settings::{
+    ExtraBridgeLayer, InfillSettings, Pattern, extra_solid_layer, steady_direction,
+};
 pub use surfaces::{
     Anchoring, Beneath, Shells, Surface, SurfaceKind, WallsAround, anchor, classify, inside_walls,
     inside_walls_by_layer, internal, shell_depths,

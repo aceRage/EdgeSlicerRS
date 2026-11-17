@@ -44,6 +44,38 @@ pub struct FillParams {
     pub sparse_angle: f64,
     /// Direction of solid lines on even layers; odd layers are turned 90°.
     pub solid_angle: f64,
+    /// The direction set for the lines of top surfaces and of bottom
+    /// surfaces, radians counter-clockwise from +x (`top_layer_direction`,
+    /// `bottom_layer_direction`), the same on every layer; none keeps
+    /// them to the solid fill's (Fill.cpp `group_fills`, "optional
+    /// absolute direction for the top / bottom surfaces", which marks
+    /// the angle a template angle so that it is not turned from layer
+    /// to layer). A bottom's direction is a bridge's too where the
+    /// bridge has no direction of its own: the reference counts a bridge
+    /// over air as a bottom surface.
+    pub top_angle: Option<f64>,
+    pub bottom_angle: Option<f64>,
+    /// How closely the lines of top surfaces and of bottom surfaces are
+    /// laid, from 0 to 1 (`top_surface_density`, `bottom_surface_density`):
+    /// below 1 they keep their width and lie that much further apart,
+    /// on the object's grid as any fill short of full does; a top of
+    /// none is left to its walls (Fill.cpp `group_fills`, "a 0% top
+    /// surface density means walls only").
+    pub top_density: f64,
+    pub bottom_density: f64,
+    /// How the solid fill just under a top surface is laid where
+    /// `undertop_surface_pattern` sets it apart: whether its lines are
+    /// joined end to end and swept in order, as for the other solid
+    /// fill. None lays it as all solid fill inside the part is. See
+    /// [`fill_under_tops`].
+    pub under_top: Option<(bool, bool)>,
+    /// How much the corners of a sparse pattern are rounded, from 0 to
+    /// 1, and the G-code resolution in mm the rounded corners keep to
+    /// (`sparse_infill_smooth_factor`, `resolution`): only for the
+    /// patterns the reference rounds (PrintConfig.hpp
+    /// `is_smoothable_infill_pattern`: Hilbert curve, octagram spiral,
+    /// honeycomb, 3D honeycomb and cross hatch). None leaves them sharp.
+    pub smooth: Option<(f64, f64)>,
     /// Whether lines laid in the fill's own direction turn a quarter on
     /// odd layers, as they do unless Z contouring keeps them steady
     /// ([`crate::InfillSettings::steady_direction`]).
@@ -443,6 +475,7 @@ pub fn fill_within(
         let (flow, role, spacing, lay, angles): (Flow, Role, f64, Lay, &[f64]) = match surface.kind
         {
             SurfaceKind::Sparse if params.density <= 0.0 => continue,
+            SurfaceKind::Top if params.top_density <= 0.0 => continue,
             SurfaceKind::Sparse => match params.pattern {
                 Pattern::Lines => (
                     params.sparse,
@@ -500,7 +533,7 @@ pub fn fill_within(
                 Role::TopSolidInfill,
                 params.top.spacing,
                 Lay::Spiral,
-                &[params.solid_angle + FRAC_PI_2],
+                &[params.top_angle.unwrap_or(params.solid_angle) + FRAC_PI_2],
             ),
             SurfaceKind::Top => (
                 params.top,
@@ -510,9 +543,9 @@ pub fn fill_within(
                     joined: params.top_joined,
                     ordered: params.top_ordered,
                     placed: Placed::Fitted,
-                    density: 1.0,
+                    density: params.top_density,
                 },
-                &[params.solid_angle + turned],
+                &[params.top_angle.unwrap_or(params.solid_angle + turned)],
             ),
             // From support to support where that is known. A bridge is
             // laid as solid lines are (Fill.cpp `group_fills`: the
@@ -532,7 +565,10 @@ pub fn fill_within(
                     placed: Placed::Grid,
                     density: params.bridge.spacing / params.bridge_spacing,
                 },
-                &[surface.angle.unwrap_or(params.solid_angle + turned)],
+                &[surface
+                    .angle
+                    .or(params.bottom_angle)
+                    .unwrap_or(params.solid_angle + turned)],
             ),
             // Across the sparse lines beneath, unless the surface has a
             // direction of its own: a second layer of bridge is laid
@@ -560,9 +596,9 @@ pub fn fill_within(
                     joined: params.bottom_joined,
                     ordered: params.bottom_ordered,
                     placed: Placed::Fitted,
-                    density: 1.0,
+                    density: params.bottom_density,
                 },
-                &[params.solid_angle + turned],
+                &[params.bottom_angle.unwrap_or(params.solid_angle + turned)],
             ),
             // Solid fill inside the part is fitted to its area as top
             // and bottom surfaces are: FillRectilinear.cpp
@@ -709,7 +745,19 @@ pub fn fill_within(
                             },
                         )
                     });
-                    let pattern = match params.pattern {
+                    // Corners rounded as the pattern is made, before it is
+                    // cut to the area, as there.
+                    let smoothing = params.smooth.filter(|_| {
+                        matches!(
+                            params.pattern,
+                            Pattern::Hilbert
+                                | Pattern::Octagram
+                                | Pattern::Honeycomb
+                                | Pattern::Honeycomb3D
+                                | Pattern::CrossHatch
+                        )
+                    });
+                    let mut pattern = match params.pattern {
                         Pattern::Gyroid => {
                             curves::gyroid(bounds, flow.spacing, params.density, params.z)
                         }
@@ -775,10 +823,23 @@ pub fn fill_within(
                                 Pattern::Archimedean => curves::Curve::Archimedean,
                                 _ => curves::Curve::Octagram,
                             };
-                            curves::plane_path(curve, over, flow.spacing, params.density)
+                            curves::plane_path(curve, over, flow.spacing, params.density, smoothing)
                         }
                         _ => curves::crosshatch(bounds, flow.spacing, params.density, params.z),
                     };
+                    // The plane paths are rounded as they are made, in
+                    // units of their pitch; the others here, in whole
+                    // units (FillHoneycomb.cpp, Fill3DHoneycomb.cpp,
+                    // FillCrossHatch.cpp).
+                    if let Some((factor, resolution)) = smoothing
+                        && !matches!(params.pattern, Pattern::Hilbert | Pattern::Octagram)
+                    {
+                        crate::smooth::smooth_lines(
+                            &mut pattern,
+                            factor,
+                            resolution * edge_geom::UNITS_PER_MM,
+                        );
+                    }
                     // Honeycomb's pieces are all kept; the others drop
                     // the scraps.
                     let least = match params.pattern {
@@ -825,9 +886,16 @@ pub fn fill_within(
                 let inside =
                     edge_clip::offset(std::slice::from_ref(&surface.area), -line / 2, Join::MITER)?;
                 // `_infill_direction` works the angle in single precision.
-                let angle = f64::from(params.solid_angle as f32 + std::f32::consts::FRAC_PI_2);
-                for chords in spiral_chords(&inside, angle, flow.spacing, params.flow_calib_order)?
-                {
+                let along = params.top_angle.unwrap_or(params.solid_angle);
+                let angle = f64::from(along as f32 + std::f32::consts::FRAC_PI_2);
+                // Short of full density the spiral's turns lie that much
+                // further apart (FillPlanePath.cpp, `spacing / density`).
+                for chords in spiral_chords(
+                    &inside,
+                    angle,
+                    (flow.spacing, params.top_density),
+                    params.flow_calib_order,
+                )? {
                     for (index, points) in chords.into_iter().enumerate() {
                         paths.push(ExtrusionPath {
                             points,
@@ -1080,6 +1148,8 @@ pub fn fill_within(
             // Fill laid thinner than solid has no gaps filled
             // (FillBase.cpp `_create_gap_fill`, `params.density >= 1`).
             (_, SurfaceKind::InternalSolid) if params.solid_density(layer_index) < 1.0 => false,
+            (_, SurfaceKind::Top) if params.top_density < 1.0 => false,
+            (_, SurfaceKind::Bottom) if params.bottom_density < 1.0 => false,
             (_, SurfaceKind::Top | SurfaceKind::Bottom) => true,
             (GapFillTarget::Everywhere, SurfaceKind::InternalSolid) => true,
             _ => false,
@@ -1123,6 +1193,114 @@ pub fn fill_within(
         }
     }
     Ok(paths)
+}
+
+/// As [`fill_within`], with the solid fill inside the part that lies
+/// under a top surface of the layer above (`upper_tops`) laid by
+/// [`FillParams::under_top`], where that is set (Fill.cpp `group_fills`,
+/// `is_undertop`: a surface of solid fill is under a top when the top's
+/// outline crosses it or it lies wholly within the top). The reference
+/// fills it as a group of its own, with its own pattern, and so it is
+/// filled here: after the rest of the layer, its narrow parts told
+/// from its wide ones by themselves.
+pub fn fill_under_tops(
+    surfaces: &[Surface],
+    upper_tops: &[ExPolygon],
+    layer_index: usize,
+    params: &FillParams,
+    frame_of: &dyn Fn(&Surface) -> Frame,
+    no_overlap: &[ExPolygon],
+) -> Result<Vec<ExtrusionPath>, FillError> {
+    let Some((joined, ordered)) = params.under_top else {
+        return fill_within(surfaces, layer_index, params, frame_of, no_overlap);
+    };
+    let mut under = Vec::new();
+    let mut rest = Vec::new();
+    for surface in surfaces {
+        let below = surface.kind == SurfaceKind::InternalSolid
+            && upper_tops
+                .iter()
+                .map(|top| overlaps(&surface.area, top))
+                .try_fold(false, |any, found| found.map(|found| any || found))?;
+        if below {
+            under.push(surface.clone());
+        } else {
+            rest.push(surface.clone());
+        }
+    }
+    if under.is_empty() {
+        return fill_within(surfaces, layer_index, params, frame_of, no_overlap);
+    }
+    let mut paths = fill_within(&rest, layer_index, params, frame_of, no_overlap)?;
+    let own = FillParams {
+        solid_joined: joined,
+        solid_ordered: ordered,
+        ..*params
+    };
+    append_parts(
+        &mut paths,
+        fill_within(&under, layer_index, &own, frame_of, no_overlap)?,
+    );
+    Ok(paths)
+}
+
+/// Adds the paths of another fill of the same layer after `paths`, its
+/// parts numbered on from theirs, so that no part of one runs into a part
+/// of the other.
+pub fn append_parts(paths: &mut Vec<ExtrusionPath>, more: Vec<ExtrusionPath>) {
+    let flags = ExtrusionPath::LOOPED | ExtrusionPath::KEPT_WAY;
+    let past = paths
+        .iter()
+        .map(|path| path.part & !flags)
+        .max()
+        .unwrap_or(0);
+    for mut path in more {
+        path.part = (path.part & flags) | ((path.part & !flags) + past);
+        paths.push(path);
+    }
+}
+
+/// Whether `other` overlaps `area` (ExPolygon.cpp `ExPolygon::overlaps`):
+/// some of its outline lies inside `area`, or `area` lies within it.
+fn overlaps(area: &ExPolygon, other: &ExPolygon) -> Result<bool, ClipError> {
+    let rings: Vec<Vec<Point2>> = std::iter::once(&other.contour)
+        .chain(&other.holes)
+        .filter(|ring| !ring.points.is_empty())
+        .map(|ring| {
+            let mut line = ring.points.clone();
+            line.push(ring.points[0]);
+            line
+        })
+        .collect();
+    if !edge_clip::clip_lines(&rings, std::slice::from_ref(area))?.is_empty() {
+        return Ok(true);
+    }
+    Ok(area
+        .contour
+        .points
+        .first()
+        .is_some_and(|&point| expolygon_contains(other, point)))
+}
+
+/// Whether a point lies inside a region and none of its holes, by the
+/// crossings of a ray (Polygon.cpp `Polygon::contains`).
+fn expolygon_contains(region: &ExPolygon, point: Point2) -> bool {
+    let inside = |ring: &edge_geom::Polygon| {
+        let mut result = false;
+        let points = &ring.points;
+        for (at, &a) in points.iter().enumerate() {
+            let b = points[(at + 1) % points.len()];
+            if (a.y > point.y) != (b.y > point.y) {
+                let cross =
+                    (b.x - a.x) as f64 * (point.y - a.y) as f64 / (b.y - a.y) as f64 + a.x as f64;
+                if (point.x as f64) < cross {
+                    result = !result;
+                }
+            }
+        }
+        result
+    };
+    inside(&region.contour) && !region.holes.iter().any(inside)
 }
 
 /// A layer's surfaces to fill with lines, and its areas to fill with loops.
@@ -1214,7 +1392,7 @@ fn rotated(point: Point2, angle: f64) -> Point2 {
 fn spiral_chords(
     areas: &[ExPolygon],
     angle: f64,
-    spacing: f64,
+    (spacing, density): (f64, f64),
     calibration: bool,
 ) -> Result<Vec<Vec<Vec<Point2>>>, FillError> {
     /// libslic3r's `SCALED_EPSILON`.
@@ -1263,7 +1441,8 @@ fn spiral_chords(
                 y: high.y + SCALED_EPSILON,
             },
         );
-        let pattern = curves::plane_path(curves::Curve::Archimedean, bounds, spacing, 1.0);
+        let pattern =
+            curves::plane_path(curves::Curve::Archimedean, bounds, spacing, density, None);
         if pattern.first().is_none_or(|line| line.len() < 2) {
             continue;
         }
@@ -1547,6 +1726,12 @@ mod tests {
             pattern,
             sparse_angle: 45f64.to_radians(),
             solid_angle: 45f64.to_radians(),
+            top_angle: None,
+            bottom_angle: None,
+            top_density: 1.0,
+            bottom_density: 1.0,
+            under_top: None,
+            smooth: None,
             alternate: true,
             sparse_link_max: 0.0,
             sparse_anchor: 0.0,
@@ -1610,6 +1795,52 @@ mod tests {
         let even = fill(&[surface(SurfaceKind::InternalSolid, 20.0)], 0, &params).unwrap();
         let odd = fill(&[surface(SurfaceKind::InternalSolid, 20.0)], 1, &params).unwrap();
         assert!(even.iter().all(rises) && !odd.iter().any(rises));
+    }
+
+    #[test]
+    fn a_direction_set_for_top_and_bottom_surfaces_holds_on_every_layer() {
+        // The direction of a path's longest stretch, in degrees from 0
+        // to 180.
+        let direction = |paths: &[ExtrusionPath]| -> f64 {
+            let mut best = (0.0, 0.0);
+            for path in paths {
+                for pair in path.points.windows(2) {
+                    let (dx, dy) = (
+                        (pair[1].x - pair[0].x) as f64,
+                        (pair[1].y - pair[0].y) as f64,
+                    );
+                    if dx.hypot(dy) > best.0 {
+                        best = (dx.hypot(dy), dy.atan2(dx).to_degrees().rem_euclid(180.0));
+                    }
+                }
+            }
+            best.1
+        };
+        let set = FillParams {
+            top_angle: Some(70f64.to_radians()),
+            bottom_angle: Some(30f64.to_radians()),
+            ..params(Pattern::Grid, 0.2)
+        };
+        for layer in [0, 1, 2, 3] {
+            let lay = |kind| fill(&[surface(kind, 20.0)], layer, &set).unwrap();
+            assert!((direction(&lay(SurfaceKind::Top)) - 70.0).abs() < 0.1);
+            assert!((direction(&lay(SurfaceKind::Bottom)) - 30.0).abs() < 0.1);
+            // A bridge over air with no direction of its own is laid as
+            // a bottom; solid fill inside keeps turning.
+            assert!((direction(&lay(SurfaceKind::Bridge)) - 30.0).abs() < 0.1);
+            let solid = 45.0 + if layer % 2 == 1 { 90.0 } else { 0.0 };
+            assert!((direction(&lay(SurfaceKind::InternalSolid)) - solid).abs() < 0.1);
+        }
+        // A bridge that has a direction keeps it.
+        let bridge = Surface {
+            angle: Some(0.0),
+            ..surface(SurfaceKind::Bridge, 20.0)
+        };
+        assert!(direction(&fill(&[bridge], 1, &set).unwrap()).abs() < 0.1);
+        // Unset, they turn with the solid fill.
+        let unset = params(Pattern::Grid, 0.2);
+        let bottom = fill(&[surface(SurfaceKind::Bottom, 20.0)], 1, &unset).unwrap();
+        assert!((direction(&bottom) - 135.0).abs() < 0.1);
     }
 
     #[test]
@@ -2436,6 +2667,139 @@ mod tests {
         let mut gaps: Vec<f64> = across.windows(2).map(|pair| pair[1] - pair[0]).collect();
         gaps.sort_by(f64::total_cmp);
         (gaps[gaps.len() / 2], across.len())
+    }
+
+    #[test]
+    fn the_corners_of_the_patterns_the_reference_rounds_are_rounded() {
+        let area = [surface(SurfaceKind::Sparse, 30.0)];
+        let points = |paths: &[ExtrusionPath]| paths.iter().map(|p| p.points.len()).sum::<usize>();
+        for pattern in [
+            Pattern::Honeycomb,
+            Pattern::Hilbert,
+            Pattern::Octagram,
+            Pattern::CrossHatch,
+            Pattern::Honeycomb3D,
+            Pattern::Gyroid,
+        ] {
+            let sharp = FillParams {
+                z: 2.3,
+                ..params(pattern, 0.2)
+            };
+            let round = FillParams {
+                smooth: Some((0.6, 0.01)),
+                ..sharp
+            };
+            let (before, after) = (
+                fill(&area, 3, &sharp).unwrap(),
+                fill(&area, 3, &round).unwrap(),
+            );
+            if pattern == Pattern::Gyroid {
+                // Not one the reference rounds.
+                assert_eq!(before, after);
+                continue;
+            }
+            // More vertices, cutting each corner: shorter (the octagram
+            // spiral, all short legs, by near a fifth, as there).
+            assert!(points(&after) > points(&before), "{pattern:?}");
+            let share = length(&after) / length(&before);
+            assert!(share < 1.0 && share > 0.75, "{pattern:?} {share}");
+        }
+    }
+
+    #[test]
+    fn solid_fill_under_a_top_is_laid_by_its_own_pattern() {
+        let frame = |_: &Surface| Frame {
+            origin: Point2::from_mm(0.0, 0.0),
+            bounds: None,
+        };
+        // Separate lines, swept in order, under a top.
+        let params = FillParams {
+            under_top: Some((false, true)),
+            ..params(Pattern::Grid, 0.2)
+        };
+        let solid = [surface(SurfaceKind::InternalSolid, 20.0)];
+        let joined = fill(&solid, 1, &params).unwrap();
+        let shifted = |dx: f64, side: f64| {
+            let mut top = surface(SurfaceKind::Top, side).area;
+            for point in &mut top.contour.points {
+                point.x += scaled(dx);
+            }
+            top
+        };
+        let lay =
+            |tops: &[ExPolygon]| fill_under_tops(&solid, tops, 1, &params, &frame, &[]).unwrap();
+        // A top crossing it, and a top it lies wholly within.
+        for top in [shifted(10.0, 20.0), shifted(-5.0, 40.0)] {
+            let apart = lay(std::slice::from_ref(&top));
+            assert!(
+                apart.len() > 2 * joined.len(),
+                "{} {}",
+                apart.len(),
+                joined.len()
+            );
+            assert!((length(&apart) - length(&joined)).abs() / length(&joined) < 0.05);
+        }
+        // A top beside it, or none, leaves it as it was.
+        assert_eq!(lay(&[shifted(30.0, 5.0)]), joined);
+        assert_eq!(lay(&[]), joined);
+        // Unset, a top above changes nothing.
+        let plain = FillParams {
+            under_top: None,
+            ..params
+        };
+        let unset =
+            fill_under_tops(&solid, &[shifted(10.0, 20.0)], 1, &plain, &frame, &[]).unwrap();
+        assert_eq!(unset, joined);
+    }
+
+    #[test]
+    fn top_and_bottom_surfaces_short_of_full_lie_further_apart() {
+        let full = params(Pattern::Lines, 0.2);
+        let thin = FillParams {
+            top_density: 0.6,
+            bottom_density: 0.5,
+            gap_fill: GapFillTarget::Everywhere,
+            ..full
+        };
+        for (kind, share, flow) in [
+            (SurfaceKind::Top, 0.6, full.top),
+            (SurfaceKind::Bottom, 0.5, full.solid),
+        ] {
+            let area = [surface(kind, 20.0)];
+            let usual = fill(&area, 1, &full).unwrap();
+            let thinned = fill(&area, 1, &thin).unwrap();
+            let angle = 135f64.to_radians();
+            let (pitch, _) = pitch_of(&thinned, angle);
+            // On the grid at the pitch over the density, each line as
+            // wide as ever.
+            assert!((pitch - flow.spacing / share).abs() < 1e-3, "{pitch}");
+            assert!(thinned.iter().all(|line| line.flow == flow));
+            let laid = length(&thinned) / length(&usual);
+            assert!((laid - share).abs() < 0.04, "{kind:?} {laid}");
+            // What thinned lines leave bare is not gap filled.
+            let bare = fill_within(
+                &area,
+                1,
+                &thin,
+                &|_| Frame {
+                    origin: thin.origin,
+                    bounds: None,
+                },
+                &[area[0].area.clone()],
+            )
+            .unwrap();
+            assert!(bare.iter().all(|path| path.role != Role::GapFill));
+        }
+        // A top of none is left to its walls.
+        let none = FillParams {
+            top_density: 0.0,
+            ..full
+        };
+        assert!(
+            fill(&[surface(SurfaceKind::Top, 20.0)], 1, &none)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

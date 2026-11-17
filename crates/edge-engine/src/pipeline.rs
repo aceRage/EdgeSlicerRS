@@ -1579,6 +1579,22 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                         }
                     }
                 }
+                // Sparse fill made solid on the layers `extra_solid_infills`
+                // lists, before tops and bottoms reach into the fill beside
+                // them (PrintObject.cpp `discover_horizontal_shells`, which
+                // the reference runs ahead of `process_external_surfaces`).
+                let extra = &stages[filament].infill.extra_solid_infills;
+                if !extra.is_empty() {
+                    for (index, layer) in surfaces.iter_mut().enumerate() {
+                        if edge_infill::extra_solid_layer(extra, index) {
+                            for surface in layer.iter_mut() {
+                                if surface.kind == edge_infill::SurfaceKind::Sparse {
+                                    surface.kind = edge_infill::SurfaceKind::InternalSolid;
+                                }
+                            }
+                        }
+                    }
+                }
                 // Bridges, bottoms and tops reach into the fill beside them,
                 // and each bridge is turned to run from support to support.
                 let mut anchored =
@@ -1692,11 +1708,28 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         // A second layer of bridge over those, where the profile asks
         // (`enable_extra_bridge_layer`); over a bridge over air it is made
         // when surfaces are told apart.
-        let bridged_by = if infill.extra_bridge_layer.internal() {
+        let mut bridged_by = if infill.extra_bridge_layer.internal() {
             edge_infill::second_internal_bridges(&bridged_by, &infill.params(layer_height, false)?)?
         } else {
             bridged_by
         };
+        // Sparse fill laid once every few layers, thick, where the profile
+        // asks (`infill_combination`), after bridges over infill are laid
+        // as the reference combines it after `bridge_over_infill`.
+        let layer_heights: Vec<f64> = (0..layers.len()).map(|i| heights.height_of(i)).collect();
+        let mut combined_by: Vec<Vec<Option<edge_infill::Combined>>> =
+            Vec::with_capacity(bridged_by.len());
+        for (slot, surfaces) in bridged_by.iter_mut().enumerate() {
+            let own = &stages[slot].infill;
+            combined_by.push(match own.combination {
+                Some(most) => {
+                    let plan = edge_infill::combination_plan(&layer_heights, most);
+                    let (clearance, least) = own.combination_clearance(layer_height)?;
+                    edge_infill::combine_infill(surfaces, &layer_heights, &plan, clearance, least)?
+                }
+                None => vec![None; surfaces.len()],
+            });
+        }
         classify_time += classifying.elapsed();
         // Every filament's layers side by side, as the walls are.
         //
@@ -1711,6 +1744,43 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             .map(|at| {
                 let (filament, index) = (at / count, at % count);
                 let params = params_of(filament, index).map_err(|e| e.to_string())?;
+                // The sparse fill this layer lays for the layers under it
+                // too: laid as the layer's own is, turned by the group's
+                // count of layers (FillBase.cpp `_infill_direction`,
+                // `layer_id / thickness_layers`), each line as high as the
+                // layers together.
+                let combined = || -> Result<Vec<ExtrusionPath>, String> {
+                    let Some(combined) = &combined_by[filament][index] else {
+                        return Ok(Vec::new());
+                    };
+                    let surfaces: Vec<edge_infill::Surface> = combined
+                        .areas
+                        .iter()
+                        .map(|area| edge_infill::Surface {
+                            kind: edge_infill::SurfaceKind::Sparse,
+                            area: area.clone(),
+                            angle: None,
+                        })
+                        .collect();
+                    let thick = stages[filament]
+                        .infill
+                        .sparse_flow(combined.thickness)
+                        .map_err(|e| e.to_string())?;
+                    let mut paths = edge_infill::fill_within(
+                        &surfaces,
+                        index / combined.layers,
+                        &params,
+                        &frame,
+                        &[],
+                    )
+                    .map_err(|e| e.to_string())?;
+                    for path in &mut paths {
+                        if path.role == edge_extrusion::Role::SparseInfill {
+                            path.flow = thick;
+                        }
+                    }
+                    Ok(paths)
+                };
                 let mut alike = vec![filament];
                 if regions.any() {
                     let settings_of = |slot: usize| {
@@ -1729,16 +1799,31 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                     for (other, surfaces) in bridged_by.iter().enumerate() {
                         if other < filament && same(other)? && !surfaces[index].is_empty() {
                             // An earlier region lays this one's lines.
-                            return Ok(Vec::new());
+                            return combined();
                         }
                         if other > filament && same(other)? {
                             alike.push(other);
                         }
                     }
                 }
+                // The top surfaces of the layer above, in every filament,
+                // where the solid fill under them is laid apart
+                // (`undertop_surface_pattern`).
+                let upper_tops: Vec<ExPolygon> = if params.under_top.is_some() {
+                    bridged_by
+                        .iter()
+                        .filter_map(|layers| layers.get(index + 1))
+                        .flatten()
+                        .filter(|surface| surface.kind == edge_infill::SurfaceKind::Top)
+                        .map(|surface| surface.area.clone())
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 if alike.len() == 1 {
-                    return edge_infill::fill_within(
+                    let mut paths = edge_infill::fill_under_tops(
                         &bridged_by[filament][index],
+                        &upper_tops,
                         index,
                         &params,
                         &frame,
@@ -1746,7 +1831,9 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                         // for the fill's own gap fill.
                         &walls_by[filament][index].infill_no_overlap,
                     )
-                    .map_err(|e| e.to_string());
+                    .map_err(|e| e.to_string())?;
+                    edge_infill::append_parts(&mut paths, combined()?);
+                    return Ok(paths);
                 }
                 let (merged, no_overlap) = crate::regions::merge_surfaces(
                     alike.iter().map(|slot| bridged_by[*slot][index].as_slice()),
@@ -1755,8 +1842,17 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                         .map(|slot| walls_by[*slot][index].infill_no_overlap.as_slice()),
                 )
                 .map_err(|e| e.to_string())?;
-                edge_infill::fill_within(&merged, index, &params, &frame, &no_overlap)
-                    .map_err(|e| e.to_string())
+                let mut paths = edge_infill::fill_under_tops(
+                    &merged,
+                    &upper_tops,
+                    index,
+                    &params,
+                    &frame,
+                    &no_overlap,
+                )
+                .map_err(|e| e.to_string())?;
+                edge_infill::append_parts(&mut paths, combined()?);
+                Ok(paths)
             })
             .collect::<Result<_, String>>()?;
         let mut filled = filled.into_iter();

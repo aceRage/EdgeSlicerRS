@@ -112,6 +112,34 @@ pub struct InfillSettings {
     /// Degrees counter-clockwise from +x.
     pub infill_direction: f64,
     pub solid_infill_direction: f64,
+    /// The direction of top surfaces' lines and of bottom surfaces',
+    /// in degrees, where it is set (`top_layer_direction`,
+    /// `bottom_layer_direction`, from 0 up; -1, the default, leaves
+    /// them to `solid_infill_direction`).
+    pub top_layer_direction: Option<f64>,
+    pub bottom_layer_direction: Option<f64>,
+    /// How closely top and bottom surfaces are laid, from 0 to 1
+    /// (`top_surface_density`, from 0%; `bottom_surface_density`, from
+    /// 10%).
+    pub top_surface_density: f64,
+    pub bottom_surface_density: f64,
+    /// How the solid fill just under a top surface is laid, where
+    /// `undertop_surface_pattern` sets it apart: whether its lines are
+    /// joined and swept in order ([`crate::FillParams::under_top`]).
+    pub under_top: Option<(bool, bool)>,
+    /// The layers whose sparse fill is made solid (`extra_solid_infills`,
+    /// read by [`extra_solid_layer`]); empty for none.
+    pub extra_solid_infills: String,
+    /// How much a sparse pattern's corners are rounded, from 0 to 1
+    /// (`sparse_infill_smooth_factor`), and the G-code resolution in mm
+    /// (`resolution`) the curves keep to.
+    pub smooth_factor: f64,
+    pub resolution: f64,
+    /// The most a group of layers whose sparse fill is laid once may
+    /// come to, in mm, where that is done (`infill_combination`, with
+    /// `infill_combination_max_layer_height`): see
+    /// [`crate::combine_infill`].
+    pub combination: Option<f64>,
     /// Whether the fill keeps one direction on every layer rather than
     /// turning a quarter on each odd one: Z contouring's
     /// `zaa_dont_alternate_fill_direction`, which counts only with
@@ -223,6 +251,85 @@ pub struct InfillSettings {
     pub unsupported: Vec<String>,
 }
 
+/// Whether the sparse fill of a layer, counted from 0 at the bed, is
+/// made solid by `extra_solid_infills` (utils.cpp
+/// `check_layer_id_pattern`, called from PrintObject.cpp
+/// `discover_horizontal_shells`). Layers are counted from 1 there. The
+/// pattern, spaces and surrounding quotes left out, is a list ("5,9,18",
+/// each entry possibly "N#K", K layers from N on), or one "N#K" (or "N",
+/// for "N#1"): K layers from every Nth on. What does not read as a number
+/// is passed over in a list and matches nothing on its own, as there.
+pub fn extra_solid_layer(pattern: &str, layer_index: usize) -> bool {
+    // `std::stoi`: an optional sign and at least one digit; what follows
+    // is not read; a number outside an `int` is no number.
+    fn stoi(text: &str) -> Option<i64> {
+        let digits_from = usize::from(text.starts_with(['+', '-']));
+        let digits = text[digits_from..]
+            .bytes()
+            .take_while(u8::is_ascii_digit)
+            .count();
+        if digits == 0 {
+            return None;
+        }
+        let value: i64 = text[..digits_from + digits].parse().ok()?;
+        (i64::from(i32::MIN)..=i64::from(i32::MAX))
+            .contains(&value)
+            .then_some(value)
+    }
+    let Ok(layer) = i64::try_from(layer_index + 1) else {
+        return false;
+    };
+    let mut text: String = pattern
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '\t' | '\n' | '\r'))
+        .collect();
+    if text.starts_with(['"', '\'']) {
+        text.remove(0);
+    }
+    if text.ends_with(['"', '\'']) {
+        text.pop();
+    }
+    if text.is_empty() {
+        return false;
+    }
+    if text.contains(',') {
+        return text
+            .split(',')
+            .filter(|token| !token.is_empty())
+            .any(|token| match token.split_once('#') {
+                None => stoi(token) == Some(layer),
+                Some((base, count)) => {
+                    let (Some(base), Some(count)) = (
+                        stoi(base),
+                        if count.is_empty() {
+                            Some(1)
+                        } else {
+                            stoi(count)
+                        },
+                    ) else {
+                        return false;
+                    };
+                    base > 0 && count > 0 && layer >= base && layer < base + count
+                }
+            });
+    }
+    let (interval, count) = match text.split_once('#') {
+        None => (stoi(&text), Some(1)),
+        Some((interval, count)) => (
+            stoi(interval),
+            if count.is_empty() {
+                Some(1)
+            } else {
+                stoi(count)
+            },
+        ),
+    };
+    let (Some(interval), Some(count)) = (interval, count) else {
+        return false;
+    };
+    interval > 0 && count > 0 && layer >= interval && layer % interval < count
+}
+
 /// Whether fill keeps one direction on every layer: with Z contouring on
 /// and `zaa_dont_alternate_fill_direction` set (Fill.cpp, where each
 /// filler's `dont_alternate_fill_direction` is set from the two). Only
@@ -247,6 +354,15 @@ impl Default for InfillSettings {
             unsupported_pattern: None,
             infill_direction: 45.0,
             solid_infill_direction: 45.0,
+            top_layer_direction: None,
+            bottom_layer_direction: None,
+            top_surface_density: 1.0,
+            bottom_surface_density: 1.0,
+            under_top: None,
+            extra_solid_infills: String::new(),
+            smooth_factor: 0.0,
+            resolution: 0.01,
+            combination: None,
             steady_direction: false,
             lateral_lattice_angles: (-45.0, 45.0),
             infill_shift_step: 0.4,
@@ -370,6 +486,35 @@ impl InfillSettings {
         let flag = |key: &str, default: bool| -> Result<bool, ConfigError> {
             Ok(settings.flag(key)?.unwrap_or(default))
         };
+        // Set from 0 degrees up; below that the solid fill's direction is
+        // kept (Fill.cpp `group_fills`, `>= 0.`).
+        let surface_direction = |key: &str| -> Result<Option<f64>, ConfigError> {
+            Ok(settings.float(key)?.filter(|degrees| *degrees >= 0.0))
+        };
+        // A percentage within the reference's bounds (PrintConfig.cpp:
+        // `top_surface_density` from 0, `bottom_surface_density` from 10,
+        // both to 100), which it will not slice outside.
+        let surface_density = |key: &str, least: f64| -> Result<f64, ConfigError> {
+            match settings.float_or_percent(key)? {
+                Some(FloatOrPercent::Percent(percent) | FloatOrPercent::Value(percent)) => {
+                    if !(least..=100.0).contains(&percent) {
+                        return Err(ConfigError::BadValue {
+                            key: key.into(),
+                            found: percent.to_string(),
+                            expected: if least > 0.0 {
+                                "from 10% to 100%"
+                            } else {
+                                "from 0% to 100%"
+                            },
+                        });
+                    }
+                    Ok(percent / 100.0)
+                }
+                None => Ok(1.0),
+            }
+        };
+        let top_surface_density = surface_density("top_surface_density", 0.0)?;
+        let bottom_surface_density = surface_density("bottom_surface_density", 10.0)?;
         // Asked for and not done: said, never passed over.
         let mut unsupported = Vec::new();
         if let Some(FloatOrPercent::Value(value) | FloatOrPercent::Percent(value)) =
@@ -472,6 +617,16 @@ impl InfillSettings {
             .unwrap_or("each_surface")
             .to_owned();
         let mut spiral_notes = Vec::new();
+        // At half density and less the reference joins the spiral's
+        // pieces along the surface's edge (FillPlanePath.cpp,
+        // `connect_infill` unless `density > 0.5`); here they are left
+        // apart.
+        if top_archimedean && top_surface_density > 0.0 && top_surface_density <= 0.5 {
+            spiral_notes.push(format!(
+                "top_surface_density \"{}%\": the pieces of the top surface's spiral are not joined along its edge",
+                top_surface_density * 100.0
+            ));
+        }
         if top_archimedean {
             // Only the default order, and the spiral turning about each
             // surface's own middle, are ported.
@@ -494,7 +649,78 @@ impl InfillSettings {
             "internal_solid_infill_pattern",
             (defaults.solid_joined, defaults.solid_ordered),
         );
+        // The solid fill under a top surface has a pattern of its own only
+        // with more than two top shell layers and a top surface laid
+        // short of full (Fill.cpp `group_fills`); otherwise the setting
+        // changes nothing.
+        let top_shell_layers = count("top_shell_layers", defaults.top_shell_layers)?;
+        let under_top = match settings.text("undertop_surface_pattern") {
+            Some(pattern)
+                if pattern != "default" && top_shell_layers > 2 && top_surface_density < 1.0 =>
+            {
+                Some(joined("undertop_surface_pattern", (true, false)))
+            }
+            _ => None,
+        };
+        // The order a bottom surface is laid in, from the middle out or
+        // from the edge in, is followed by the reference only for the
+        // patterns laid about the middle of the surface (Fill.cpp
+        // `group_fills`: concentric, spiral inset, Archimedean chords
+        // and the octagram spiral); with any other it changes nothing.
+        // None of those is laid on a bottom here (the pattern itself is
+        // said above), so with one of them the order is said too.
+        if let Some(order) = settings
+            .text("bottom_surface_fill_order")
+            .filter(|order| *order != "default")
+            && settings
+                .texts("bottom_surface_pattern")
+                .and_then(|pattern| pattern.first())
+                .is_some_and(|pattern| {
+                    matches!(
+                        pattern.as_str(),
+                        "concentric" | "spiralinset" | "archimedeanchords" | "octagramspiral"
+                    )
+                })
+        {
+            unsupported.push(format!(
+                "bottom_surface_fill_order \"{order}\": the bottom surface's lines are laid in the order travel is least"
+            ));
+        }
         unsupported.extend(spiral_notes);
+        // Sparse fill laid once every few layers (PrintObject.cpp
+        // `combine_infill`): never with no sparse fill. Their height
+        // together stays under the nozzle's bore, or under
+        // `infill_combination_max_layer_height` where that is less (a
+        // percentage of the bore; 0 is the bore).
+        let combination = if flag("infill_combination", false)? {
+            let nozzle = settings
+                .floats("nozzle_diameter")?
+                .and_then(|nozzles| nozzles.first().copied().flatten())
+                .unwrap_or(defaults.widths.nozzle_diameter);
+            let most = settings
+                .float_or_percent("infill_combination_max_layer_height")?
+                .unwrap_or(FloatOrPercent::Percent(100.0))
+                .resolve(nozzle);
+            let density = match settings.float_or_percent("sparse_infill_density")? {
+                Some(FloatOrPercent::Percent(percent) | FloatOrPercent::Value(percent)) => percent,
+                None => defaults.sparse_infill_density_percent,
+            };
+            if density >= 100.0 {
+                // There the reference lays the solid fill inside the part
+                // thick instead; not done here.
+                unsupported.push(
+                    "infill_combination at 100% sparse_infill_density: the solid fill is laid on every layer"
+                        .to_owned(),
+                );
+                None
+            } else if density > 0.0 {
+                Some(if most > 0.0 { most.min(nozzle) } else { nozzle })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         // The reference has a different way of laying shells for each
         // other value; only this one is ported. Bambu Studio's projects
         // say "enabled" for it, and older ones "1", which the reference
@@ -535,7 +761,7 @@ impl InfillSettings {
             None => defaults.sparse_infill_density_percent,
         };
         Ok(Self {
-            top_shell_layers: count("top_shell_layers", defaults.top_shell_layers)?,
+            top_shell_layers,
             bottom_shell_layers: count("bottom_shell_layers", defaults.bottom_shell_layers)?,
             top_shell_thickness: thickness("top_shell_thickness", defaults.top_shell_thickness)?,
             bottom_shell_thickness: thickness(
@@ -565,6 +791,25 @@ impl InfillSettings {
             solid_infill_direction: settings
                 .float("solid_infill_direction")?
                 .unwrap_or(defaults.solid_infill_direction),
+            top_surface_density,
+            bottom_surface_density,
+            under_top,
+            extra_solid_infills: settings
+                .text("extra_solid_infills")
+                .unwrap_or_default()
+                .to_owned(),
+            // A percentage, 0 to 100 in the reference; the fills clamp
+            // what is outside (`sanitize_smooth_factor`).
+            smooth_factor: match settings.float_or_percent("sparse_infill_smooth_factor")? {
+                Some(FloatOrPercent::Percent(percent) | FloatOrPercent::Value(percent)) => {
+                    0.01 * percent
+                }
+                None => defaults.smooth_factor,
+            },
+            resolution: number("resolution", defaults.resolution)?,
+            combination,
+            top_layer_direction: surface_direction("top_layer_direction")?,
+            bottom_layer_direction: surface_direction("bottom_layer_direction")?,
             steady_direction: steady_direction(settings)?,
             minimum_sparse_infill_area: settings
                 .float("minimum_sparse_infill_area")?
@@ -865,6 +1110,54 @@ impl InfillSettings {
         Ok(())
     }
 
+    /// A sparse line laid this high: the line of a layer of sparse fill
+    /// laid for several (`LayerRegion::flow(frInfill, thickness)`).
+    pub fn sparse_flow(&self, height: f64) -> Result<Flow, FlowError> {
+        Flow::from_widths(
+            &self.widths,
+            self.sparse_infill_line_width,
+            Flow::auto_width(self.widths.nozzle_diameter),
+            height,
+            false,
+        )
+    }
+
+    /// How far, in units, the sparse fill laid for several layers is
+    /// kept off the rest of each layer's (PrintObject.cpp
+    /// `combine_infill`): half an inner wall's width and a solid line's
+    /// width and a half for the patterns whose fill reaches into the
+    /// walls, half otherwise; and the least area, in units squared,
+    /// worth laying so (`infill_area_threshold`, a solid line's spacing
+    /// squared).
+    pub fn combination_clearance(&self, layer_height: f64) -> Result<(Coord, f64), FlowError> {
+        let nozzle = self.widths.nozzle_diameter;
+        let flow = |width| {
+            Flow::from_widths(
+                &self.widths,
+                width,
+                Flow::auto_width(nozzle),
+                layer_height,
+                false,
+            )
+        };
+        let (wall, solid) = (
+            flow(self.inner_wall_line_width)?,
+            flow(self.internal_solid_infill_line_width)?,
+        );
+        let reach = match self.pattern {
+            Pattern::Lines
+            | Pattern::Grid
+            | Pattern::LateralLattice
+            | Pattern::Honeycomb
+            | Pattern::LateralHoneycomb => 1.5,
+            _ => 0.5,
+        };
+        let clearance = (0.5 * wall.scaled_width() as f32
+            + reach as f32 * solid.scaled_width() as f32) as Coord;
+        let spacing = solid.scaled_spacing() as f64;
+        Ok((clearance, spacing * spacing))
+    }
+
     /// What filling a layer of this height needs.
     pub fn params(&self, layer_height: f64, first_layer: bool) -> Result<FillParams, FlowError> {
         let nozzle = self.widths.nozzle_diameter;
@@ -908,6 +1201,23 @@ impl InfillSettings {
             pattern: self.pattern,
             sparse_angle: self.infill_direction.to_radians(),
             solid_angle: self.solid_infill_direction.to_radians(),
+            top_angle: self.top_layer_direction.map(f64::to_radians),
+            bottom_angle: self.bottom_layer_direction.map(f64::to_radians),
+            top_density: self.top_surface_density,
+            bottom_density: self.bottom_surface_density,
+            under_top: self.under_top,
+            // Only where it rounds anything, so that two regions that
+            // differ in it alone are still filled as one (Fill.cpp).
+            smooth: (crate::smooth::sanitize(self.smooth_factor) > 0.0
+                && matches!(
+                    self.pattern,
+                    Pattern::Hilbert
+                        | Pattern::Octagram
+                        | Pattern::Honeycomb
+                        | Pattern::Honeycomb3D
+                        | Pattern::CrossHatch
+                ))
+            .then_some((self.smooth_factor, self.resolution)),
             alternate: !self.steady_direction,
             // Both are shares of the line spacing when given as percentages
             // (Fill.cpp), and an anchor is never longer than a join may be.
@@ -1165,6 +1475,188 @@ mod tests {
         )
         .unwrap();
         assert!(calibration.flow_calib_order);
+    }
+
+    #[test]
+    fn surface_directions_and_the_bottom_fill_order_are_read() {
+        let read = |json: &str| InfillSettings::from_settings(&Settings::from_json(json).unwrap());
+        // From 0 up they are set; below, the solid fill's is kept.
+        let set = read(r#"{"top_layer_direction": "0", "bottom_layer_direction": "30"}"#).unwrap();
+        assert_eq!(
+            (set.top_layer_direction, set.bottom_layer_direction),
+            (Some(0.0), Some(30.0))
+        );
+        let params = set.params(0.2, false).unwrap();
+        assert_eq!(params.bottom_angle, Some(30f64.to_radians()));
+        let unset =
+            read(r#"{"top_layer_direction": "-1", "bottom_layer_direction": "-1"}"#).unwrap();
+        assert_eq!(unset.params(0.2, false).unwrap().top_angle, None);
+        assert!(set.unsupported.is_empty() && unset.unsupported.is_empty());
+        // The bottom's order changes nothing with lines, as in the
+        // reference; with a pattern laid about the middle, which is not
+        // laid here, it is said with the pattern.
+        let lines = read(r#"{"bottom_surface_fill_order": "inward"}"#).unwrap();
+        assert!(lines.unsupported.is_empty());
+        let centred = read(
+            r#"{"bottom_surface_pattern": "concentric", "bottom_surface_fill_order": "inward"}"#,
+        )
+        .unwrap();
+        assert_eq!(centred.unsupported.len(), 2);
+        assert!(centred.unsupported[1].starts_with("bottom_surface_fill_order \"inward\""));
+    }
+
+    #[test]
+    fn top_and_bottom_surface_densities_are_read_within_bounds() {
+        let read = |json: &str| InfillSettings::from_settings(&Settings::from_json(json).unwrap());
+        let set =
+            read(r#"{"top_surface_density": "0%", "bottom_surface_density": "40%"}"#).unwrap();
+        let params = set.params(0.2, false).unwrap();
+        assert_eq!((params.top_density, params.bottom_density), (0.0, 0.4));
+        assert!(set.unsupported.is_empty());
+        let unset = read("{}").unwrap().params(0.2, false).unwrap();
+        assert_eq!((unset.top_density, unset.bottom_density), (1.0, 1.0));
+        // The reference will not slice below 10% for a bottom.
+        assert!(read(r#"{"bottom_surface_density": "5%"}"#).is_err());
+        assert!(read(r#"{"top_surface_density": "120%"}"#).is_err());
+        // A spiral top at half density or less is joined along its edge
+        // there, and not here.
+        let spiral =
+            read(r#"{"top_surface_pattern": "archimedeanchords", "top_surface_density": "50%"}"#)
+                .unwrap();
+        assert!(spiral.unsupported[0].starts_with("top_surface_density"));
+    }
+
+    #[test]
+    fn the_pattern_under_a_top_counts_only_with_a_thinned_top_and_three_shells() {
+        let read = |json: &str| InfillSettings::from_settings(&Settings::from_json(json).unwrap());
+        let set = |json: &str| read(json).unwrap().params(0.2, false).unwrap().under_top;
+        assert_eq!(
+            set(r#"{"undertop_surface_pattern": "monotonicline", "top_surface_density": "80%"}"#),
+            Some((false, true))
+        );
+        // Full top, two shell layers, or the default: nothing.
+        assert_eq!(
+            set(r#"{"undertop_surface_pattern": "monotonicline"}"#),
+            None
+        );
+        assert_eq!(
+            set(
+                r#"{"undertop_surface_pattern": "monotonic", "top_surface_density": "80%",
+                    "top_shell_layers": "2"}"#
+            ),
+            None
+        );
+        assert_eq!(set(r#"{"top_surface_density": "80%"}"#), None);
+        // A pattern not laid here is said, and laid as joined lines.
+        let other =
+            read(r#"{"undertop_surface_pattern": "concentric", "top_surface_density": "80%"}"#)
+                .unwrap();
+        assert_eq!(other.under_top, Some((true, false)));
+        assert!(other.unsupported[0].starts_with("undertop_surface_pattern \"concentric\""));
+    }
+
+    #[test]
+    fn extra_solid_layers_are_matched_as_the_reference_matches_them() {
+        // Layer indices from 0; the pattern counts from 1.
+        let layers = |pattern: &str| -> Vec<usize> {
+            (0..30)
+                .filter(|index| extra_solid_layer(pattern, *index))
+                .collect()
+        };
+        assert!(layers("").is_empty());
+        // Every Nth layer, K from each.
+        assert_eq!(layers("10"), [9, 19, 29]);
+        assert_eq!(layers("10#3"), [9, 10, 11, 19, 20, 21, 29]);
+        assert_eq!(layers(" \"10#\" "), [9, 19, 29]);
+        // A list, with runs.
+        assert_eq!(layers("1,7, 9"), [0, 6, 8]);
+        assert_eq!(layers("5,9#2,18"), [4, 8, 9, 17]);
+        // What does not read as a number: passed over in a list, nothing
+        // alone; a number with more after it is read up to there.
+        assert_eq!(layers("x,4,y#2"), [3]);
+        assert!(layers("x").is_empty());
+        assert!(layers("0").is_empty() && layers("-3#2").is_empty());
+        assert_eq!(layers("12abc"), [11, 23]);
+        assert!(layers("99999999999").is_empty());
+        let read = InfillSettings::from_settings(
+            &Settings::from_json(r#"{"extra_solid_infills": "5#2"}"#).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(read.extra_solid_infills, "5#2");
+        assert!(read.unsupported.is_empty());
+    }
+
+    #[test]
+    fn the_smoothing_factor_counts_for_the_patterns_it_rounds() {
+        let read = |json: &str| {
+            InfillSettings::from_settings(&Settings::from_json(json).unwrap())
+                .unwrap()
+                .params(0.2, false)
+                .unwrap()
+                .smooth
+        };
+        assert_eq!(
+            read(
+                r#"{"sparse_infill_pattern": "honeycomb", "sparse_infill_smooth_factor": "40%", "resolution": "0.012"}"#
+            ),
+            Some((0.4, 0.012))
+        );
+        assert_eq!(read(r#"{"sparse_infill_pattern": "honeycomb"}"#), None);
+        // Grid is not rounded in the reference: nothing to tell apart.
+        assert_eq!(
+            read(r#"{"sparse_infill_pattern": "grid", "sparse_infill_smooth_factor": "40%"}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn combined_sparse_fill_is_read_with_its_height() {
+        let read = |json: &str| {
+            InfillSettings::from_settings(&Settings::from_json(json).unwrap()).unwrap()
+        };
+        // Up to the bore, or less where a smaller height is set.
+        assert_eq!(
+            read(r#"{"infill_combination": "1"}"#).combination,
+            Some(0.4)
+        );
+        let set = read(
+            r#"{"infill_combination": "1", "infill_combination_max_layer_height": "75%",
+                "nozzle_diameter": ["0.6"]}"#,
+        );
+        assert!((set.combination.unwrap() - 0.45).abs() < 1e-9);
+        assert_eq!(
+            read(r#"{"infill_combination": "1", "infill_combination_max_layer_height": "0"}"#)
+                .combination,
+            Some(0.4)
+        );
+        assert_eq!(
+            read(r#"{"infill_combination": "1", "infill_combination_max_layer_height": "1.2"}"#)
+                .combination,
+            Some(0.4)
+        );
+        // Off, or no sparse fill: nothing. Solid: said.
+        assert_eq!(read("{}").combination, None);
+        assert_eq!(
+            read(r#"{"infill_combination": "1", "sparse_infill_density": "0%"}"#).combination,
+            None
+        );
+        let solid = read(r#"{"infill_combination": "1", "sparse_infill_density": "100%"}"#);
+        assert_eq!(solid.combination, None);
+        assert!(solid.unsupported[0].starts_with("infill_combination"));
+        // A thick line keeps its width.
+        let thick = read("{}").sparse_flow(0.4).unwrap();
+        assert_eq!((thick.width, thick.height), (0.45, 0.4));
+        // Kept half an inner wall and a solid line and a half off for a
+        // grid, half of each for a gyroid.
+        let grid = read(r#"{"sparse_infill_pattern": "grid"}"#);
+        let (clearance, least) = grid.combination_clearance(0.2).unwrap();
+        assert_eq!(clearance, edge_geom::scaled(0.5 * 0.45 + 1.5 * 0.45));
+        assert!(least > 0.0);
+        let gyroid = read(r#"{"sparse_infill_pattern": "gyroid"}"#);
+        assert_eq!(
+            gyroid.combination_clearance(0.2).unwrap().0,
+            edge_geom::scaled(0.45)
+        );
     }
 
     #[test]

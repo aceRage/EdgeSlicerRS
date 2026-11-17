@@ -322,19 +322,6 @@ const SILENT: &[Silent] = &[
     ),
     // Brim and adhesion.
     // Fill.
-    // Fill.cpp l.1527: set from 0 degrees up.
-    silent("bottom_layer_direction", Below(0.0, "-1")),
-    // Fill.cpp l.1494.
-    silent("bottom_surface_fill_order", Is("default")),
-    // PrintObject.cpp l.5727.
-    silent("extra_solid_infills", Blank),
-    // Fill.cpp l.1523.
-    silent("sparse_infill_smooth_factor", Is("0%")),
-    // Fill.cpp l.1439.
-    silent("undertop_surface_pattern", Is("default")),
-    // PrintObject.cpp l.3126.
-    silent("bottom_surface_density", Is("100%")),
-    silent("top_surface_density", Is("100%")),
     // PrintObject.cpp l.2289: with top surface expansion on.
     with(
         "top_surface_expansion_margin",
@@ -347,12 +334,6 @@ const SILENT: &[Silent] = &[
         Is("inward_and_outward"),
         "top_surface_expansion",
         Is("0"),
-    ),
-    // PrintObject.cpp l.5938.
-    gate(
-        "infill_combination",
-        Is("0"),
-        &["infill_combination_max_layer_height"],
     ),
     // PrintObject.cpp l.554.
     silent("separated_infills", Is("0")),
