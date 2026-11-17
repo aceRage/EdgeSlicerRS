@@ -7,6 +7,10 @@
 //! setting that asks for one of these is listed in
 //! [`AdhesionSettings::unsupported`].
 
+mod nearest_wall;
+
+pub use nearest_wall::{BrimPiece, WallSamples, share_brim};
+
 use edge_clip::{ClipError, Join};
 use edge_config::{ConfigError, FloatOrPercent, Settings};
 use edge_extrusion::{ExtrusionLoop, ExtrusionPath, Flow, FlowError, LineWidths, Role};
@@ -40,6 +44,12 @@ pub struct Footing<'a> {
     /// Its own brim (`brim_type`, `brim_width`, `brim_object_gap` set for
     /// the object alone), where it has one; none takes the plate's.
     pub own: Option<&'a AdhesionSettings>,
+    /// The first layer as printed, shrunk against elephant foot, where
+    /// the brim follows that rather than the footprint
+    /// (`brim_use_efc_outline`): the brim is laid against it and kept off
+    /// it, while how wide an automatic brim is still goes by the
+    /// footprint (Brim.cpp `get_print_object_bottom_layer_expolygons`).
+    pub outline: Option<&'a [ExPolygon]>,
 }
 
 /// The settings skirt and brim depend on. Defaults are the reference's
@@ -54,6 +64,10 @@ pub struct AdhesionSettings {
     /// Where the skirt starts, in degrees anticlockwise from +X as seen
     /// from its middle.
     pub skirt_start_angle: f64,
+    /// Whether the skirt is one loop, its innermost, above the first
+    /// layer (`single_loop_draft_shield`; GCode.cpp l.7129, whether the
+    /// skirt stands as a draft shield or is only some layers tall).
+    pub single_loop_above_first: bool,
     pub brim: BrimKind,
     /// Width of an `Outer` brim in mm.
     pub brim_width: f64,
@@ -63,6 +77,13 @@ pub struct AdhesionSettings {
     pub max_speed: f64,
     /// Gap between the part and its brim, in mm, so it breaks off cleanly.
     pub brim_object_gap: f64,
+    /// Whether the brim follows the first layer as shrunk against
+    /// elephant foot rather than the footprint as modelled
+    /// (`brim_use_efc_outline`); the caller gives that outline.
+    pub efc_outline: bool,
+    /// Whether the brims of objects that meet are filled as one
+    /// (`combine_brims`), rather than each object's by itself.
+    pub combine: bool,
     pub line_width: FloatOrPercent,
     pub initial_layer_line_width: FloatOrPercent,
     pub inner_wall_line_width: FloatOrPercent,
@@ -79,11 +100,14 @@ impl Default for AdhesionSettings {
             skirt_distance: 2.0,
             skirt_height: 1,
             skirt_start_angle: -135.0,
+            single_loop_above_first: false,
             brim: BrimKind::Auto,
             brim_width: 0.0,
             filament_type: String::new(),
             max_speed: 100.0,
             brim_object_gap: 0.0,
+            efc_outline: false,
+            combine: false,
             line_width: FloatOrPercent::Value(0.4),
             initial_layer_line_width: FloatOrPercent::Value(0.4),
             inner_wall_line_width: FloatOrPercent::Value(0.4),
@@ -165,6 +189,9 @@ impl AdhesionSettings {
             skirt_start_angle: settings
                 .float("skirt_start_angle")?
                 .unwrap_or(defaults.skirt_start_angle),
+            single_loop_above_first: settings
+                .flag("single_loop_draft_shield")?
+                .unwrap_or(defaults.single_loop_above_first),
             brim,
             brim_width: settings.float("brim_width")?.unwrap_or(defaults.brim_width),
             filament_type: settings
@@ -176,6 +203,10 @@ impl AdhesionSettings {
             brim_object_gap: settings
                 .float("brim_object_gap")?
                 .unwrap_or(defaults.brim_object_gap),
+            efc_outline: settings
+                .flag("brim_use_efc_outline")?
+                .unwrap_or(defaults.efc_outline),
+            combine: settings.flag("combine_brims")?.unwrap_or(defaults.combine),
             line_width: width("line_width", defaults.line_width)?,
             initial_layer_line_width: width(
                 "initial_layer_line_width",
@@ -408,8 +439,9 @@ pub fn brim(
         contour: island.contour.clone(),
         holes: Vec::new(),
     };
-    let mut bands = Vec::new();
-    for object in objects {
+    // Each object's band, by object.
+    let mut bands: Vec<Vec<ExPolygon>> = vec![Vec::new(); objects.len()];
+    for (object, bands) in objects.iter().zip(&mut bands) {
         let own = of(object, settings);
         if own.brim == BrimKind::None {
             continue;
@@ -421,7 +453,18 @@ pub fn brim(
         } else {
             own.brim_width
         };
-        for island in object.footprint {
+        // Following the shrunk first layer, each island is what of it is
+        // left after shrinking (Brim.cpp: the volume group's slices
+        // intersected with the compensated outline).
+        let shrunk;
+        let islands = match object.outline {
+            Some(outline) => {
+                shrunk = edge_clip::intersection(outline, object.footprint)?;
+                shrunk.as_slice()
+            }
+            None => object.footprint,
+        };
+        for island in islands {
             let width = island_width(island, width, object.height, automatic, flow.spacing);
             if width <= 0.0 {
                 continue;
@@ -431,7 +474,7 @@ pub fn brim(
             bands.extend(edge_clip::difference(&outer, &inner)?);
         }
     }
-    if bands.is_empty() {
+    if bands.iter().all(Vec::is_empty) {
         return Ok(Vec::new());
     }
     // No brim runs over a part, or closer to one than its gap.
@@ -439,7 +482,11 @@ pub fn brim(
     let mut by_gap: Vec<(f64, Vec<ExPolygon>)> = Vec::new();
     for object in objects {
         let gap = of(object, settings).brim_object_gap;
-        let islands = object.footprint.iter().map(filled);
+        let islands = object
+            .outline
+            .unwrap_or(object.footprint)
+            .iter()
+            .map(filled);
         match by_gap.iter_mut().find(|(own, _)| *own == gap) {
             Some((_, all)) => all.extend(islands),
             None => by_gap.push((gap, islands.collect())),
@@ -450,7 +497,9 @@ pub fn brim(
         keep_off.extend(edge_clip::offset(islands, scaled(*gap), join)?);
     }
     keep_off.extend(taken.iter().cloned());
-    let area = edge_clip::difference(&edge_clip::union_ex(&bands)?, &keep_off)?;
+    let all: Vec<ExPolygon> = bands.iter().flatten().cloned().collect();
+    let area = edge_clip::difference(&edge_clip::union_ex(&all)?, &keep_off)?;
+    let pieces = shared_out(&area, &bands, &keep_off, settings.combine)?;
 
     let detail = scaled(0.0125);
     let spacing = flow.spacing;
@@ -458,7 +507,7 @@ pub fn brim(
     // of one part before it leaves for the next (the reference lays each
     // object's brim by itself).
     let mut loops = Vec::new();
-    for piece in &area {
+    for piece in &pieces {
         let mut left = edge_clip::offset(
             &edge_clip::simplify(std::slice::from_ref(piece), detail)?,
             scaled(-0.5 * spacing),
@@ -498,6 +547,85 @@ pub fn brim(
         ));
     }
     Ok(loops)
+}
+
+/// The pieces of the brim's `area` (all objects' `bands` together, less
+/// `keep_off`) as they are filled with loops. Where the brims of several
+/// objects meet in one piece, they are filled as one only with
+/// `combine_brims` (Print.cpp `_make_skirt`, l.6727); otherwise each
+/// object's brim is filled by itself, an object's brim keeping none of
+/// the ground an object before it already has (Brim.cpp `make_brim`,
+/// l.859, objects in their order). A piece only one object's brim
+/// reaches is the same either way.
+///
+/// The reference also closes a combined brim's ground by its resolution
+/// (an `offset2` of 0.01 mm out and back), to tidy what its union leaves;
+/// the union here leaves nothing to tidy, and that is not done.
+fn shared_out(
+    area: &[ExPolygon],
+    bands: &[Vec<ExPolygon>],
+    keep_off: &[ExPolygon],
+    combine: bool,
+) -> Result<Vec<ExPolygon>, ClipError> {
+    if combine || bands.iter().filter(|band| !band.is_empty()).count() < 2 {
+        return Ok(area.to_vec());
+    }
+    let boxed = |regions: &[ExPolygon]| {
+        let points = regions.iter().flat_map(|region| &region.contour.points);
+        points.fold(None, |box_: Option<[i64; 4]>, point| {
+            let [x0, y0, x1, y1] = box_.unwrap_or([point.x, point.y, point.x, point.y]);
+            Some([
+                x0.min(point.x),
+                y0.min(point.y),
+                x1.max(point.x),
+                y1.max(point.y),
+            ])
+        })
+    };
+    let apart = |a: Option<[i64; 4]>, b: Option<[i64; 4]>| match (a, b) {
+        (Some(a), Some(b)) => a[2] < b[0] || b[2] < a[0] || a[3] < b[1] || b[3] < a[1],
+        _ => true,
+    };
+    // Each object's own ground, as the reference has it before any is
+    // shared out: worked out only for an object whose band reaches a
+    // piece another's band reaches too.
+    let boxes: Vec<_> = bands.iter().map(|band| boxed(band)).collect();
+    let mut owned: Vec<Option<Vec<ExPolygon>>> = vec![None; bands.len()];
+    let mut pieces = Vec::with_capacity(area.len());
+    for piece in area {
+        let at = boxed(std::slice::from_ref(piece));
+        let near: Vec<usize> = (0..bands.len())
+            .filter(|object| !apart(at, boxes[*object]))
+            .collect();
+        if near.len() < 2 {
+            pieces.push(piece.clone());
+            continue;
+        }
+        let mut shares = Vec::new();
+        for object in near {
+            let own = match &owned[object] {
+                Some(own) => own,
+                None => owned[object].insert(edge_clip::difference(
+                    &edge_clip::union_ex(&bands[object])?,
+                    keep_off,
+                )?),
+            };
+            let share = edge_clip::intersection(std::slice::from_ref(piece), own)?;
+            if !share.is_empty() {
+                shares.push(share);
+            }
+        }
+        if shares.len() < 2 {
+            pieces.push(piece.clone());
+            continue;
+        }
+        let mut claimed: Vec<ExPolygon> = Vec::new();
+        for share in shares {
+            pieces.extend(edge_clip::difference(&share, &claimed)?);
+            claimed.extend(share);
+        }
+    }
+    Ok(pieces)
 }
 
 /// The skirt for one layer, outermost loop first: loops around the convex
@@ -700,6 +828,7 @@ mod tests {
         let part = [square(0.0, 0.0, 10.0)];
         let on_bed = [Footing {
             own: None,
+            outline: None,
             footprint: &part,
             height: 5.0,
         }];
@@ -745,10 +874,98 @@ mod tests {
     }
 
     #[test]
+    fn a_brim_that_follows_the_shrunk_first_layer_lies_against_it() {
+        let part = [square(0.0, 0.0, 10.0)];
+        // The first layer as printed, 0.15 mm in from the footprint.
+        let shrunk = [square(0.15, 0.15, 9.7)];
+        let settings = AdhesionSettings {
+            brim_object_gap: 0.1,
+            efc_outline: true,
+            ..outer(3.0)
+        };
+        let flow = settings.brim_flow(0.2).unwrap();
+        let reach = |line: &ExtrusionLoop| -extent(&line.polygon)[0];
+        let laid = |outline| {
+            let on_bed = [Footing {
+                own: None,
+                outline,
+                footprint: &part,
+                height: 5.0,
+            }];
+            brim(&on_bed, &[], &settings, 0.2).unwrap()
+        };
+        let (plain, following) = (laid(None), laid(Some(&shrunk[..])));
+        // As many lines, each 0.15 mm further in, the innermost half a
+        // line beyond the gap from the shrunk outline.
+        assert_eq!(plain.len(), following.len());
+        for (a, b) in plain.iter().zip(&following) {
+            assert!((reach(a) - reach(b) - 0.15).abs() < 0.02);
+        }
+        let nearest = reach(following.last().unwrap());
+        let expected = 0.1 + flow.spacing / 2.0 - 0.15;
+        assert!((nearest - expected).abs() < 0.02, "{nearest}");
+        assert!(
+            AdhesionSettings::from_settings(
+                &Settings::from_json(r#"{"brim_use_efc_outline": "1"}"#).unwrap()
+            )
+            .unwrap()
+            .efc_outline
+        );
+    }
+
+    #[test]
+    fn brims_of_objects_that_meet_are_filled_as_one_only_when_combined() {
+        let (first, second) = ([square(0.0, 0.0, 10.0)], [square(12.0, 0.0, 10.0)]);
+        let on_bed = [&first, &second].map(|part| Footing {
+            own: None,
+            outline: None,
+            footprint: part,
+            height: 5.0,
+        });
+        let spanning = |loops: &[ExtrusionLoop]| {
+            loops
+                .iter()
+                .filter(|line| {
+                    let [min_x, _, max_x, _] = extent(&line.polygon);
+                    min_x < 0.0 && max_x > 22.0
+                })
+                .count()
+        };
+        let apart = brim(&on_bed, &[], &outer(3.0), 0.2).unwrap();
+        let combined = AdhesionSettings {
+            combine: true,
+            ..outer(3.0)
+        };
+        let together = brim(&on_bed, &[], &combined, 0.2).unwrap();
+        // Combined, the outer lines go round both; apart, the first
+        // object's brim goes all round it and the second's round the rest.
+        assert!(spanning(&together) > 0);
+        assert_eq!(spanning(&apart), 0);
+        let round_first = apart.iter().filter(|line| {
+            let [min_x, _, max_x, _] = extent(&line.polygon);
+            min_x < 0.0 && max_x > 10.0 && max_x < 12.0
+        });
+        assert!(round_first.count() > 0);
+        // Objects whose brims do not meet are filled the same either way.
+        let far = [square(40.0, 0.0, 10.0)];
+        let spread_out = [&first, &far].map(|part| Footing {
+            own: None,
+            outline: None,
+            footprint: part,
+            height: 5.0,
+        });
+        assert_eq!(
+            brim(&spread_out, &[], &outer(3.0), 0.2).unwrap(),
+            brim(&spread_out, &[], &combined, 0.2).unwrap()
+        );
+    }
+
+    #[test]
     fn two_parts_close_together_share_a_brim_that_stays_off_both() {
         let parts = [square(0.0, 0.0, 10.0), square(11.0, 0.0, 10.0)];
         let on_bed = [Footing {
             own: None,
+            outline: None,
             footprint: &parts,
             height: 5.0,
         }];
@@ -798,6 +1015,7 @@ mod tests {
                     footprint,
                     height,
                     own: None,
+                    outline: None,
                 },
                 settings,
             )
@@ -841,11 +1059,13 @@ mod tests {
         let on_bed = [
             Footing {
                 own: None,
+                outline: None,
                 footprint: &tower,
                 height: 100.0,
             },
             Footing {
                 own: None,
+                outline: None,
                 footprint: &plate,
                 height: 2.0,
             },
@@ -914,11 +1134,13 @@ mod tests {
         let on_bed = [
             Footing {
                 own: None,
+                outline: None,
                 footprint: &left,
                 height: 10.0,
             },
             Footing {
                 own: None,
+                outline: None,
                 footprint: &right,
                 height: 10.0,
             },
@@ -954,6 +1176,7 @@ mod tests {
         let part = [square(0.0, 0.0, 20.0)];
         let on_bed = [Footing {
             own: None,
+            outline: None,
             footprint: &part,
             height: 10.0,
         }];

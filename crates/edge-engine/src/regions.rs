@@ -810,9 +810,14 @@ pub(crate) fn note_set(
 
 /// What an object may set for itself that is followed for the object as a
 /// whole rather than region by region: its brim (Brim.cpp reads
-/// `brim_type`, `brim_width` and `brim_object_gap` from each object's
-/// config).
-const OBJECT_FOLLOWED: [&str; 3] = ["brim_type", "brim_width", "brim_object_gap"];
+/// `brim_type`, `brim_width`, `brim_object_gap` and `brim_use_efc_outline`
+/// from each object's config).
+const OBJECT_FOLLOWED: [&str; 4] = [
+    "brim_type",
+    "brim_width",
+    "brim_object_gap",
+    "brim_use_efc_outline",
+];
 
 /// What an object may set for itself that decides where it is cut
 /// (`crate::layering`): its layer height, and whether its last layers
@@ -1792,6 +1797,34 @@ pub(crate) mod tests {
         );
         assert!(!own.gaps().iter().any(|gap| gap.starts_with("brim")));
         assert!(settable("brim_width").followed_on_object);
+        assert!(settable("brim_use_efc_outline").followed_on_object);
+    }
+
+    #[test]
+    fn a_single_loop_skirt_stands_above_the_first_layer() {
+        let skirt = |single: &str| {
+            let sliced = two_cubes(
+                &[],
+                &[],
+                Vec::new(),
+                Vec::new(),
+                &format!(
+                    r#"{{"skirt_loops": "3", "skirt_height": "3", "brim_type": "no_brim",
+                        "single_loop_draft_shield": "{single}"}}"#
+                ),
+            );
+            (0..3)
+                .map(|layer| sliced.around[layer].clone())
+                .collect::<Vec<_>>()
+        };
+        let (all, single) = (skirt("0"), skirt("1"));
+        assert!(all.iter().all(|loops| loops.len() == 3));
+        // The first layer keeps all its loops; above it the innermost, the
+        // last laid, is left.
+        assert_eq!(single[0], all[0]);
+        for layer in 1..3 {
+            assert_eq!(single[layer].as_slice(), &all[layer][2..]);
+        }
     }
 
     #[test]
