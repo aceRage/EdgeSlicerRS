@@ -186,6 +186,19 @@ fn same_loop(a: &ThickPolyline, b: &ThickPolyline) -> bool {
 
 /// One line as extrusions end to end, cut wherever its width has drifted
 /// by more than a twentieth of a millimetre, whether or not it comes
+/// The lines without a closed one that comes round where an earlier one
+/// does (VariableWidth.cpp `remove_near_duplicate_gap_fill_loops`), which
+/// [`variable_width`] leaves out by itself but a caller handing it one
+/// line at a time must leave out first.
+pub fn without_repeated_loops(lines: &[ThickPolyline]) -> Vec<ThickPolyline> {
+    let mut kept: Vec<ThickPolyline> = Vec::with_capacity(lines.len());
+    for line in lines {
+        if !kept.iter().any(|earlier| same_loop(line, earlier)) {
+            kept.push(line.clone());
+        }
+    }
+    kept
+}
 /// round to where it began: what a wall of changing width is laid as.
 pub fn varying_width(line: &ThickPolyline, role: Role, flow: &Flow) -> Vec<ExtrusionPath> {
     if line.points.len() < 2 {

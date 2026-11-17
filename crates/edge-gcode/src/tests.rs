@@ -1111,10 +1111,38 @@ fn an_areas_own_gap_fill_is_chained_with_its_lines() {
             in_turn: true,
             ..area[1].clone()
         },
-        ExtrusionPath { part: 2, ..gap },
+        ExtrusionPath {
+            part: 2,
+            ..gap.clone()
+        },
     ];
     let (text, _) = print(&one_layer(&[], &[], &apart), &basic());
     assert_eq!(features(&text), ["Bottom surface", "Gap infill"]);
+    // A gap line put among the lines of an area laid in turn
+    // (`insert_gap_fill`) stays where it was put, and the area's lines
+    // after it stay in the area: laid in the order given, as one area:
+    // the line after the gap line is not turned as a line by itself.
+    let far = |x: f64, role: Role, in_turn: bool| ExtrusionPath {
+        part: 1,
+        in_turn,
+        ..line((x, 1.0), (x, 9.0), role)
+    };
+    let among = [
+        far(50.0, Role::BottomSurface, false),
+        far(51.0, Role::GapFill, true),
+        far(1.0, Role::BottomSurface, true),
+    ];
+    let (text, _) = print(&one_layer(&[], &[], &among), &basic());
+    assert_eq!(
+        features(&text),
+        ["Bottom surface", "Gap infill", "Bottom surface"]
+    );
+    // Each laid the way it was given, the last line too: from y 1 to 9.
+    let ends: Vec<(f64, f64)> = moves(&text)
+        .filter(|line| word(line, 'E').is_some_and(|e| e > 0.0))
+        .filter_map(|line| Some((word(line, 'X')?, word(line, 'Y')?)))
+        .collect();
+    assert_eq!(ends, [(50.0, 9.0), (51.0, 9.0), (1.0, 9.0)]);
 }
 
 #[test]
