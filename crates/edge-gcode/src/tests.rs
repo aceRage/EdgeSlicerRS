@@ -5182,3 +5182,67 @@ fn speeds_climb_from_the_first_layers_over_the_slowed_down_layers() {
     let second = text.split(";LAYER_CHANGE").nth(2).unwrap();
     assert_eq!(feed_of(second, "Outer wall"), Some(7200.0));
 }
+
+#[test]
+fn short_support_lines_go_at_their_own_speed() {
+    let part = [wall(0.0, 0.0, 10.0, 0)];
+    let support = [
+        line((20.0, 0.0), (30.0, 0.0), Role::Support),
+        line((20.0, 3.0), (25.0, 3.0), Role::Support),
+        line((20.0, 6.0), (25.0, 6.0), Role::SupportInterface),
+    ];
+    let layers: Vec<Layer<'_>> = [0.2, 0.4]
+        .into_iter()
+        .map(|z| Layer {
+            z,
+            support: &support,
+            ..one_layer(&part, &[0..1], &[])[0]
+        })
+        .collect();
+    let settings = PrintSettings {
+        support_speed: 150.0,
+        support_interface_speed: 80.0,
+        // 6.28 mm or shorter.
+        small_support_perimeter_threshold: 1.0,
+        small_support_perimeter_speed: FloatOrPercent::Percent(30.0),
+        ..basic()
+    };
+    let feeds = |settings: &PrintSettings| -> Vec<f64> {
+        let text = print(&layers, settings).0;
+        let second = text.split(";LAYER_CHANGE").nth(2).unwrap().to_owned();
+        let mut feed = 0.0;
+        let mut out = Vec::new();
+        let mut support = false;
+        for line in second.lines() {
+            if let Some(kind) = line.strip_prefix(";TYPE:") {
+                support = kind.starts_with("Support");
+            }
+            if let Some(f) = word(line, 'F') {
+                feed = f;
+            }
+            if support && line.starts_with("G1 X") && line.contains(" E") {
+                out.push(feed / 60.0);
+            }
+        }
+        out
+    };
+    let mut speeds = feeds(&settings);
+    speeds.sort_by(f64::total_cmp);
+    assert_eq!(speeds, [24.0, 45.0, 150.0]);
+    // At nothing, half the line's own.
+    let half = PrintSettings {
+        small_support_perimeter_speed: FloatOrPercent::Value(0.0),
+        ..settings.clone()
+    };
+    let mut speeds = feeds(&half);
+    speeds.sort_by(f64::total_cmp);
+    assert_eq!(speeds, [40.0, 75.0, 150.0]);
+    // A threshold of 0: none.
+    let off = PrintSettings {
+        small_support_perimeter_threshold: 0.0,
+        ..settings
+    };
+    let mut speeds = feeds(&off);
+    speeds.sort_by(f64::total_cmp);
+    assert_eq!(speeds, [80.0, 150.0, 150.0]);
+}

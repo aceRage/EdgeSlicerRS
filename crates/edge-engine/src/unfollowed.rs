@@ -112,12 +112,6 @@ const SILENT: &[Silent] = &[
         Is("0"),
         &["overhang_shadow_distance", "overhang_shadow_speed_ratio"],
     ),
-    // GCode.cpp l.10908: small support loops at their own speed.
-    gate(
-        "small_support_perimeter_threshold",
-        Is("0"),
-        &["small_support_perimeter_speed"],
-    ),
     // LayerTimeSpeedSmoothingFilter.
     gate(
         "layer_time_speed_smoothing",

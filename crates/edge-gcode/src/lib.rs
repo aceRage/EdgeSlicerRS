@@ -1560,6 +1560,9 @@ struct State {
     /// The speed of the wall loop being laid, where it is small enough
     /// to have one of its own (`small_perimeter_speed`).
     small_wall: Option<f64>,
+    /// The speed of the support line being laid, where it is short
+    /// enough to have one of its own (`small_support_perimeter_speed`).
+    small_support: Option<f64>,
     /// The speed of the wall loop being laid, where it goes round a
     /// circle the auto circle compensation resized (`circle.rs`).
     circle_wall: Option<f64>,
@@ -4782,6 +4785,7 @@ impl Writer<'_> {
         closed: bool,
     ) -> io::Result<()> {
         let s = self.settings;
+        self.state.small_support = self.small_support_speed(role, points);
         let motion = self.motion(role, flow, self.state.first_layer);
         // Bridges always get the overhang fan, and with no threshold set
         // so does every outer wall (GCode.cpp `overhang_fan_on_for_role`).
@@ -5202,6 +5206,9 @@ impl Writer<'_> {
             Role::InternalBridge => s.internal_bridge_speed.resolve(s.bridge_speed),
             Role::GapFill => s.gap_infill_speed,
             Role::Skirt | Role::Brim => self.outer_wall_speed(),
+            Role::Support | Role::SupportInterface if self.state.small_support.is_some() => {
+                self.state.small_support.unwrap_or_default()
+            }
             Role::Support => s.support_speed,
             Role::SupportInterface => s.support_interface_speed,
         };
@@ -5251,6 +5258,35 @@ impl Writer<'_> {
                 s.default_acceleration
             },
         }
+    }
+
+    /// The speed of a support line no longer than a circle of
+    /// `small_support_perimeter_threshold` (GCode.cpp `extrude_support`,
+    /// `speed_for_path`): `small_support_perimeter_speed`, a percentage of
+    /// the support's or the interface's own, and at nothing half of it.
+    fn small_support_speed(&self, role: Role, points: &[Point2]) -> Option<f64> {
+        let s = self.settings;
+        let own = match role {
+            Role::Support => s.support_speed,
+            Role::SupportInterface => s.support_interface_speed,
+            _ => return None,
+        };
+        let threshold = s.small_support_perimeter_threshold;
+        if threshold <= 0.0 {
+            return None;
+        }
+        let length: f64 = points
+            .windows(2)
+            .map(|pair| distance(pair[0], pair[1]))
+            .sum();
+        if length > threshold * std::f64::consts::TAU {
+            return None;
+        }
+        let speed = match s.small_support_perimeter_speed {
+            FloatOrPercent::Value(0.0) | FloatOrPercent::Percent(0.0) => 0.5 * own,
+            share => share.resolve(own),
+        };
+        (speed > 0.0).then_some(speed)
     }
 
     /// A speed on the layers `slow_down_layers` covers: no more than the

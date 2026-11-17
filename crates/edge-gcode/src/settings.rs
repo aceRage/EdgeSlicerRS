@@ -118,6 +118,11 @@ pub struct PrintSettings {
     /// leaves every wall at its own speed.
     pub small_perimeter_threshold: f64,
     pub small_perimeter_speed: FloatOrPercent,
+    /// The same for a support line, its speed as a percentage of the
+    /// support's or the interface's (`small_support_perimeter_threshold`,
+    /// `small_support_perimeter_speed`).
+    pub small_support_perimeter_threshold: f64,
+    pub small_support_perimeter_speed: FloatOrPercent,
     /// Walls on the first layer.
     pub initial_layer_speed: f64,
     /// All fill on the first layer.
@@ -489,6 +494,8 @@ impl Default for PrintSettings {
             internal_bridge_speed: FloatOrPercent::Percent(150.0),
             small_perimeter_threshold: 0.0,
             small_perimeter_speed: FloatOrPercent::Percent(50.0),
+            small_support_perimeter_threshold: 0.0,
+            small_support_perimeter_speed: FloatOrPercent::Percent(50.0),
             initial_layer_speed: 30.0,
             initial_layer_infill_speed: 60.0,
             slow_down_layers: 0,
@@ -958,6 +965,11 @@ impl PrintSettings {
             small_perimeter_speed: listed_share(
                 "small_perimeter_speed",
                 defaults.small_perimeter_speed,
+            )?,
+            small_support_perimeter_threshold: number("small_support_perimeter_threshold", 0.0)?,
+            small_support_perimeter_speed: listed_share(
+                "small_support_perimeter_speed",
+                defaults.small_support_perimeter_speed,
             )?,
             initial_layer_speed: number("initial_layer_speed", defaults.initial_layer_speed)?,
             slow_down_layers: number("slow_down_layers", 0.0)?.max(0.0) as usize,
