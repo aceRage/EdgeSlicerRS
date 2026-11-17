@@ -193,6 +193,20 @@ pub struct Layer<'a> {
     pub region: Option<usize>,
 }
 
+impl Layer<'_> {
+    /// Whether the entry lays nothing at all: no prime tower, skirt,
+    /// brim, support, wall or fill.
+    fn lays_nothing(&self) -> bool {
+        self.ram.is_none()
+            && self.wipe.is_none()
+            && self.tower.is_empty()
+            && self.around.is_empty()
+            && self.support.is_empty()
+            && self.loops.is_empty()
+            && self.paths.is_empty()
+    }
+}
+
 /// G-code set at a layer by the person (a pause, a custom line, the
 /// printer's template), written at the start of the layer after its layer
 /// change, as the reference writes it (GCode.cpp
@@ -489,20 +503,44 @@ pub fn write_timed(
             }
         }
     }
+    // A layer with nothing to lay is not written, as the reference
+    // writes nothing for a layer with no extruders (GCode.cpp
+    // `process_layer`, "Nothing to extrude"; ToolOrdering.cpp gives a
+    // layer extruders only for walls or fill it has): a pointed top can
+    // leave a layer whose slice is too small for any line. It still
+    // counts among the print's layers (`m_layer_count`, the zs of every
+    // object layer), and the layers after it are numbered as laid.
+    // Printing object by object, every layer is written.
+    let total_layers = groups.len();
+    if runs.is_empty() {
+        let kept: Vec<bool> = (groups.iter())
+            .map(|group| {
+                layers[group.clone()]
+                    .iter()
+                    .any(|layer| !layer.lays_nothing())
+            })
+            .collect();
+        let mut at = 0..;
+        groups.retain(|_| kept[at.next().unwrap_or(0)]);
+        let mut at = 0..;
+        own.retain(|_| kept[at.next().unwrap_or(0)]);
+    }
     // Where each filament is used for the last time, after which its tool
     // can be switched off. Object by object, never: another copy may need
     // it again, and the reference keeps every tool at its standby
     // temperature there (GCode.cpp `is_last_use`, `PrintSequence::ByLayer`).
     let mut last_use = vec![0; settings.len()];
-    for (index, layer) in layers.iter().enumerate() {
-        last_use[layer.filament] = if runs.is_empty() { index } else { usize::MAX };
+    for group in &groups {
+        for index in group.clone() {
+            last_use[layers[index].filament] = if runs.is_empty() { index } else { usize::MAX };
+        }
     }
     // The top of the print: printing object by object the last layer is
     // the last copy's, not the highest.
     let top = layers.iter().map(|layer| layer.z).fold(0.0, f64::max);
 
     let mut variables = settings[first].variables.clone();
-    variables.set("total_layer_count", Value::Int(groups.len() as i64));
+    variables.set("total_layer_count", Value::Int(total_layers as i64));
     variables.set("max_layer_z", Value::Float(top));
     variables.set("layer_num", Value::Int(0));
     variables.set("layer_z", Value::Float(0.0));
@@ -584,7 +622,7 @@ pub fn write_timed(
         slowdown: Slowdown::None,
         last_use,
         file: FileInfo {
-            layers: groups.len(),
+            layers: total_layers,
             top,
             first_layer_height: layers.first().map_or(0.0, |layer| layer.height),
             filaments: {
@@ -662,7 +700,8 @@ pub fn write_timed(
         contoured: HashMap::new(),
         contour_speed: contours.speed_scaling,
         codes,
-        layer_count: groups.len(),
+        layer_count: total_layers,
+        laid_layers: groups.len(),
         spiral_layer: false,
         object_layer: None,
     };
@@ -1305,6 +1344,8 @@ struct Writer<'a> {
     /// calibration's per-layer values are spread over (GCode.cpp
     /// `m_layer_count`).
     layer_count: usize,
+    /// How many of those are written: a layer with nothing to lay is not.
+    laid_layers: usize,
     /// Whether the layer being laid is turned into a spiral
     /// (`spiral_mode`, GCode.cpp `spiral_vase_enable`): its loop is then
     /// not clipped short of its seam (`m_enable_loop_clipping`).
@@ -1723,7 +1764,10 @@ impl Writer<'_> {
         if s.bambu {
             self.file.estimate_at = Some(self.out.len());
         }
-        writeln!(self.out, "; total layer number: {}", self.file.layers)?;
+        // The layers written, as the reference's processor counts them
+        // in the file (GCodeProcessor.cpp, `m_layer_id`): a layer with
+        // nothing to lay is not.
+        writeln!(self.out, "; total layer number: {}", self.laid_layers)?;
         // A Bambu Lab printer's list of the copies it may skip, by number
         // (GCode.cpp `_do_export`, "; model label id: ").
         if self.labelling() == Some(Labelling::Bambu) {
@@ -2831,7 +2875,7 @@ impl Writer<'_> {
         let doubled = self.spiral_layer
             && match self.object_layer {
                 Some((number, count)) => number + 1 == count,
-                None => index + 1 == self.layer_count,
+                None => index + 1 == self.laid_layers,
             };
         if doubled {
             self.timing.lines.extend_from_within(..);

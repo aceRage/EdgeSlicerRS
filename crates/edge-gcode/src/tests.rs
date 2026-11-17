@@ -4588,3 +4588,30 @@ fn the_farthest_point_prefers_the_outer_wall() {
     let layer = one_layer(&inner, &[0..1], &[])[0];
     assert_eq!(bambu_vars::farthest_point(&[layer]), None);
 }
+
+#[test]
+fn a_layer_with_nothing_to_lay_is_not_written_but_still_counted() {
+    // GCode.cpp `process_layer` writes nothing for a layer with no
+    // extruders: a pointed top can leave one whose slice holds no line.
+    // It still counts among the print's layers (`m_layer_count`); the
+    // header counts the layers written.
+    let loops = [wall(0.0, 0.0, 10.0, 0)];
+    let [first] = one_layer(&loops, &[0..1], &[]);
+    let second = Layer { z: 0.4, ..first };
+    let empty = Layer {
+        z: 0.6,
+        loops: &[],
+        islands: &[],
+        ..first
+    };
+    let settings = PrintSettings {
+        layer_change_gcode: Some(";AT {layer_num} OF {total_layer_count}".to_owned()),
+        ..basic()
+    };
+    let (text, _) = print(&[first, second, empty], &settings);
+    assert_eq!(text.matches(";LAYER_CHANGE").count(), 2, "{text}");
+    assert!(!text.contains(";Z:0.600"));
+    assert!(text.contains(";AT 1 OF 3"), "{text}");
+    assert!(text.contains("; total layer number: 2"));
+    assert!(text.contains("; total layers count = 3"));
+}

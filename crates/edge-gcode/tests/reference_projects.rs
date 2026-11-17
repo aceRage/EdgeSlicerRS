@@ -346,6 +346,18 @@ fn the_u1s_own_tool_change_gcode_runs() {
     assert_eq!(tools[0].tools, 4);
     assert!(tools[0].change_filament_gcode.is_some());
 
+    // Each tool lays a short support line: a layer with nothing to lay
+    // is not written.
+    let dot = [edge_extrusion::ExtrusionPath {
+        points: vec![
+            edge_geom::Point2::from_mm(100.0, 100.0),
+            edge_geom::Point2::from_mm(101.0, 100.0),
+        ],
+        role: Role::Support,
+        flow: edge_extrusion::Flow::new(0.45, 0.2, 0.4).unwrap(),
+        in_turn: false,
+        part: 0,
+    }];
     let layer = |z: f64, filament: usize| Layer {
         region: None,
         z,
@@ -358,7 +370,7 @@ fn the_u1s_own_tool_change_gcode_runs() {
         tower_z: None,
         tower_first: false,
         around: &[],
-        support: &[],
+        support: &dot,
         loops: &[],
         islands: &[],
         paths: &[],
