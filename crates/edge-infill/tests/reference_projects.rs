@@ -110,7 +110,21 @@ fn surfaces_partition_the_infill_area_and_every_one_is_filled() {
                 ));
             }
             // The first layer rests on the bed and the last has nothing above.
-            let all = |kind| surfaces.iter().all(|surface| surface.kind == kind);
+            // Where two parts of an object stand a few microns apart, the
+            // crack between them is kept (each part is closed by itself,
+            // as the reference closes each volume), and the walls, laid
+            // round the outline simplified by the resolution, may leave
+            // infill over it: slivers a few microns wide that are not the
+            // end layer's kind.
+            let all = |kind| {
+                let other: Vec<ExPolygon> = (surfaces.iter())
+                    .filter(|surface| surface.kind != kind)
+                    .map(|surface| surface.area.clone())
+                    .collect();
+                edge_clip::opening(&other, 5_000, edge_clip::Join::MITER)
+                    .unwrap()
+                    .is_empty()
+            };
             if (index == 0 && infill.bottom_shell_layers > 0 && !all(SurfaceKind::Bottom))
                 || (index + 1 == layers.len()
                     && index > 0

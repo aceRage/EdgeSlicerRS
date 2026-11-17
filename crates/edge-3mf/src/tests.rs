@@ -344,18 +344,18 @@ fn negative_parts_make_their_instances_separate_bodies() {
     assert_eq!(
         volumes,
         [
-            (125.0, None),
-            (125.0, None),
             (1000.0, Some(80.0)),
-            (1000.0, Some(80.0))
+            (1000.0, Some(80.0)),
+            (125.0, None),
+            (125.0, None)
         ]
     );
     assert_eq!(
         bodies.iter().map(|body| body.object).collect::<Vec<_>>(),
-        [Some(2), Some(3), Some(0), Some(1)]
+        [Some(0), Some(1), Some(2), Some(3)]
     );
     assert_eq!(
-        bodies[3].negative.as_ref().unwrap().bounds().unwrap().0,
+        bodies[1].negative.as_ref().unwrap().bounds().unwrap().0,
         [50.0, 0.0, 0.0]
     );
     // The merged mesh is the printed material only.
@@ -416,9 +416,10 @@ fn precise_seam_parts_are_read_as_helpers_not_printed_and_said_to_be_there() {
         ]
     );
     assert_eq!(object.parts[1].name.as_deref(), Some("Seam here"));
-    // Neither helper is printed: the body is the two normal parts.
+    // Neither helper is printed: the bodies are the two normal parts,
+    // each by itself.
     let bodies = project.bodies(Some(0));
-    assert_eq!(bodies.len(), 1);
+    assert_eq!(bodies.len(), 2);
     let (_, max) = bodies[0].solid.bounds().unwrap();
     assert_eq!(max, [10.0; 3]);
     assert!(project.has_precise_seams(Some(0)));

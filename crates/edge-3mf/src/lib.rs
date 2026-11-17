@@ -598,22 +598,20 @@ impl Project {
     }
 
     /// What to slice for one plate (or the whole project for `None`), in
-    /// world coordinates: one body for each instance and filament, tagged
-    /// with the instance's place among [`Project::instance_meshes`], so
-    /// each object is closed by itself; an instance's negative parts carve
-    /// its own bodies and nothing else. Bodies come in ascending order of
-    /// filament, and within one filament those without negative parts
-    /// first, each in the order of its instance.
+    /// world coordinates: one body for each printed part of each instance,
+    /// in the order of the instances and, within one, of the object's
+    /// parts, as the reference slices each volume by itself; tagged with
+    /// the instance's place among [`Project::instance_meshes`], so each
+    /// object is put together by itself. An instance's negative parts,
+    /// together, are every one of its bodies' negative volume, and carve
+    /// nothing else.
     pub fn bodies(&self, plate: Option<usize>) -> Vec<Body> {
         self.bodies_where(plate, |_| true)
     }
 
     /// [`Project::bodies`] of the objects `keep` keeps alone.
     pub fn bodies_where(&self, plate: Option<usize>, keep: impl Fn(&Object) -> bool) -> Vec<Body> {
-        // By filament, then by the instance's place among those
-        // `instance_meshes` gives.
-        let mut shared: std::collections::BTreeMap<(usize, usize), Mesh> = Default::default();
-        let mut carved = Vec::new();
+        let mut bodies = Vec::new();
         let placed = self.printable(plate).filter(|(object, _)| {
             (object.parts.iter())
                 .any(|part| part.kind == PartKind::Normal && !part.mesh.triangles.is_empty())
@@ -621,58 +619,21 @@ impl Project {
         for (place, (object, instance)) in
             placed.enumerate().filter(|(_, (object, _))| keep(object))
         {
-            let has_negative = object
-                .parts
-                .iter()
-                .any(|part| part.kind == PartKind::Negative);
-            for filament in filaments(object) {
-                if has_negative {
-                    let mut body = Body {
-                        solid: Mesh::default(),
-                        negative: Some(Mesh::default()),
-                        filament,
-                        part: None,
-                        object: Some(place),
-                    };
-                    append_parts(
-                        &mut body.solid,
-                        object,
-                        instance,
-                        PartKind::Normal,
-                        Some(filament),
-                    );
-                    append_parts(
-                        body.negative.as_mut().expect("set above"),
-                        object,
-                        instance,
-                        PartKind::Negative,
-                        None,
-                    );
-                    carved.push(body);
-                } else {
-                    append_parts(
-                        shared.entry((filament, place)).or_default(),
-                        object,
-                        instance,
-                        PartKind::Normal,
-                        Some(filament),
-                    );
-                }
+            let mut negative = Mesh::default();
+            append_parts(&mut negative, object, instance, PartKind::Negative, None);
+            let negative = (!negative.triangles.is_empty()).then_some(negative);
+            for part in (object.parts.iter())
+                .filter(|part| part.kind == PartKind::Normal && !part.mesh.triangles.is_empty())
+            {
+                bodies.push(Body {
+                    solid: part.placed(instance),
+                    negative: negative.clone(),
+                    filament: part.filament,
+                    part: None,
+                    object: Some(place),
+                });
             }
         }
-        let mut bodies: Vec<Body> = shared
-            .into_iter()
-            .filter(|(_, solid)| !solid.triangles.is_empty())
-            .map(|((filament, place), solid)| Body {
-                solid,
-                negative: None,
-                filament,
-                part: None,
-                object: Some(place),
-            })
-            .collect();
-        bodies.extend(carved);
-        bodies.sort_by_key(|body| body.filament);
         bodies
     }
 
@@ -1070,19 +1031,6 @@ fn append_parts(
     for part in wanted {
         mesh.append(&part.mesh, &part.transform.then(&instance.transform));
     }
-}
-
-/// The filaments an object's printed parts use, in ascending order.
-fn filaments(object: &Object) -> Vec<usize> {
-    let mut used: Vec<usize> = object
-        .parts
-        .iter()
-        .filter(|part| part.kind == PartKind::Normal)
-        .map(|part| part.filament)
-        .collect();
-    used.sort_unstable();
-    used.dedup();
-    used
 }
 
 /// Part names are stored without the leading slash references carry.

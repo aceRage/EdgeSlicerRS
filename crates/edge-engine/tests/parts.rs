@@ -64,8 +64,11 @@ fn a_part_prints_in_its_own_filament_and_back_in_its_objects() {
     let dir = tempfile::tempdir().unwrap();
     let mut model = two_parts(dir.path());
     let (object, _, parts) = ids(&model);
+    // A body to a part, each sliced by itself as the reference slices
+    // each volume.
     let before = model.place(Some(1)).unwrap();
-    assert_eq!(before.bodies.len(), 1);
+    assert_eq!(before.bodies.len(), 2);
+    assert!(before.bodies.iter().all(|body| body.filament == 1));
 
     model
         .set_part_filament(Some(&BED), object, &[parts[1]], Some(2))
