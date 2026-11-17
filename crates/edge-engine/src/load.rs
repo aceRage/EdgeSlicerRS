@@ -9,7 +9,7 @@ use crate::Failure;
 
 /// A model file read, before anything is placed on a bed.
 pub struct Opened {
-    path: PathBuf,
+    pub(crate) path: PathBuf,
     pub(crate) held: Held,
 }
 
@@ -320,7 +320,24 @@ pub fn open(path: &Path, plate: Option<u32>) -> Result<Opened, Failure> {
     }
 
     let project = Project::open(path).map_err(|e| named(&e))?;
-    let plate = match plate {
+    let plate = plate_of(path, &project, plate)?;
+    Ok(Opened {
+        path: path.to_owned(),
+        held: Held::Project {
+            project: Box::new(project),
+            plate,
+        },
+    })
+}
+
+/// The position of plate `plate` in a project, the first plate when left
+/// out; none for a project without plates.
+pub(crate) fn plate_of(
+    path: &Path,
+    project: &Project,
+    plate: Option<u32>,
+) -> Result<Option<usize>, Failure> {
+    Ok(match plate {
         Some(id) => Some(project.plate_index(id).ok_or_else(|| {
             let ids: Vec<String> = project
                 .plates
@@ -340,13 +357,6 @@ pub fn open(path: &Path, plate: Option<u32>) -> Result<Opened, Failure> {
             }
         })?),
         None => project.plate_index(1),
-    };
-    Ok(Opened {
-        path: path.to_owned(),
-        held: Held::Project {
-            project: Box::new(project),
-            plate,
-        },
     })
 }
 

@@ -212,6 +212,13 @@ struct SliceArgs {
     /// Say how long each stage took, in more detail than the summary.
     #[arg(long)]
     timings: bool,
+    /// Arrange the objects on the bed before slicing, as the reference's
+    /// `--arrange`: 0 never, 1 always, anything else (the default) as the
+    /// reference decides, which arranges a model that is not a project of
+    /// its own kind (an STL, an OBJ, or a 3MF without its plates and
+    /// printer settings) and leaves a project where it stands.
+    #[arg(long, default_value_t = 2, allow_negative_numbers = true)]
+    arrange: i64,
 }
 
 #[derive(Args)]
@@ -709,14 +716,6 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
 
     let started = Instant::now();
     let began = started;
-    let opened = edge_engine::open(&args.model, args.plate)?;
-    if let Some((id, count)) = opened.plate() {
-        println!("plate {id} of {count}");
-    }
-    let loaded = opened.place()?;
-    let load_time = started.elapsed();
-
-    let preparing = Instant::now();
     let chosen = presets(&args)?;
     let overrides = Overrides {
         layer_height: args.layer_height,
@@ -726,6 +725,35 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         bed_type: args.bed_type.clone(),
         ..Overrides::default()
     };
+    let opened = edge_engine::open_to_slice(
+        &args.model,
+        args.plate,
+        edge_engine::Arrange::from_option(args.arrange),
+        &chosen,
+        &overrides,
+    )?;
+    if let Some(arranged) = &opened.arranged {
+        println!(
+            "arranged on the bed as the reference's command line arranges a model without plates ({} plate{}; --arrange 0 leaves it as the file has it)",
+            arranged.plates,
+            if arranged.plates == 1 { "" } else { "s" }
+        );
+        for name in &arranged.unplaced {
+            println!("  fits no plate, not sliced: {name}");
+        }
+        for name in &arranged.zero_size {
+            println!("  has no size, not arranged: {name}");
+        }
+    }
+    if let Some((id, count)) = opened.plate {
+        println!("plate {id} of {count}");
+    }
+    let arrange_time = opened.arranged.as_ref().map(|arranged| arranged.took);
+    let arranged_model = opened.model;
+    let loaded = opened.loaded;
+    let load_time = started.elapsed();
+
+    let preparing = Instant::now();
     let job = edge_engine::prepare(loaded, &chosen, &overrides)?;
     match &job.bed_type {
         BedType::Settled => {}
@@ -965,6 +993,9 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         let write_time = writing.elapsed();
         if args.timings {
             let ms = |time: std::time::Duration| time.as_secs_f64() * 1e3;
+            if let Some(took) = arrange_time {
+                println!("arranging took {:.2} ms (within load)", ms(took));
+            }
             let (t, w) = (&sliced.timings, &gcode.timings);
             println!(
                 "timings in ms on {} threads: load {:.1}, presets {:.1}, slice {:.1} (cut {:.1}, paint {:.1}, \
@@ -1029,7 +1060,11 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
             println!("note: {note}");
         }
         if let Some(out) = &args.gcode_3mf {
-            let model = edge_engine::Model::open(&args.model)?;
+            // The model as it was sliced: arranged, when it was.
+            let model = match arranged_model {
+                Some(model) => model,
+                None => edge_engine::Model::open(&args.model)?,
+            };
             let saving = if model.settings().is_some() {
                 edge_engine::Saving::Own
             } else {

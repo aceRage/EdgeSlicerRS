@@ -484,6 +484,53 @@ impl Model {
         options: &ArrangeOptions,
         scope: ArrangeScope<'_>,
     ) -> Result<Arranged, Failure> {
+        self.arrange_as(bed, settings, options, scope, false)
+    }
+
+    /// Arranges everything as the reference's command line does before it
+    /// slices a model that is not a project of its own kind
+    /// (Snapmaker_Orca.cpp l.5394, "global arrange", with the parameters
+    /// of l.5730): with the settings it will be sliced with, no turning,
+    /// the extrusion calibration region not avoided, objects of several
+    /// filaments allowed on one plate, "auto" spacing and the printer's
+    /// own alignment to Y. It differs from the application's Arrange
+    /// ([`Model::arrange_with`]) where the command line sets its
+    /// parameters apart: the pile is centred on the bed whatever the
+    /// printer's `best_object_pos`; the clearance kept printing by object
+    /// is the extruder's radius alone, with no room for a skirt round each
+    /// object and no tighter spacing for objects lower than the nozzle;
+    /// the prime tower's ground is kept on a plate that will have one by
+    /// the command line's own count of its filaments (l.5500); and an
+    /// object taller than the printer prints is arranged with the rest.
+    pub fn arrange_as_command_line(
+        &mut self,
+        bed: &Bed,
+        settings: &Settings,
+    ) -> Result<Arranged, Failure> {
+        let options = ArrangeOptions {
+            spacing: 0.0,
+            rotate: false,
+            multi_materials: true,
+            avoid_calibration: false,
+            align_to_y: None,
+        };
+        self.arrange_as(
+            Some(bed),
+            Some(settings),
+            &options,
+            ArrangeScope::All { leave: &[] },
+            true,
+        )
+    }
+
+    fn arrange_as(
+        &mut self,
+        bed: Option<&Bed>,
+        settings: Option<&Settings>,
+        options: &ArrangeOptions,
+        scope: ArrangeScope<'_>,
+        command_line: bool,
+    ) -> Result<Arranged, Failure> {
         let bed =
             *bed.ok_or_else(|| refused("no printer is chosen: there is no bed to arrange on"))?;
         let own = self.underlying().cloned();
@@ -603,7 +650,7 @@ impl Model {
             if area < 0.001 {
                 outcome.zero_size.push(g.piece.name.clone());
                 false
-            } else if g.piece.height > printable_height && printable_height > 0.0 {
+            } else if !command_line && g.piece.height > printable_height && printable_height > 0.0 {
                 outcome.too_tall.push(g.piece.name.clone());
                 false
             } else {
@@ -620,7 +667,12 @@ impl Model {
             clearance_height_to_lid: config.number("extruder_clearance_height_to_lid"),
             printable_height,
             allow_rotations: options.rotate,
-            nozzle_height: config.number("nozzle_height"),
+            // The command line leaves it at 0 (Arrange.hpp's default).
+            nozzle_height: if command_line {
+                0.0
+            } else {
+                config.number("nozzle_height")
+            },
             allow_multi_materials_on_same_plate: options.multi_materials,
             avoid_extrusion_cali_region: options.avoid_calibration,
             is_seq_print: is_seq,
@@ -632,10 +684,23 @@ impl Model {
             ..Params::default()
         };
         let pieces: Vec<Piece> = selected.iter().map(|g| g.piece.clone()).collect();
-        let all_short = pieces.iter().all(|p| p.height < params.nozzle_height);
-        params.object_skirt_offset = object_skirt_offset(&config, all_short);
-        params.clearance_radius = clearance_radius(&config) + params.object_skirt_offset * 2.0;
-        let best = config.texts("best_object_pos");
+        if command_line {
+            // Snapmaker_Orca.cpp l.4278: the radius alone, no skirt offset.
+            params.clearance_radius = clearance_radius(&config);
+        } else {
+            let all_short = pieces.iter().all(|p| p.height < params.nozzle_height);
+            params.object_skirt_offset = object_skirt_offset(&config, all_short);
+            params.clearance_radius = clearance_radius(&config) + params.object_skirt_offset * 2.0;
+        }
+        // The command line keeps Arrange.hpp's middle of the bed: it never
+        // sets `align_center` from `best_object_pos` (Snapmaker_Orca.cpp
+        // l.5730-5752), so a printer that would rather have its objects
+        // off the middle (the H2D's 0.3x0.5) gets them in the middle.
+        let best = if command_line {
+            Vec::new()
+        } else {
+            config.texts("best_object_pos")
+        };
         let best: Vec<f64> = best
             .iter()
             .flat_map(|t| t.split(','))
@@ -669,7 +734,33 @@ impl Model {
             }))
         };
         let tallest = pieces.iter().map(|p| p.height).fold(0.0, f64::max);
-        if tower_enabled && !is_seq {
+        if command_line {
+            // Snapmaker_Orca.cpp l.5500-5560: a bed gets the tower's ground
+            // when the tower is on, the print is by layer (or a smooth
+            // timelapse needs it) and its plate prints in more than one
+            // filament (or in one, for a smooth timelapse); a bed beyond
+            // the plates is counted as the busiest plate.
+            let allowed = tower_enabled && (smooth || !is_seq);
+            let counts: Vec<usize> = bins.iter().map(|&p| filaments_on(p).len()).collect();
+            let busiest = counts.iter().copied().max().unwrap_or(0);
+            for b in 0..ea::MAX_NUM_PLATES {
+                let count = counts.get(b).copied().unwrap_or(busiest);
+                if !(allowed && (count > 1 || (count > 0 && smooth))) {
+                    continue;
+                }
+                let index = bins.get(b).copied().unwrap_or(self.plates.len() + b);
+                let b_box = tower_box(&config, index, count, tallest, &bed);
+                fixed.push(Piece {
+                    outline: rectangle(b_box),
+                    bed: b as i32,
+                    is_virtual: true,
+                    is_wipe_tower: true,
+                    priority: 1,
+                    name: "WipeTower".into(),
+                    ..Piece::default()
+                });
+            }
+        } else if tower_enabled && !is_seq {
             let need = smooth
                 || pieces
                     .iter()
@@ -830,6 +921,32 @@ impl Model {
             along += high[0] - low[0] + super::APART;
             self.assign(g.copy, None);
             self.stand(g.at, None, local);
+        }
+        if command_line {
+            // The command line's model then holds its objects in the order
+            // their first copies were placed (PartPlate.cpp
+            // `rebuild_plates_after_arrangement` sorts `m_model->objects`
+            // by `arrange_order`), which is the order they are numbered
+            // in when the G-code names them; an object whose first copy
+            // was not arranged counts as 0, ahead of the rest. The
+            // application's Arrange keeps the object list as it was (it
+            // sorts the same way, but the list here is the person's).
+            // The reference's sort is not stable; ties (objects not
+            // arranged) keep their order here.
+            let first_copy_order: BTreeMap<u64, i32> = selected
+                .iter()
+                .zip(&pieces)
+                .map(|(g, piece)| (g.copy, piece.item_id + 1))
+                .collect();
+            let key = |object: &super::ModelObject| {
+                object
+                    .copies
+                    .first()
+                    .and_then(|copy| first_copy_order.get(&copy.id))
+                    .copied()
+                    .unwrap_or(0)
+            };
+            self.objects.sort_by_key(key);
         }
         // Each plate lists what was placed on it in the order it was
         // placed, after what stayed (the reference sorts its objects by

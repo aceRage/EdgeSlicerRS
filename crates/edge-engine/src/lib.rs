@@ -11,6 +11,7 @@
 //! here prints or touches a window; a [`Watcher`] is told how far the
 //! work has got and may stop it.
 
+mod arrange_to_slice;
 mod by_object;
 pub mod calib;
 mod clock;
@@ -49,6 +50,7 @@ mod unfollowed;
 
 use std::{error::Error, fmt};
 
+pub use arrange_to_slice::{Arrange, ArrangedToSlice, ToSlice, open_to_slice};
 pub use clock::timestamp;
 pub use edge_3mf::{
     CustomGcode, CustomItem, CustomKind, CustomMode, CutRecipe, InsidePreset, InsideUnread,
