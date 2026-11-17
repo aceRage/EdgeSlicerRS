@@ -2763,6 +2763,15 @@ impl Writer<'_> {
                 self.stringing_layer(grid, index, layer.z - layer.height / 2.0, tool)?;
             }
         }
+        // The first layer's printing acceleration, set as the layer
+        // starts, before the first copy's label and the travel to it
+        // (GCode.cpp `process_layer`, "BBS", `first_layer`); each line
+        // still sets its own as it is laid.
+        let first_layer_acceleration =
+            s.default_acceleration > 0.0 && s.initial_layer_acceleration > 0.0;
+        if own == 0 && first_layer_acceleration {
+            self.accelerate(s.initial_layer_acceleration)?;
+        }
         if own == 1 {
             self.state.second_layer_done = true;
             // GCode.cpp `process_layer`, the second layer's things: power
@@ -2779,6 +2788,19 @@ impl Writer<'_> {
                 )?;
                 self.spend(0.1);
                 self.unretract()?;
+            }
+            // Then the accelerations back from the first layer's: the
+            // printing one, and the travel one where the first layer's
+            // travel had one of its own ("Reset acceleration at second
+            // layer"; Snapmaker #937 / #980).
+            if first_layer_acceleration {
+                self.accelerate(s.default_acceleration)?;
+            }
+            if s.default_acceleration > 0.0
+                && s.travel_acceleration > 0.0
+                && s.first_layer_travel_acceleration > 0.0
+            {
+                self.accelerate_travel(s.travel_acceleration)?;
             }
         }
         // The stringing grid sets the nozzle's temperature itself from the
