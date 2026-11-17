@@ -1018,3 +1018,32 @@ fn g_code_set_at_layers_is_written_there_and_saved_with_its_plate() {
     let (emptied, _) = saved_as_edited(&moved, "emptied.3mf", &[]);
     assert_eq!(emptied.custom_gcode(Some(1)), Some(&none));
 }
+
+/// A model read from an STL is named after its file, as the reference
+/// names what it loads (STL.cpp `load_stl`): saved and opened again it
+/// keeps the name, and `; printing object` writes the same before and
+/// after.
+#[test]
+fn a_models_name_is_kept_through_a_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("block.stl");
+    let block = Mesh::from_triangle_soup(edge_mesh::primitives::cuboid([0.0; 3], [10.0; 3]));
+    std::fs::write(&path, edge_mesh::stl::to_binary(&block)).unwrap();
+    let mut model = Model::open(&path).unwrap();
+    model.add_plate(Some(&U1)).unwrap();
+    assert_eq!(model.objects()[0].name(), "block.stl");
+    let again = saved(&model, dir.path(), "block.3mf");
+    assert_eq!(again.objects()[0].name(), "block.stl");
+    let named = |model: &Model| -> Vec<String> {
+        let plate = plates(model)[0];
+        String::from_utf8(gcode(model, plate))
+            .unwrap()
+            .lines()
+            .filter(|line| line.starts_with("; printing object "))
+            .take(1)
+            .map(str::to_owned)
+            .collect()
+    };
+    assert_eq!(named(&model), ["; printing object block.stl id:0 copy 0"]);
+    assert_eq!(named(&again), named(&model));
+}

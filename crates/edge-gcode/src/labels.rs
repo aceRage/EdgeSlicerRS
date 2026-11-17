@@ -17,7 +17,7 @@ use edge_extrusion::ExtrusionLoop;
 use edge_geom::{Point2, unscaled};
 use edge_template::stream_double;
 
-use crate::chain;
+use crate::copy_order;
 use crate::settings::{Labelling, ObjectLabel};
 
 /// GCode.cpp `sanitize_instance_name`: each run of the characters
@@ -270,13 +270,22 @@ pub(crate) fn brim_owner(labels: &[ObjectLabel], brim: &ExtrusionLoop) -> Option
 
 /// The order the copies in `present` are printed in on a layer (GCode.cpp
 /// `process_layer`, `sort_print_object_instances`; ShortestPath.cpp
-/// `chain_print_object_instances`): nearest after nearest by the middle
-/// of each copy's box. On a layer with a prime tower the chain starts
-/// from the tower and is taken backwards, so the last copy is the one
-/// nearest the tower. Not as the reference, which means to start from
-/// the tower but makes its point from `wipe_tower_x` and `_y` in
-/// millimetres taken as nanometres (GCode.cpp `process_layer`, `Point
-/// wt_pos(...)`), so its chain starts at the bed's corner.
+/// `chain_print_object_instances`): the middles of the copies' boxes
+/// chained as the reference chains them ([`copy_order`]). Without a
+/// prime tower the chain runs through every copy on the plate, from
+/// whichever end the reference's chaining leaves first, once for the
+/// whole print (`print_object_instances_ordering`).
+///
+/// On a layer with a prime tower (`tower`, where it is set to stand) it
+/// runs through every copy of each object printing on the layer, starts
+/// from the tower and is taken backwards, so the copy nearest the tower
+/// comes last, as the reference means it to. Not as the reference, on
+/// purpose: it builds its point from `wipe_tower_x` and `_y` in
+/// millimetres taken as its own units, unscaled, and without the plate's
+/// place among the others that its copies carry (GCode.cpp
+/// `process_layer`, l.9725 at the pin, `Point wt_pos(...)`), so its chain
+/// starts at the first plate's corner instead. Only the order of the
+/// copies and the travel between them differ for it.
 pub(crate) fn order(labels: &[ObjectLabel], present: &[bool], tower: Option<Point2>) -> Vec<usize> {
     // The tower's chain runs through every copy of each object printing
     // on the layer; the plate's through every copy.
@@ -289,16 +298,17 @@ pub(crate) fn order(labels: &[ObjectLabel], present: &[bool], tower: Option<Poin
             .collect(),
         None => (0..labels.len()).collect(),
     };
-    let ends: Vec<[Point2; 2]> = chained
+    let points: Vec<[f64; 2]> = chained
         .iter()
         .map(|at| {
             let m = middle(&labels[*at]);
-            [m, m]
+            [m.x as f64, m.y as f64]
         })
         .collect();
-    let mut ordered: Vec<usize> = chain::chain(&ends, &|_| false, tower)
+    let start = tower.map(|at| [at.x as f64, at.y as f64]);
+    let mut ordered: Vec<usize> = copy_order::order(&points, start)
         .into_iter()
-        .map(|(at, _)| chained[at])
+        .map(|at| chained[at])
         .collect();
     if tower.is_some() {
         ordered.reverse();
@@ -372,13 +382,19 @@ mod tests {
         assert_eq!(owner(&labels, Point2::from_mm(41.0, 12.0)), 1);
         // Outside every outline: the nearest middle.
         assert_eq!(owner(&labels, Point2::from_mm(70.0, 30.0)), 2);
-        // From the tower at the right, taken backwards: the copy nearest
-        // the tower last.
+        // From the tower, taken backwards: the copy nearest the tower
+        // last, wherever the tower stands (not from the first plate's
+        // corner, where the reference's unscaled `wt_pos` starts it).
         let all = [true; 3];
         assert_eq!(
             order(&labels, &all, Some(Point2::from_mm(100.0, 10.0))),
             [0, 1, 2]
         );
-        assert_eq!(order(&labels, &[true, false, true], None), [0, 2]);
+        assert_eq!(
+            order(&labels, &all, Some(Point2::from_mm(0.0, 10.0))),
+            [2, 1, 0]
+        );
+        let free = order(&labels, &[true, false, true], None);
+        assert!(free == [0, 2] || free == [2, 0], "{free:?}");
     }
 }

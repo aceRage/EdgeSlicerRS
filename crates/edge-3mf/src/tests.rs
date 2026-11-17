@@ -542,3 +542,43 @@ fn height_ranges_are_read_with_what_they_set() {
         (7.0, 9.0, 0)
     );
 }
+
+/// An object a file names nowhere, neither on the object nor in
+/// `model_settings.config`, is named "Object_" and its place, as the
+/// reference names it (bbs_3mf.cpp `_load_model_from_file`), so it is
+/// written as that when sliced and kept so when saved and read back.
+#[test]
+fn an_object_named_nowhere_is_object_and_its_place() {
+    let resources = format!(
+        r#"<object id="1" type="model">{}</object><object id="2" name="Named" type="model">{}</object><object id="3" type="model">{}</object>"#,
+        box_mesh([1.0, 1.0, 1.0]),
+        box_mesh([1.0, 1.0, 1.0]),
+        box_mesh([1.0, 1.0, 1.0]),
+    );
+    let build = r#"<item objectid="1"/><item objectid="2"/><item objectid="3"/>"#;
+    let project = Project::read(package(&[(
+        "3D/3dmodel.model",
+        &model("millimeter", &resources, build),
+    )]))
+    .unwrap();
+    let names: Vec<Option<&str>> = (project.objects.iter())
+        .map(|object| object.name.as_deref())
+        .collect();
+    assert_eq!(names, [Some("Object_1"), Some("Named"), Some("Object_3")]);
+    // Saved and read back, the same names.
+    let mut saved = Cursor::new(Vec::new());
+    let save = Save {
+        project: &project,
+        settings: None,
+        presets: false,
+        inside: None,
+        filaments: 1,
+    };
+    write_to(&save, &mut saved).unwrap();
+    saved.set_position(0);
+    let again = Project::read(saved).unwrap();
+    let names_again: Vec<Option<&str>> = (again.objects.iter())
+        .map(|object| object.name.as_deref())
+        .collect();
+    assert_eq!(names_again, names);
+}

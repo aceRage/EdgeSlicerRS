@@ -1250,6 +1250,14 @@ fn the_stringing_grid_sets_its_bands_and_its_columns_retractions() {
             let mut length = None;
             let mut columns = 0;
             for line in text.lines() {
+                // The grid's own retraction is put back after its last
+                // column; what comes after (the end G-code) is not a
+                // column's. The label is printed first, as the reference
+                // orders the copies, so the last column ends the layer.
+                if line.starts_with("; Calib_TempRetract: restore") {
+                    length = None;
+                    continue;
+                }
                 if let Some(rest) = line.strip_prefix("; Calib_TempRetract: col=") {
                     let (column, value) = rest.split_once(" retract=").unwrap();
                     if column == "none" {

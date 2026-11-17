@@ -584,7 +584,7 @@ fn ironing_along_a_curve_is_arcs_at_its_own_speed() {
         ..settings
     };
     let (text, plain) = print(&layers, &straight);
-    let plain_moves = laid(&text);
+    let plain_moves = laid(second_layer(&text));
     assert_eq!(arc_count(&plain_moves), 0);
     assert_eq!(
         plain_moves
@@ -740,6 +740,22 @@ fn measured() -> PrintSettings {
     }
 }
 
+/// A short support line in a corner, away from the walls tested.
+fn support_dot() -> ExtrusionPath {
+    ExtrusionPath {
+        points: vec![Point2::from_mm(5.0, 5.0), Point2::from_mm(6.0, 5.0)],
+        role: Role::Support,
+        flow: flow(),
+        in_turn: false,
+        part: 0,
+    }
+}
+
+/// The file from its last layer change on.
+fn second_layer(text: &str) -> &str {
+    &text[text.rfind(";LAYER_CHANGE").unwrap_or(0)..]
+}
+
 fn plate(x0: f64, y0: f64, x1: f64, y1: f64) -> [ExPolygon; 1] {
     [ExPolygon {
         contour: Polygon {
@@ -759,15 +775,22 @@ fn a_wall_keeps_its_arcs_where_it_is_laid_one_way_throughout() {
     let loops = [round_wall(50.0, 50.0, 10.0, 0)];
     let mut second = layer(0.4, &loops, &[0..1], &[]);
     second.below = &under;
-    let layers = [layer(0.2, &[], &[], &[]), second];
+    // A first layer of its own, a short support line well away from
+    // the wall (a layer with nothing to lay is not written).
+    let dot = [support_dot()];
+    let first = Layer {
+        support: &dot,
+        ..layer(0.2, &[], &[], &[])
+    };
+    let layers = [first, second];
     let (text, summary) = print(&layers, &measured());
-    let moves = laid(&text);
+    let moves = laid(second_layer(&text));
     assert!(arc_count(&moves) >= 1 && moves.len() <= 4, "{moves:?}");
     assert!(moves.iter().all(|laid| laid.speed == 200.0));
     assert!(moves.iter().all(|laid| laid.feature == "Outer wall"));
     let around: f64 = moves.iter().map(|laid| laid.length).sum();
     assert!((around - TAU * 10.0).abs() < 0.02, "{around}");
-    let fed: f64 = moves.iter().map(|laid| laid.fed).sum();
+    let fed: f64 = laid(&text).iter().map(|laid| laid.fed).sum();
     assert!((fed - summary.filament_mm).abs() < 1e-4);
 }
 
@@ -786,13 +809,20 @@ fn a_wall_that_slows_on_its_way_is_laid_straight_and_a_bridge_keeps_its_arc() {
     let loops = [round_wall(50.0, 50.0, 10.0, 0)];
     let mut second = layer(0.4, &loops, &[0..1], &[]);
     second.below = &under;
-    let layers = [layer(0.2, &[], &[], &[]), second];
+    // A first layer of its own, a short support line well away from
+    // the wall (a layer with nothing to lay is not written).
+    let dot = [support_dot()];
+    let first = Layer {
+        support: &dot,
+        ..layer(0.2, &[], &[], &[])
+    };
+    let layers = [first, second];
     let settings = PrintSettings {
         thick_bridges: true,
         ..measured()
     };
     let (text, summary) = print(&layers, &settings);
-    let moves = laid(&text);
+    let moves = laid(second_layer(&text));
     let wall: Vec<&Laid> = moves
         .iter()
         .filter(|laid| laid.feature == "Outer wall")
@@ -824,7 +854,7 @@ fn a_wall_that_slows_on_its_way_is_laid_straight_and_a_bridge_keeps_its_arc() {
     // Once round, and the file agrees with the summary.
     let around: f64 = moves.iter().map(|laid| laid.length).sum();
     assert!((around - TAU * 10.0).abs() < 0.05, "{around}");
-    let fed: f64 = moves.iter().map(|laid| laid.fed).sum();
+    let fed: f64 = laid(&text).iter().map(|laid| laid.fed).sum();
     assert!((fed - summary.filament_mm).abs() < 1e-3);
 
     // Without the arcs it is the same wall, as long and as fast.
@@ -833,7 +863,7 @@ fn a_wall_that_slows_on_its_way_is_laid_straight_and_a_bridge_keeps_its_arc() {
         ..settings
     };
     let (text, plain) = print(&layers, &straight);
-    let plain_moves = laid(&text);
+    let plain_moves = laid(second_layer(&text));
     assert_eq!(arc_count(&plain_moves), 0);
     let plain_around: f64 = plain_moves.iter().map(|laid| laid.length).sum();
     assert!((around - plain_around).abs() < 0.05);
@@ -846,7 +876,7 @@ fn a_wall_that_slows_on_its_way_is_laid_straight_and_a_bridge_keeps_its_arc() {
     // speed, as the reference has them: a stretch whose speed changes,
     // and so straight moves all the way.
     let (text, _) = print(&layers, &measured());
-    let moves = laid(&text);
+    let moves = laid(second_layer(&text));
     let over_air: Vec<&Laid> = moves
         .iter()
         .filter(|laid| laid.feature == "Overhang wall")
