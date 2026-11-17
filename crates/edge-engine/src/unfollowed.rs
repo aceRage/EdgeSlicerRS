@@ -165,7 +165,13 @@ const SILENT: &[Silent] = &[
     gate("hollow_interior", Is("0"), &["hollow_shell_thickness"]),
     // Tool changes.
     // ToolOrdering.cpp l.1617, GCode.cpp l.493: flushing for "Fast"; ours
-    // follows "Saving" alone.
+    // follows "Saving" alone. flush_multiplier_fast scales only the flush
+    // matrices the nozzle grouping weighs (`prepare_flush_matrices`, for
+    // `build_filament_group_context`), on printers of two extruders or a
+    // nozzle rack; not the tower's flushes nor the order of tools on a
+    // layer. That grouping is not done here (two-nozzle Bambu printers are
+    // refused), so it stays said with "Fast". Measured: on the U1
+    // (mcbrim_test.3mf) the reference's G-code is the same with it at 3.
     gate(
         "prime_volume_mode",
         Unless("Fast", "Default"),
