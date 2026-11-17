@@ -23,8 +23,6 @@ enum Off {
     Is(&'static str),
     /// No text: empty, or every entry empty or 0.
     Blank,
-    /// Any number below this; the reference's default is shown.
-    Below(f64, &'static str),
     /// Anything but the first; the second is shown as the value that
     /// does nothing.
     Unless(&'static str, &'static str),
@@ -100,7 +98,7 @@ const fn with(key: &'static str, off: Off, other: &'static str, other_off: Off) 
     }
 }
 
-use Off::{Below, Blank, Is, Unless};
+use Off::{Blank, Is, Unless};
 
 /// What the reference does with each is in the comment over it (line
 /// numbers in the pinned reference's `src/libslic3r`).
@@ -322,12 +320,6 @@ impl Off {
         match self {
             Is(off) => alike(entry, off),
             Blank => matches!(entry.trim(), "" | "0" | "\"\""),
-            Below(limit, _) => entry
-                .trim()
-                .strip_suffix('%')
-                .unwrap_or(entry.trim())
-                .parse::<f64>()
-                .is_ok_and(|number| number < limit),
             Unless(on, _) => entry.trim() != on,
         }
     }
@@ -335,7 +327,7 @@ impl Off {
     /// The value that does nothing, as the note gives it.
     fn shown(self) -> &'static str {
         match self {
-            Is(off) | Below(_, off) | Unless(_, off) => off,
+            Is(off) | Unless(_, off) => off,
             Blank => "",
         }
     }
