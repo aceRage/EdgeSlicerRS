@@ -587,24 +587,29 @@ fn shared_out(
         _ => true,
     };
     // Each object's own ground, as the reference has it before any is
-    // shared out.
-    let mut owned: Vec<Vec<ExPolygon>> = Vec::with_capacity(bands.len());
-    for band in bands {
-        owned.push(if band.is_empty() {
-            Vec::new()
-        } else {
-            edge_clip::difference(&edge_clip::union_ex(band)?, keep_off)?
-        });
-    }
-    let boxes: Vec<_> = owned.iter().map(|own| boxed(own)).collect();
+    // shared out: worked out only for an object whose band reaches a
+    // piece another's band reaches too.
+    let boxes: Vec<_> = bands.iter().map(|band| boxed(band)).collect();
+    let mut owned: Vec<Option<Vec<ExPolygon>>> = vec![None; bands.len()];
     let mut pieces = Vec::with_capacity(area.len());
     for piece in area {
         let at = boxed(std::slice::from_ref(piece));
+        let near: Vec<usize> = (0..bands.len())
+            .filter(|object| !apart(at, boxes[*object]))
+            .collect();
+        if near.len() < 2 {
+            pieces.push(piece.clone());
+            continue;
+        }
         let mut shares = Vec::new();
-        for (own, box_) in owned.iter().zip(&boxes) {
-            if apart(at, *box_) {
-                continue;
-            }
+        for object in near {
+            let own = match &owned[object] {
+                Some(own) => own,
+                None => owned[object].insert(edge_clip::difference(
+                    &edge_clip::union_ex(&bands[object])?,
+                    keep_off,
+                )?),
+            };
             let share = edge_clip::intersection(std::slice::from_ref(piece), own)?;
             if !share.is_empty() {
                 shares.push(share);
