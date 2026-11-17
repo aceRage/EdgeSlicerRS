@@ -9,7 +9,7 @@ use edge_adhesion::{AdhesionSettings, BrimKind, Footing};
 use edge_config::{ConfigError, FloatOrPercent, Settings};
 use edge_extrusion::{ExtrusionLoop, ExtrusionPath, Role};
 use edge_gcode::{PrintSettings, Summary};
-use edge_geom::{ExPolygon, Point2, Polygon, scaled, unscaled};
+use edge_geom::{Coord, ExPolygon, Point2, Polygon, scaled, unscaled};
 use edge_infill::{InfillSettings, Surface};
 use edge_mesh::Mesh;
 use edge_perimeter::{Perimeters, WallSettings};
@@ -195,6 +195,11 @@ pub struct Sliced {
     /// Skirt and brim, by layer; the skirt's loops come first.
     pub around: Vec<Vec<ExtrusionLoop>>,
     pub skirt_loops: usize,
+    /// The brim shared out among the filaments by the wall it lies
+    /// nearest (`brim_filament_source` "nearest_wall"), each piece with
+    /// its filament by number from 1; None where each brim goes to the
+    /// tool that starts the first layer.
+    pub(crate) brim_shares: Option<Vec<(usize, edge_adhesion::BrimPiece)>>,
     /// The filaments printing on each layer, in order, as indices into `used`.
     pub orders: Vec<Vec<usize>>,
     /// Tool changes on each layer.
@@ -239,6 +244,67 @@ fn frame_of(
             origin: middle,
             bounds: Some((low, high)),
         })
+}
+
+/// An object's first layer as the brim sees it: its number, its
+/// footprint, how tall it stands, and the first layer as printed where its
+/// brim follows that (`edge_adhesion::Footing`).
+type Footprint = (usize, Vec<ExPolygon>, f64, Option<Vec<ExPolygon>>);
+
+/// The brim shared out among the filaments by the first layer's walls
+/// (`edge_adhesion::share_brim`): each region's walls in its filament
+/// (`used`, by number from 1), each wall's object the one of `footprints`
+/// whose bounds hold its first point, else the nearest, for the
+/// reference's tie between two filaments by object area.
+fn nearest_wall_brim(
+    brim: &[ExtrusionLoop],
+    footprints: &[Footprint],
+    walls_by: &[Vec<Perimeters>],
+    used: &[usize],
+) -> Option<Vec<(usize, edge_adhesion::BrimPiece)>> {
+    let bounds: Vec<(Point2, Point2, Point2)> = footprints
+        .iter()
+        .map(|(_, footprint, ..)| {
+            let points = footprint.iter().flat_map(|island| &island.contour.points);
+            let (mut low, mut high) = (
+                Point2 {
+                    x: Coord::MAX,
+                    y: Coord::MAX,
+                },
+                Point2 {
+                    x: Coord::MIN,
+                    y: Coord::MIN,
+                },
+            );
+            for point in points {
+                (low.x, low.y) = (low.x.min(point.x), low.y.min(point.y));
+                (high.x, high.y) = (high.x.max(point.x), high.y.max(point.y));
+            }
+            (low, high, low)
+        })
+        .collect();
+    let areas = footprints
+        .iter()
+        .map(|(_, footprint, ..)| footprint.iter().map(ExPolygon::area_mm2).sum())
+        .collect();
+    let mut samples = edge_adhesion::WallSamples::new(areas);
+    for (walls, filament) in walls_by.iter().zip(used) {
+        let Some(first) = walls.first() else {
+            continue;
+        };
+        for wall in &first.loops {
+            let Some(start) = wall.polygon.points.first() else {
+                continue;
+            };
+            let object = if bounds.is_empty() {
+                0
+            } else {
+                owner_of(&bounds, *start)
+            };
+            samples.add_wall(&wall.polygon.points, *filament, object);
+        }
+    }
+    edge_adhesion::share_brim(brim, &samples)
 }
 
 /// Which of `objects` (bounds and middle) an island starting at `point`
@@ -2453,6 +2519,18 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         .flat_map(|ground| ground.contour.points.iter().copied())
         .collect();
     let brim = edge_adhesion::brim(&footings, &tower_ground, &adhesion, first_layer_height)?;
+    // The brim shared out among the filaments by the wall it lies nearest
+    // (`brim_filament_source` "nearest_wall"; Print.cpp l.6183): only
+    // with more than one filament printing and layer by layer, as there.
+    let brim_shares = if settings.text("brim_filament_source") == Some("nearest_wall")
+        && tools.len() > 1
+        && sequence.is_none()
+        && !brim.is_empty()
+    {
+        nearest_wall_brim(&brim, &footprints, &walls_by, &used)
+    } else {
+        None
+    };
     let mut plate_facts = plate_facts(
         PlateInput {
             beside,
@@ -2624,6 +2702,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         supports,
         around,
         skirt_loops,
+        brim_shares,
         orders,
         changes,
         tower,
@@ -2996,6 +3075,44 @@ impl Sliced {
         self.heights.top_of(index)
     }
 
+    /// The first layer's entries' skirt and brim loops, and their
+    /// support lines with the stretches of brim that go before them, where
+    /// the brim is shared out by filament (`brim_shares`): each piece to
+    /// the first entry on the first layer in its filament, laid after the
+    /// tool change and before anything else there (GCode.cpp
+    /// `process_layer`, the chameleon brim's block). A piece in a filament
+    /// with no turn on the first layer goes to the tool that starts it.
+    /// Empty where the brim is not shared out.
+    fn shared_brim(&self) -> Vec<(Vec<ExtrusionLoop>, Vec<ExtrusionPath>)> {
+        let Some(shares) = &self.brim_shares else {
+            return Vec::new();
+        };
+        let first: Vec<usize> = (self.entries.iter())
+            .take_while(|turn| turn.layer == 0)
+            .map(|turn| self.slots[turn.filament])
+            .collect();
+        let mut parts: Vec<(Vec<ExtrusionLoop>, Vec<ExtrusionPath>)> =
+            vec![(Vec::new(), Vec::new()); first.len()];
+        let Some((start, _)) = parts.first_mut() else {
+            return Vec::new();
+        };
+        let skirt = self.around.first().map_or(&[][..], |around| {
+            &around[..self.skirt_loops.min(around.len())]
+        });
+        start.extend(skirt.iter().cloned());
+        for (filament, piece) in shares {
+            let at = first.iter().position(|own| own == filament).unwrap_or(0);
+            match piece {
+                edge_adhesion::BrimPiece::Whole(line) => parts[at].0.push(line.clone()),
+                edge_adhesion::BrimPiece::Stretch(line) => parts[at].1.push(line.clone()),
+            }
+        }
+        if let (Some((_, support)), Some(lines)) = (parts.first_mut(), self.supports.first()) {
+            support.extend(lines.iter().cloned());
+        }
+        parts
+    }
+
     /// The part's outline on each layer as modelled.
     pub fn outlines(&self) -> Vec<&[ExPolygon]> {
         (0..self.layers.len())
@@ -3164,8 +3281,10 @@ impl Sliced {
             });
         }
         let outlines = self.outlines();
+        let shared = self.shared_brim();
         // Layer tops, measured from the bottom of the model as the bed.
-        // Skirt, brim and supports go to whichever tool starts the layer.
+        // Skirt, brim and supports go to whichever tool starts the layer,
+        // but for a brim shared out by filament (`shared_brim`).
         let base: Vec<edge_gcode::Layer<'_>> = self
             .entries
             .iter()
@@ -3197,8 +3316,16 @@ impl Sliced {
                         .layers
                         .get(index)
                         .is_some_and(|layer| layer.first_speed),
-                    around: if starts { &self.around[index] } else { &[] },
-                    support: if starts { &self.supports[index] } else { &[] },
+                    around: match shared.get(entry) {
+                        Some((around, _)) => around,
+                        None if starts => &self.around[index],
+                        None => &[],
+                    },
+                    support: match shared.get(entry) {
+                        Some((_, support)) => support,
+                        None if starts => &self.supports[index],
+                        None => &[],
+                    },
                     loops: &own.loops,
                     islands: &own.islands,
                     paths: &self.fills_by[*filament][index],

@@ -7,6 +7,10 @@
 //! setting that asks for one of these is listed in
 //! [`AdhesionSettings::unsupported`].
 
+mod nearest_wall;
+
+pub use nearest_wall::{BrimPiece, WallSamples, share_brim};
+
 use edge_clip::{ClipError, Join};
 use edge_config::{ConfigError, FloatOrPercent, Settings};
 use edge_extrusion::{ExtrusionLoop, ExtrusionPath, Flow, FlowError, LineWidths, Role};
