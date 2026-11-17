@@ -2473,9 +2473,9 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 .to_owned(),
         );
     }
-    // On a printer that groups filaments onto two nozzles of different
-    // kinds (PrintConfig.cpp `support_different_extruders`: the H2D, H2C,
-    // X2D), the filaments the first layer does not print are loaded and
+    // On a printer that groups filaments onto nozzles of different kinds
+    // (PrintConfig.cpp `support_different_extruders`: the H2S, P2S, H2D,
+    // H2C, X2D), the filaments the first layer does not print are loaded and
     // purged into the tower ahead of it (ToolOrdering.cpp
     // `apply_preload_all_filaments`); that is not done. On every other
     // printer the reference does nothing with the setting.
@@ -3737,7 +3737,7 @@ impl Sliced {
     }
 }
 
-/// Whether the printer is one the reference groups filaments onto two
+/// Whether the printer is one the reference groups filaments onto
 /// nozzles of different kinds for (PrintConfig.cpp
 /// `support_different_extruders`): one or two extruders, whose
 /// `extruder_variant_list` names more than one kind between them.

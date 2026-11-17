@@ -222,7 +222,11 @@ pub(crate) fn other_layers_sequences(ranges: i64, values: &[i64]) -> Vec<Vec<i64
     let Ok(ranges) = usize::try_from(ranges) else {
         return Vec::new();
     };
-    if ranges == 0 || values.is_empty() || values.len() % ranges != 0 || values.len() / ranges < 3 {
+    if ranges == 0
+        || values.is_empty()
+        || !values.len().is_multiple_of(ranges)
+        || values.len() / ranges < 3
+    {
         return Vec::new();
     }
     (values.chunks(values.len() / ranges))

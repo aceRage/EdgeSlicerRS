@@ -221,7 +221,7 @@ pub(crate) fn target_as_read(target: f64) -> f32 {
 /// is not worth stopping for (`dwell_gcode`).
 pub(crate) fn dwell(target: f32, layer_time: f32) -> Option<String> {
     let missing = target - layer_time.max(0.0);
-    if !(missing >= MIN_PAUSE_S) {
+    if missing.is_nan() || missing < MIN_PAUSE_S {
         return None;
     }
     let ms = (f64::from(missing) * 1000.0).round() as i64;
