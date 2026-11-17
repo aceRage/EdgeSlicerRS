@@ -543,6 +543,10 @@ fn step(watch: &dyn Watcher, stage: Stage) -> Result<(), Failure> {
 /// Slices a model: layers, walls, supports, fill, tool order, prime tower,
 /// skirt and brim. `watch` is told as each stage starts and may stop the
 /// work between stages.
+/// The reference's refusal of `preload_all_filaments` without a prime
+/// tower (Print.cpp `validate`).
+pub(crate) const PRELOAD_WITHOUT_TOWER: &str = "\"Preload all filaments\" requires the prime tower: every filament is loaded and purged into it on the first layer. Enable the prime tower, or turn \"Preload all filaments\" off.";
+
 pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let Job {
         loaded,
@@ -632,6 +636,18 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // the file's settings say so.
     if sequence.is_some() && crate::sequential::tower_off(&mut settings)? {
         print = PrintSettings::from_settings(&settings)?;
+    }
+    // Every filament loaded at the start goes through the prime tower, and
+    // a plate without one is refused (Print.cpp `validate`), counting a
+    // tower turned off for printing object by object. Not as the
+    // reference where one filament alone is used: the reference turns the
+    // tower off for it (PrintConfig.cpp `normalize_fdm_2`) and then refuses
+    // the plate for want of the tower the profile asks for, though there
+    // is nothing to load; here such a plate is sliced.
+    if settings.flag("preload_all_filaments")? == Some(true)
+        && settings.flag("enable_prime_tower")? != Some(true)
+    {
+        return Err(PRELOAD_WITHOUT_TOWER.into());
     }
     // A bare model has no place on the bed of its own: it goes in the
     // middle, as the reference's arranger leaves a single part. One that
@@ -2457,6 +2473,24 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 .to_owned(),
         );
     }
+    // On a printer that groups filaments onto two nozzles of different
+    // kinds (PrintConfig.cpp `support_different_extruders`: the H2D, H2C,
+    // X2D), the filaments the first layer does not print are loaded and
+    // purged into the tower ahead of it (ToolOrdering.cpp
+    // `apply_preload_all_filaments`); that is not done. On every other
+    // printer the reference does nothing with the setting.
+    if settings.flag("preload_all_filaments")? == Some(true)
+        && settings.flag("enable_prime_tower")? == Some(true)
+        && groups_onto_nozzles(&settings)
+        && orders
+            .first()
+            .is_some_and(|first| first.len() < tools.len())
+    {
+        order_notes.push(
+            "preload_all_filaments \"1\": not followed; the print is made as if it were \"0\""
+                .to_owned(),
+        );
+    }
     if used.len() > 1 {
         if let Some(kind) = settings.text("toolchange_ordering")
             && kind != "default"
@@ -3700,6 +3734,22 @@ impl Sliced {
             timings,
         })
     }
+}
+
+/// Whether the printer is one the reference groups filaments onto two
+/// nozzles of different kinds for (PrintConfig.cpp
+/// `support_different_extruders`): one or two extruders, whose
+/// `extruder_variant_list` names more than one kind between them.
+fn groups_onto_nozzles(settings: &Settings) -> bool {
+    let extruders = settings.texts("nozzle_diameter").map_or(0, <[String]>::len);
+    let kinds: std::collections::BTreeSet<&str> = (settings.texts("extruder_variant_list"))
+        .unwrap_or_default()
+        .iter()
+        .take(extruders)
+        .flat_map(|list| list.split(','))
+        .filter(|kind| !kind.is_empty())
+        .collect();
+    extruders <= 2 && kinds.len() > 1
 }
 
 #[cfg(test)]

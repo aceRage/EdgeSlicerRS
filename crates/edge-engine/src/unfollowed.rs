@@ -172,8 +172,6 @@ const SILENT: &[Silent] = &[
         &["flush_multiplier_fast"],
     )
     .many(Many::Printing),
-    // ToolOrdering.cpp l.1404: every filament of the project loaded.
-    silent("preload_all_filaments", Is("0")).many(Many::InProject),
     // PrintRegion.cpp l.58: walls and fill in a filament of their own.
     // An object that names its own filament sets these over the plate's
     // (PrintObject.cpp `apply_to_print_region_config`); said all the same,
