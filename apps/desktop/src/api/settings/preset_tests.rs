@@ -508,7 +508,7 @@ fn the_rules_and_the_engine_answer_for_filament_and_printer() {
     for key in ["nozzle_temperature", "filament_flow_ratio", "fan_max_speed"] {
         assert!(!has(&filament, "unread", key), "{key} is followed");
     }
-    assert!(has(&filament, "unread", "filament_z_offset"));
+    assert!(has(&filament, "unread", "filament_cost"));
     let printer = ask(&session, "settings", json!({ "kind": "printer" }));
     for key in ["machine_start_gcode", "retraction_length#0", "z_hop#2"] {
         assert!(!has(&printer, "unread", key), "{key} is followed");
