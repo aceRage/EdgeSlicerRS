@@ -1580,8 +1580,9 @@ fn gap_fill(
     )?;
     let mut lines = Vec::new();
     for gap in &gaps {
-        // A tenth of the reference's `SCALED_RESOLUTION`.
-        for gap in edge_clip::simplify(std::slice::from_ref(gap), 1_250)? {
+        // A tenth of the reference's `SCALED_RESOLUTION`, each ring in
+        // place and the rings not united again (`ExPolygon::douglas_peucker`).
+        for gap in edge_clip::simplify_rings(std::slice::from_ref(gap), 1_250) {
             // A gap whose middle cannot be found is left bare.
             if let Ok(found) = edge_medial::medial_axis(&gap, thinnest, widest) {
                 lines.extend(found);

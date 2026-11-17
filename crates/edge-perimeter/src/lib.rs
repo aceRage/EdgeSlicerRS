@@ -1391,7 +1391,9 @@ fn fill_gaps(
     )?;
     let mut lines = Vec::new();
     for gap in &narrow {
-        for gap in edge_clip::simplify(std::slice::from_ref(gap), params.resolution)? {
+        // Douglas-Peucker on each ring in place, the rings not united
+        // again (`ExPolygon::douglas_peucker`).
+        for gap in edge_clip::simplify_rings(std::slice::from_ref(gap), params.resolution) {
             match edge_medial::medial_axis(&gap, thinnest, widest) {
                 Ok(found) => lines.extend(found),
                 Err(_) => *skipped += 1,
