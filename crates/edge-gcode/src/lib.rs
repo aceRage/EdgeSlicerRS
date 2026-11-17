@@ -19,6 +19,7 @@ mod chain;
 mod circle;
 mod contour;
 mod cooling;
+mod copy_order;
 mod fan_mover;
 mod flush;
 mod inside;
@@ -3151,7 +3152,7 @@ impl Writer<'_> {
             let tower = (self.settings.prime_tower && self.file.filaments.len() > 1)
                 .then(|| self.settings.plate.tower_at.or(self.all[0].plate.tower_at))
                 .flatten();
-            for copy in labels::order(&copies, &present, tower) {
+            for copy in labels::order(&copies, &present, tower, self.all[0].plate.origin) {
                 self.stringing_copy(copy)?;
                 self.begin_copy(copy)?;
                 let own: Vec<&ExtrusionLoop> = (layer.around.iter().zip(&brims))

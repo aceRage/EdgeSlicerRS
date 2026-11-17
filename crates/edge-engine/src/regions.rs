@@ -1467,6 +1467,7 @@ pub(crate) mod tests {
             negatives: vec![Mesh::default(), Mesh::default()],
             parts: Vec::new(),
             plate: 0,
+            origin: (0.0, 0.0),
             first_layer_sequence: Vec::new(),
             plate_settings: Default::default(),
             bounds: ([0.0; 3], [25.0, 10.0, 10.0]),

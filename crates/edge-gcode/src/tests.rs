@@ -4294,7 +4294,8 @@ fn each_copy_is_labelled_round_its_own_islands() {
             "{name}: {xs:?}"
         );
     }
-    // The same lines laid, the first copy's first.
+    // The same lines laid, the copies in the reference's order: of two,
+    // the second first (`copy_order.rs`).
     let laid = |text: &str| -> f64 {
         moves(text)
             .filter_map(|line| word(line, 'E'))
@@ -4303,8 +4304,8 @@ fn each_copy_is_labelled_round_its_own_islands() {
     };
     assert!((laid(&klipper) - laid(&plain)).abs() < 1e-9);
     assert!(
-        klipper.find("NAME=a_b_id_0_copy_0\nG1").unwrap()
-            < klipper.find("START NAME=c_id").unwrap()
+        klipper.find("NAME=c_id_1_copy_0\nG1").unwrap()
+            < klipper.find("START NAME=a_b_id").unwrap()
     );
     // Bambu Lab's: numbered in the header, each by its bit, with comments.
     let bambu = labelled(Some(Labelling::Bambu), true);
@@ -4339,13 +4340,16 @@ fn copies_are_named_in_comments_without_being_labelled_for_cancelling() {
     let marks: Vec<&str> = (text.lines())
         .filter(|line| line.contains("printing object"))
         .collect();
+    // Two copies chain the same either way round; the reference's queue
+    // leaves the second on top (ShortestPath.cpp
+    // `chain_print_object_instances`, `copy_order.rs`).
     assert_eq!(
         marks,
         [
-            "; printing object a b id:0 copy 0",
-            "; stop printing object a b id:0 copy 0",
             "; printing object c id:1 copy 0",
             "; stop printing object c id:1 copy 0",
+            "; printing object a b id:0 copy 0",
+            "; stop printing object a b id:0 copy 0",
         ]
     );
     for none in ["EXCLUDE_OBJECT", "M486", "M624", "M625", "unique label id"] {

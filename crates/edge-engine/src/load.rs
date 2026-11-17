@@ -59,6 +59,12 @@ pub struct Loaded {
     pub parts: Vec<InstanceParts>,
     /// Which of the project's plates this is, counting from 0.
     pub plate: usize,
+    /// Where that plate sits in the project, in mm, which everything
+    /// here has been moved back from: nothing for the first plate or a
+    /// model. The reference keeps it in every copy's position
+    /// (`get_plate_origin`), which the order copies are printed in
+    /// comes from with a prime tower (`edge_gcode::Plate::origin`).
+    pub origin: (f64, f64),
     /// The order the plate sets for filaments on the first layer, as
     /// filament numbers from 1; empty when it sets none.
     pub first_layer_sequence: Vec<u32>,
@@ -477,6 +483,7 @@ pub(crate) fn lone(path: &Path, solid: Mesh) -> Result<Loaded, Failure> {
         negatives: Vec::new(),
         parts: Vec::new(),
         plate: 0,
+        origin: (0.0, 0.0),
         first_layer_sequence: Vec::new(),
         plate_settings: Settings::default(),
         bounds,
@@ -565,6 +572,7 @@ pub(crate) fn placed(
         negatives,
         parts,
         plate: plate.unwrap_or(0),
+        origin: origin.unwrap_or((0.0, 0.0)),
         first_layer_sequence,
         plate_settings: plate
             .map(|index| plate_settings(project.plates[index].kept.as_deref()))

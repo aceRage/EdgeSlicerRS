@@ -17,7 +17,7 @@ use edge_extrusion::ExtrusionLoop;
 use edge_geom::{Point2, unscaled};
 use edge_template::stream_double;
 
-use crate::chain;
+use crate::copy_order;
 use crate::settings::{Labelling, ObjectLabel};
 
 /// GCode.cpp `sanitize_instance_name`: each run of the characters
@@ -270,14 +270,30 @@ pub(crate) fn brim_owner(labels: &[ObjectLabel], brim: &ExtrusionLoop) -> Option
 
 /// The order the copies in `present` are printed in on a layer (GCode.cpp
 /// `process_layer`, `sort_print_object_instances`; ShortestPath.cpp
-/// `chain_print_object_instances`): nearest after nearest by the middle
-/// of each copy's box. On a layer with a prime tower the chain starts
-/// from the tower and is taken backwards, so the last copy is the one
-/// nearest the tower. Not as the reference, which means to start from
-/// the tower but makes its point from `wipe_tower_x` and `_y` in
-/// millimetres taken as nanometres (GCode.cpp `process_layer`, `Point
-/// wt_pos(...)`), so its chain starts at the bed's corner.
-pub(crate) fn order(labels: &[ObjectLabel], present: &[bool], tower: Option<Point2>) -> Vec<usize> {
+/// `chain_print_object_instances`): the middles of the copies' boxes
+/// chained as the reference chains them ([`copy_order`]). Without a
+/// prime tower the chain runs through every copy on the plate, from
+/// whichever end the reference's chaining leaves first, once for the
+/// whole print (`print_object_instances_ordering`).
+///
+/// On a layer with a prime tower (`tower`) it runs through every copy of
+/// each object printing on the layer and is taken backwards. The
+/// reference means to start it from the tower, but makes the point from
+/// `wipe_tower_x` and `_y` in millimetres taken as its own units
+/// (nanometres; GCode.cpp `process_layer`, `Point wt_pos(...)`), where
+/// the copies stand in the project's coordinates with the plate's place
+/// among the others added (`get_plate_origin`): it starts from the
+/// corner of the first plate, and so ends there. That is followed here,
+/// though it is plainly not what was meant, so that the copies come in
+/// the reference's order; nothing is printed differently for it but the
+/// travel between copies. `origin` is the plate's place in the project,
+/// in mm.
+pub(crate) fn order(
+    labels: &[ObjectLabel],
+    present: &[bool],
+    tower: Option<Point2>,
+    origin: [f64; 2],
+) -> Vec<usize> {
     // The tower's chain runs through every copy of each object printing
     // on the layer; the plate's through every copy.
     let chained: Vec<usize> = match tower {
@@ -289,16 +305,23 @@ pub(crate) fn order(labels: &[ObjectLabel], present: &[bool], tower: Option<Poin
             .collect(),
         None => (0..labels.len()).collect(),
     };
-    let ends: Vec<[Point2; 2]> = chained
+    let points: Vec<[f64; 2]> = chained
         .iter()
         .map(|at| {
             let m = middle(&labels[*at]);
-            [m, m]
+            [m.x as f64, m.y as f64]
         })
         .collect();
-    let mut ordered: Vec<usize> = chain::chain(&ends, &|_| false, tower)
+    let start = tower.map(|at| {
+        let corner = Point2::from_mm(-origin[0], -origin[1]);
+        [
+            (corner.x as f64) + unscaled(at.x).round(),
+            (corner.y as f64) + unscaled(at.y).round(),
+        ]
+    });
+    let mut ordered: Vec<usize> = copy_order::order(&points, start)
         .into_iter()
-        .map(|(at, _)| chained[at])
+        .map(|at| chained[at])
         .collect();
     if tower.is_some() {
         ordered.reverse();
@@ -372,13 +395,36 @@ mod tests {
         assert_eq!(owner(&labels, Point2::from_mm(41.0, 12.0)), 1);
         // Outside every outline: the nearest middle.
         assert_eq!(owner(&labels, Point2::from_mm(70.0, 30.0)), 2);
-        // From the tower at the right, taken backwards: the copy nearest
-        // the tower last.
+        // With a tower the chain starts at the first plate's corner,
+        // wherever the tower is, and is taken backwards: the copy nearest
+        // that corner last (GCode.cpp `process_layer`, `wt_pos`).
         let all = [true; 3];
         assert_eq!(
-            order(&labels, &all, Some(Point2::from_mm(100.0, 10.0))),
+            order(&labels, &all, Some(Point2::from_mm(100.0, 10.0)), [0.0; 2]),
+            [2, 1, 0]
+        );
+        // On a plate to the right of the first, the corner is to its left.
+        assert_eq!(
+            order(
+                &labels,
+                &all,
+                Some(Point2::from_mm(5.0, 10.0)),
+                [300.0, 0.0]
+            ),
+            [2, 1, 0]
+        );
+        // On a plate to the left (none is, but the corner decides): the
+        // other way.
+        assert_eq!(
+            order(
+                &labels,
+                &all,
+                Some(Point2::from_mm(5.0, 10.0)),
+                [-300.0, 0.0]
+            ),
             [0, 1, 2]
         );
-        assert_eq!(order(&labels, &[true, false, true], None), [0, 2]);
+        let free = order(&labels, &[true, false, true], None, [0.0; 2]);
+        assert!(free == [0, 2] || free == [2, 0], "{free:?}");
     }
 }
