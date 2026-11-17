@@ -2,8 +2,9 @@ use std::f64::consts::FRAC_PI_2;
 
 use edge_clip::{ClipError, Join};
 use edge_extrusion::{ExtrusionPath, Flow, Role};
-use edge_geom::{ExPolygon, Point2, scaled};
+use edge_geom::{Coord, ExPolygon, Point2, scaled};
 
+use crate::rectilinear;
 use crate::{NarrowFill, Pattern, Surface, SurfaceKind, curves, lines, narrow};
 
 /// Why a layer could not be filled.
@@ -843,9 +844,28 @@ pub fn fill_within(
                 }
             }
             Lay::Anchored => {
-                let line = flow.scaled_spacing();
+                // The reference works the spacing out in single precision
+                // (`Flow::spacing`) and scales it in double: half of it is
+                // what the area is taken in by for the lines' ends
+                // (`fill_surface_by_multilines`, passed through a `float`),
+                // the whole of it, cut to whole units, how far rows keep
+                // off the area's edge, and over the density per set of
+                // lines (a `float` too), how far apart the rows lie.
+                let ref_spacing = if (flow.spacing - params.sparse_spacing).abs() < 1e-12 {
+                    // `rounded_rectangle_extrusion_spacing`, in `float`.
+                    f64::from(
+                        flow.width as f32
+                            - flow.height as f32 * (1.0 - 0.25 * std::f64::consts::PI) as f32,
+                    )
+                } else {
+                    f64::from(params.sparse_spacing as f32)
+                };
+                let scale = |mm: f64| mm / 0.000_001;
+                let inset = (scale(-0.5 * ref_spacing) as f32) as Coord;
+                let line_width = scale(ref_spacing) as Coord;
                 let inside =
-                    edge_clip::offset(std::slice::from_ref(&surface.area), -line / 2, Join::MITER)?;
+                    edge_clip::offset(std::slice::from_ref(&surface.area), inset, Join::MITER)?;
+                let line = flow.scaled_spacing();
                 let joining = sparse_joining(line);
                 // Each direction's lines pass through the origin. None
                 // lies within a line's spacing of the area's own edge,
@@ -868,23 +888,74 @@ pub fn fill_within(
                         lines::Rows { first, within }
                     })
                     .collect();
+                // The lines as the reference makes them, to the unit, for
+                // the patterns that are rows in sets with no more to them:
+                // the frame's angle added up in single precision as
+                // `_infill_direction` and `fill_surface_by_multilines` do,
+                // and the rows' pitch over the density shared between the
+                // sets. Where the reference would give up on the area, and
+                // for the lateral honeycomb, the rows above are used.
+                let exact = if params.pattern == Pattern::LateralHoneycomb {
+                    None
+                } else {
+                    let direction = params.sparse_angle as f32 + std::f32::consts::FRAC_PI_2;
+                    let density = ((params.density as f32) as f64 / sweeps.len() as f64) as f32;
+                    let line_spacing = (scale(ref_spacing) / f64::from(density)) as Coord;
+                    let ref_sweeps: Vec<rectilinear::Sweep> = sweeps
+                        .iter()
+                        .map(|(angle, shift)| rectilinear::Sweep {
+                            angle: direction + (angle - params.sparse_angle) as f32,
+                            shift: scale(f64::from(*shift as f32)) as Coord,
+                        })
+                        .collect();
+                    let rings: Vec<&edge_geom::Polygon> =
+                        inside.iter().flat_map(ExPolygon::rings).collect();
+                    rectilinear::fill_lines(
+                        &surface.area,
+                        &rings,
+                        origin,
+                        line_spacing,
+                        line_width,
+                        &ref_sweeps,
+                    )
+                };
+                let made = exact.unwrap_or_else(|| {
+                    lines::rows_in_order(&inside, scaled(spacing) as f64, &rows, angles)
+                });
                 // A path shorter than half its own width is a blob, not a
                 // line, and is left out; the reference keeps them.
                 let least = flow.width / 2.0;
-                for area in &inside {
-                    for points in
-                        lines::paths_anchored(area, scaled(spacing) as f64, &rows, angles, joining)
-                    {
-                        let path = ExtrusionPath {
-                            points,
-                            role,
-                            flow,
-                            in_turn: false,
-                            part,
-                        };
-                        if path.length_mm() >= least {
-                            paths.push(path);
-                        }
+                // A grid, a lateral lattice and a lateral honeycomb are
+                // laid from the other end of every path on odd layers
+                // (FillRectilinear.cpp, `FillGrid::fill_surface` and the
+                // like: "if (this->layer_id % 2 == 1) std::reverse"), and
+                // a grid's paths are not turned again when they are
+                // ordered (`ExtrusionPath::KEPT_WAY`).
+                let turned_round = layer_index % 2 == 1
+                    && matches!(
+                        params.pattern,
+                        Pattern::Grid | Pattern::LateralLattice | Pattern::LateralHoneycomb
+                    );
+                let part = if params.pattern == Pattern::Grid {
+                    part | ExtrusionPath::KEPT_WAY
+                } else {
+                    part
+                };
+                // Every island of the surface at once, as the reference
+                // joins the lines of `polygons_outer` together.
+                for mut points in lines::connected(made, &inside, scale(ref_spacing), joining) {
+                    if turned_round {
+                        points.reverse();
+                    }
+                    let path = ExtrusionPath {
+                        points,
+                        role,
+                        flow,
+                        in_turn: false,
+                        part,
+                    };
+                    if path.length_mm() >= least {
+                        paths.push(path);
                     }
                 }
             }
@@ -1373,6 +1444,40 @@ mod tests {
             },
             angle: None,
         }
+    }
+
+    #[test]
+    fn a_grid_is_laid_the_other_way_on_odd_layers_and_kept_that_way() {
+        // The same lines on an even and an odd layer (a grid does not turn
+        // from layer to layer), each path run the other way on the odd one
+        // (`FillGrid::fill_surface`), and marked not to be turned when
+        // ordered (`params.can_reverse = false` for a grid).
+        let mut grid = params(Pattern::Grid, 0.2);
+        grid.sparse_link_max = 10.0;
+        grid.sparse_anchor = 1.0;
+        grid.origin = Point2::from_mm(20.0, 20.0);
+        let square = [surface(SurfaceKind::Sparse, 40.0)];
+        let even = fill(&square, 2, &grid).unwrap();
+        let odd = fill(&square, 3, &grid).unwrap();
+        assert!(!even.is_empty());
+        assert_eq!(even.len(), odd.len());
+        for (a, b) in even.iter().zip(&odd) {
+            let mut turned = b.points.clone();
+            turned.reverse();
+            assert_eq!(a.points, turned);
+        }
+        assert!(even.iter().chain(&odd).all(ExtrusionPath::keeps_way));
+        assert!(
+            even.iter()
+                .all(|path| path.part & !ExtrusionPath::KEPT_WAY == 1)
+        );
+        // Other patterns of crossing rows are neither turned nor kept.
+        let mut triangles = grid;
+        triangles.pattern = Pattern::Triangles;
+        let even = fill(&square, 2, &triangles).unwrap();
+        let odd = fill(&square, 3, &triangles).unwrap();
+        assert_eq!(even, odd);
+        assert!(!even.iter().any(ExtrusionPath::keeps_way));
     }
 
     #[test]
