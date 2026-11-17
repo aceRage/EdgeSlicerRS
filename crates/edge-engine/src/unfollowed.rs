@@ -104,12 +104,6 @@ use Off::{Blank, Is, Unless};
 /// numbers in the pinned reference's `src/libslic3r`).
 const SILENT: &[Silent] = &[
     // Speed and motion.
-    // GCode.cpp l.11573: inner walls under an overhang slowed like it.
-    gate(
-        "overhang_shadow_inner_wall",
-        Is("0"),
-        &["overhang_shadow_distance", "overhang_shadow_speed_ratio"],
-    ),
     // LayerTimeSpeedSmoothingFilter.
     gate(
         "layer_time_speed_smoothing",
@@ -121,12 +115,6 @@ const SILENT: &[Silent] = &[
             "layer_time_speed_max_variation",
             "layer_time_speed_slowdown_scope",
         ],
-    ),
-    // GCode.cpp l.9971: park and pause for the minimum layer time.
-    gate(
-        "min_layer_time_pause",
-        Is("0"),
-        &["min_layer_time_pause_park_x", "min_layer_time_pause_park_y"],
     ),
     // Extrusion.
     // PerimeterGenerator.hpp l.149: surfaces and walls over support,
@@ -171,15 +159,19 @@ const SILENT: &[Silent] = &[
     gate("hollow_interior", Is("0"), &["hollow_shell_thickness"]),
     // Tool changes.
     // ToolOrdering.cpp l.1617, GCode.cpp l.493: flushing for "Fast"; ours
-    // follows "Saving" alone.
+    // follows "Saving" alone. flush_multiplier_fast scales only the flush
+    // matrices the nozzle grouping weighs (`prepare_flush_matrices`, for
+    // `build_filament_group_context`), on printers of two extruders or a
+    // nozzle rack; not the tower's flushes nor the order of tools on a
+    // layer. That grouping is not done here (two-nozzle Bambu printers are
+    // refused), so it stays said with "Fast". Measured: on the U1
+    // (mcbrim_test.3mf) the reference's G-code is the same with it at 3.
     gate(
         "prime_volume_mode",
         Unless("Fast", "Default"),
         &["flush_multiplier_fast"],
     )
     .many(Many::Printing),
-    // ToolOrdering.cpp l.1404: every filament of the project loaded.
-    silent("preload_all_filaments", Is("0")).many(Many::InProject),
     // PrintRegion.cpp l.58: walls and fill in a filament of their own.
     // An object that names its own filament sets these over the plate's
     // (PrintObject.cpp `apply_to_print_region_config`); said all the same,
@@ -744,7 +736,6 @@ mod tests {
             "brim_ears",
             "filament_grouping_mode",
             "has_scarf_joint_seam",
-            "min_layer_time_pause_park",
             "mixed_filament_auto_gradient_choice",
             "mixed_filament_auto_gradient_physical_count",
             "tree_support_with_infill",
@@ -756,10 +747,6 @@ mod tests {
         /// Being made to be followed on branches of their own; each comes
         /// off here when it lands.
         pub const IN_HAND: &[&str] = &[];
-        /// Only matter with toolchange_ordering "cyclic", which has a
-        /// note of its own (pipeline.rs).
-        pub const SAID_BY_ANOTHER: &[&str] =
-            &["toolchange_cyclic_order", "toolchange_cyclic_first_layer"];
     }
 
     /// Read by a stage and said where only partly followed: kept in the
@@ -930,7 +917,6 @@ mod tests {
             allowed::DEAD,
             allowed::PLACEHOLDER,
             allowed::IN_HAND,
-            allowed::SAID_BY_ANOTHER,
         ]
         .concat()
         .into_iter()

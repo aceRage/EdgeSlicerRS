@@ -738,6 +738,11 @@ pub(crate) struct Gauge<'a> {
     /// The fan comes on where no more than this share of the width is
     /// supported; none when it does not go by that.
     pub(crate) fan_at: Option<f32>,
+    /// How much further out over the layer beneath, in mm, each point is
+    /// graded than it is, for its speed and cover alone: an inner wall in
+    /// an overhang's shadow (`overhang_shadow_shift`); 0 for none. The
+    /// points it is measured at are the wall's own either way.
+    pub(crate) shadow: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -999,21 +1004,30 @@ impl Gauge<'_> {
         let points = cut_points;
 
         let width_inv = 1.0 / self.width;
+        let shadow = self.shadow;
         (0..points.len())
             .map(|index| {
                 let here = &points[index];
                 let next = &points[(index + 1).min(points.len() - 1)];
+                let mut speed = self
+                    .speeds
+                    .at(here.short)
+                    .min(self.speeds.at(next.short))
+                    .min(self.speeds.original);
+                if shadow > 0.0 {
+                    speed = speed.min(
+                        (self.speeds.at(here.short + shadow))
+                            .min(self.speeds.at(next.short + shadow)),
+                    );
+                }
                 Reading {
                     at: here.own.unwrap_or(Point2 {
                         x: scaled(here.x),
                         y: scaled(here.y),
                     }),
-                    speed: self
-                        .speeds
-                        .at(here.short)
-                        .min(self.speeds.at(next.short))
-                        .min(self.speeds.original),
-                    cover: (1.0 - here.short * width_inv).min(1.0 - next.short * width_inv),
+                    speed,
+                    cover: (1.0 - (here.short + shadow) * width_inv)
+                        .min(1.0 - (next.short + shadow) * width_inv),
                 }
             })
             .collect()
@@ -1183,6 +1197,37 @@ mod tests {
     }
 
     #[test]
+    fn a_wall_in_an_overhangs_shadow_is_graded_further_out() {
+        // A wall 0.1 mm in from the edge of a plate at x = 10: a quarter
+        // of its width short of support, at full speed. In the shadow of
+        // the overhang beyond it, 0.12 mm further out, it is graded 0.22
+        // mm short: a fifth of the way from 50 to 30 mm/s, and with 45%
+        // of its width covered, not 75%. Its points stay its own.
+        let below = Below::new(&[square(0.0, 0.0, 10.0)], 0.6).unwrap();
+        let speeds = speeds(100.0);
+        let path = [Point2::from_mm(9.9, 2.0), Point2::from_mm(9.9, 8.0)];
+        let gauge = |shadow: f32| Gauge {
+            below: &below,
+            width: 0.4,
+            speeds: &speeds,
+            fan_at: None,
+            shadow,
+        };
+        let plain = gauge(0.0).readings(&path, None);
+        let shaded = gauge(0.12).readings(&path, None);
+        assert_eq!(summary(&plain), [(9.9, 2.0, 100.0), (9.9, 8.0, 100.0)]);
+        assert_eq!(summary(&shaded), [(9.9, 2.0, 46.0), (9.9, 8.0, 46.0)]);
+        assert!((plain[0].cover - 0.75).abs() < 1e-4, "{}", plain[0].cover);
+        assert!((shaded[0].cover - 0.45).abs() < 1e-4, "{}", shaded[0].cover);
+        // Well inside, the shadow reaches nothing.
+        let inside = [Point2::from_mm(5.0, 2.0), Point2::from_mm(5.0, 8.0)];
+        assert_eq!(
+            summary(&gauge(0.12).readings(&inside, None)),
+            [(5.0, 2.0, 100.0), (5.0, 8.0, 100.0)]
+        );
+    }
+
+    #[test]
     fn a_long_line_is_cut_beside_the_end_that_hangs_out() {
         // Straight out over the edge of a plate at x = 10 and on over
         // air. Worked by hand from ExtrusionProcessor.hpp:
@@ -1205,6 +1250,7 @@ mod tests {
             width: 0.4,
             speeds: &speeds,
             fan_at: None,
+            shadow: 0.0,
         };
         let path = [Point2::from_mm(5.0, 5.0), Point2::from_mm(15.0, 5.0)];
         let readings = gauge.readings(&path, None);
@@ -1263,6 +1309,7 @@ mod tests {
             width: 0.4,
             speeds: &speeds,
             fan_at: None,
+            shadow: 0.0,
         };
         let path = [Point2::from_mm(4.5, 0.2), Point2::from_mm(36.5, 0.2)];
         assert_eq!(
@@ -1298,6 +1345,7 @@ mod tests {
             width: 0.4,
             speeds: &speeds,
             fan_at: None,
+            shadow: 0.0,
         };
         let short = [Point2::from_mm(17.6, 0.2), Point2::from_mm(19.5, 0.2)];
         assert_eq!(
@@ -1322,6 +1370,7 @@ mod tests {
             width: 0.4,
             speeds: &speeds,
             fan_at: Some(0.5),
+            shadow: 0.0,
         };
         let path: Vec<Point2> = (0..=40)
             .map(|step| Point2::from_mm(29.75 + 0.006 * step as f64, 5.0 + 0.5 * step as f64))
@@ -1365,6 +1414,7 @@ mod tests {
             width: 0.4,
             speeds: &speeds,
             fan_at: Some(0.5),
+            shadow: 0.0,
         }
         .readings(&path, None);
         assert!(cooled.iter().all(|reading| reading.speed == 5.0));
@@ -1381,6 +1431,7 @@ mod tests {
             width: 0.4,
             speeds: &speeds,
             fan_at: None,
+            shadow: 0.0,
         }
         .readings(&path, None);
         let ends: Vec<f64> = plain.iter().map(|reading| unscaled(reading.at.x)).collect();
