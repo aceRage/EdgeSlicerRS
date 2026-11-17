@@ -64,6 +64,10 @@ pub struct AdhesionSettings {
     /// Where the skirt starts, in degrees anticlockwise from +X as seen
     /// from its middle.
     pub skirt_start_angle: f64,
+    /// Whether the skirt is one loop, its innermost, above the first
+    /// layer (`single_loop_draft_shield`; GCode.cpp l.7129, whether the
+    /// skirt stands as a draft shield or is only some layers tall).
+    pub single_loop_above_first: bool,
     pub brim: BrimKind,
     /// Width of an `Outer` brim in mm.
     pub brim_width: f64,
@@ -96,6 +100,7 @@ impl Default for AdhesionSettings {
             skirt_distance: 2.0,
             skirt_height: 1,
             skirt_start_angle: -135.0,
+            single_loop_above_first: false,
             brim: BrimKind::Auto,
             brim_width: 0.0,
             filament_type: String::new(),
@@ -184,6 +189,9 @@ impl AdhesionSettings {
             skirt_start_angle: settings
                 .float("skirt_start_angle")?
                 .unwrap_or(defaults.skirt_start_angle),
+            single_loop_above_first: settings
+                .flag("single_loop_draft_shield")?
+                .unwrap_or(defaults.single_loop_above_first),
             brim,
             brim_width: settings.float("brim_width")?.unwrap_or(defaults.brim_width),
             filament_type: settings

@@ -2570,6 +2570,11 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 &adhesion,
                 height,
             )?;
+            // Above the first layer only the innermost loop, the last laid,
+            // with `single_loop_draft_shield` (GCode.cpp l.7129).
+            if index > 0 && adhesion.single_loop_above_first && lines.len() > 1 {
+                lines.drain(..lines.len() - 1);
+            }
         }
     }
     let skirt_loops = around.first().map_or(0, Vec::len);

@@ -1801,6 +1801,33 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_single_loop_skirt_stands_above_the_first_layer() {
+        let skirt = |single: &str| {
+            let sliced = two_cubes(
+                &[],
+                &[],
+                Vec::new(),
+                Vec::new(),
+                &format!(
+                    r#"{{"skirt_loops": "3", "skirt_height": "3", "brim_type": "no_brim",
+                        "single_loop_draft_shield": "{single}"}}"#
+                ),
+            );
+            (0..3)
+                .map(|layer| sliced.around[layer].clone())
+                .collect::<Vec<_>>()
+        };
+        let (all, single) = (skirt("0"), skirt("1"));
+        assert!(all.iter().all(|loops| loops.len() == 3));
+        // The first layer keeps all its loops; above it the innermost, the
+        // last laid, is left.
+        assert_eq!(single[0], all[0]);
+        for layer in 1..3 {
+            assert_eq!(single[layer].as_slice(), &all[layer][2..]);
+        }
+    }
+
+    #[test]
     fn regions_are_found_again_by_what_they_set() {
         let plate =
             Settings::from_json(r#"{"wall_loops": "2", "sparse_infill_density": "15%"}"#).unwrap();

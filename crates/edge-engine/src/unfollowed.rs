@@ -358,8 +358,6 @@ const SILENT: &[Silent] = &[
     silent("separated_infills", Is("0")),
     // Walls: PerimeterGenerator.cpp l.346.
     silent("offset_layers", Is("0")),
-    // Skirt: GCode.cpp l.7129.
-    silent("single_loop_draft_shield", Is("0")),
     // Order of objects: GCode.cpp l.3711.
     silent("print_order", Is("default")),
     // G-code of the profile's own: GCode.cpp l.11741, l.4345.
