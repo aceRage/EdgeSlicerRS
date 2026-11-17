@@ -1155,29 +1155,27 @@ pub fn fill_within(
             _ => false,
         };
         if wanted && !no_overlap.is_empty() {
-            // The gap lines of a surface whose lines may be reordered are
-            // of its part, to be ordered with them; those of a surface
-            // laid in turn (the reference's `no_sort`) are a part of
-            // their own, numbered past the surfaces.
+            let gaps = gap_fill(surface, &paths[first_path..], &flow, params, no_overlap)?;
+            // Lines laid in turn keep their order and the gap lines go in
+            // among them (`insert_gap_fill`, where the reference's
+            // collection is `no_sort`); otherwise the gap lines join the
+            // surface's lines, to be ordered with them when the layer is
+            // written.
             let in_turn = match lay {
                 Lay::Turned { ordered, .. } => ordered,
                 Lay::Spiral => params.flow_calib_order,
                 _ => false,
             };
-            let gap_part = if in_turn {
-                (surfaces.len() + number + 1) as u32
+            if in_turn && paths.len() > first_path {
+                let laid = paths.split_off(first_path);
+                paths.extend(insert_gap_fill(laid, &gaps, &flow, part));
             } else {
-                part
-            };
-            let gaps = gap_fill(
-                surface,
-                &paths[first_path..],
-                &flow,
-                params,
-                no_overlap,
-                gap_part,
-            )?;
-            paths.extend(gaps);
+                let mut made = edge_medial::variable_width(&gaps, Role::GapFill, &flow);
+                for path in &mut made {
+                    path.part = part;
+                }
+                paths.extend(made);
+            }
         }
     }
     if let Some(narrow) = &params.narrow {
@@ -1537,21 +1535,15 @@ const SCALED_EPSILON: f64 = 100.0;
 const INSET_OVERLAP_TOLERANCE: f64 = 0.4;
 
 /// Lines down the middle of what `laid`, a solid surface's own lines,
-/// leave bare of the surface's share of `no_overlap`, each as wide as the
-/// gap it fills (FillBase.cpp `_create_gap_fill`).
-///
-/// They are given `part`. Different from the reference where the
-/// surface's lines are laid in turn: there its gap lines are slipped in
-/// among them wherever that saves travel (`insert_gap_fill`); here they
-/// are a part of their own, ordered with the layer's other parts.
+/// leave bare of the surface's share of `no_overlap`, with the width of
+/// the gap they fill (FillBase.cpp `_create_gap_fill`).
 fn gap_fill(
     surface: &Surface,
     laid: &[ExtrusionPath],
     flow: &Flow,
     params: &FillParams,
     no_overlap: &[ExPolygon],
-    part: u32,
-) -> Result<Vec<ExtrusionPath>, ClipError> {
+) -> Result<Vec<edge_medial::ThickPolyline>, ClipError> {
     // What the lines cover, each by its spacing and a little over.
     let mut covered = Vec::new();
     for path in laid {
@@ -1588,8 +1580,9 @@ fn gap_fill(
     )?;
     let mut lines = Vec::new();
     for gap in &gaps {
-        // A tenth of the reference's `SCALED_RESOLUTION`.
-        for gap in edge_clip::simplify(std::slice::from_ref(gap), 1_250)? {
+        // A tenth of the reference's `SCALED_RESOLUTION`, each ring in
+        // place and the rings not united again (`ExPolygon::douglas_peucker`).
+        for gap in edge_clip::simplify_rings(std::slice::from_ref(gap), 1_250) {
             // A gap whose middle cannot be found is left bare.
             if let Ok(found) = edge_medial::medial_axis(&gap, thinnest, widest) {
                 lines.extend(found);
@@ -1597,11 +1590,200 @@ fn gap_fill(
         }
     }
     lines.retain(|line| line.length() >= scaled(params.gap_shortest) as f64);
-    let mut made = edge_medial::variable_width(&lines, Role::GapFill, flow);
-    for path in &mut made {
-        path.part = part;
+    Ok(lines)
+}
+
+/// The gap lines of a surface whose lines are laid in turn, each put
+/// among `laid` where it adds least travel, but never before the last
+/// of the surface's lines beside it; all of them after `laid` instead
+/// when that travels no further (FillBase.cpp `insert_gap_fill`). The
+/// surface's lines keep their order and direction, and so does every
+/// gap line where it is put: all of them are laid in turn.
+fn insert_gap_fill(
+    laid: Vec<ExtrusionPath>,
+    gaps: &[edge_medial::ThickPolyline],
+    flow: &Flow,
+    part: u32,
+) -> Vec<ExtrusionPath> {
+    let gaps = edge_medial::without_repeated_loops(gaps);
+    let point = |p: Point2| (p.x as f64, p.y as f64);
+    let apart = |a: Point2, b: Point2| {
+        let ((ax, ay), (bx, by)) = (point(a), point(b));
+        (bx - ax).hypot(by - ay)
+    };
+    let closed = |gap: usize| gaps[gap].points.first() == gaps[gap].points.last();
+    // The point of a closed gap line nearest `to`, where it is begun.
+    let nearest = |gap: usize, to: Point2| {
+        *gaps[gap]
+            .points
+            .iter()
+            .min_by(|a, b| apart(**a, to).total_cmp(&apart(**b, to)))
+            .expect("a gap line has points")
+    };
+    #[derive(Clone, Copy)]
+    struct Item {
+        enter: Point2,
+        leave: Point2,
+        gap: Option<usize>,
+        reversed: bool,
     }
-    Ok(made)
+    let travel = |sequence: &[Item]| {
+        let mut sum = 0.0;
+        let mut at = sequence[0].leave;
+        for item in &sequence[1..] {
+            let ring = item.gap.filter(|&gap| closed(gap));
+            let enter = ring.map_or(item.enter, |gap| nearest(gap, at));
+            sum += apart(at, enter);
+            at = if ring.is_some() { enter } else { item.leave };
+        }
+        sum
+    };
+
+    // The last of the surface's lines that lies beside each gap line
+    // (Orca #17223): within half the gap's widest plus a spacing of a
+    // point along it, taken every half spacing.
+    let spacing = flow.scaled_spacing() as f64;
+    let after: Vec<Option<usize>> = gaps
+        .iter()
+        .map(|gap| {
+            let widest = gap.widths.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            if gap.widths.is_empty() {
+                return None;
+            }
+            let reach = 0.5 * widest + spacing;
+            let mut samples = Vec::new();
+            for pair in gap.points.windows(2) {
+                let (a, b) = (point(pair[0]), point(pair[1]));
+                let length = (b.0 - a.0).hypot(b.1 - a.1);
+                let steps = ((length / (0.5 * spacing)).ceil() as usize).max(1);
+                for step in 0..=steps {
+                    let t = step as f64 / steps as f64;
+                    samples.push((a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1)));
+                }
+            }
+            (0..laid.len()).rev().find(|&line| {
+                laid[line].points.windows(2).any(|pair| {
+                    let (a, b) = (point(pair[0]), point(pair[1]));
+                    samples.iter().any(|&p| segment_distance(p, a, b) <= reach)
+                })
+            })
+        })
+        .collect();
+
+    let mut items: Vec<Item> = laid
+        .iter()
+        .map(|path| Item {
+            enter: path.points[0],
+            leave: path.points[path.points.len() - 1],
+            gap: None,
+            reversed: false,
+        })
+        .collect();
+    let mut appended = items.clone();
+    for gap in 0..gaps.len() {
+        let (first, last) = (
+            gaps[gap].points[0],
+            gaps[gap].points[gaps[gap].points.len() - 1],
+        );
+        appended.push(Item {
+            enter: first,
+            leave: last,
+            gap: Some(gap),
+            reversed: false,
+        });
+        let mut best = f64::MAX;
+        let mut best_slot = 0;
+        let mut best_item = None;
+        let mut lines_before = 0;
+        for slot in 0..=items.len() {
+            if slot > 0 && items[slot - 1].gap.is_none() {
+                lines_before += 1;
+            }
+            if after[gap].is_some_and(|after| lines_before <= after) {
+                continue;
+            }
+            let previous = (slot > 0).then(|| items[slot - 1].leave);
+            let next = items.get(slot).map(|item| item.enter);
+            let mut consider = |enter: Point2, leave: Point2, reversed: bool| {
+                let added = previous.map_or(0.0, |p| apart(p, enter))
+                    + next.map_or(0.0, |n| apart(leave, n))
+                    - match (previous, next) {
+                        (Some(p), Some(n)) => apart(p, n),
+                        _ => 0.0,
+                    };
+                if added < best {
+                    best = added;
+                    best_slot = slot;
+                    best_item = Some(Item {
+                        enter,
+                        leave,
+                        gap: Some(gap),
+                        reversed,
+                    });
+                }
+            };
+            if closed(gap) {
+                let entry = nearest(gap, previous.or(next).unwrap_or(first));
+                consider(entry, entry, false);
+            } else {
+                consider(first, last, false);
+                consider(last, first, true);
+            }
+        }
+        if let Some(item) = best_item {
+            items.insert(best_slot, item);
+        }
+    }
+    if travel(&appended) <= travel(&items) {
+        items = appended;
+    }
+
+    let mut laid = laid.into_iter();
+    let mut out = Vec::with_capacity(items.len());
+    for item in &items {
+        match item.gap {
+            None => out.extend(laid.next()),
+            Some(gap) => {
+                let mut line = gaps[gap].clone();
+                if item.reversed {
+                    line.reverse();
+                }
+                for mut path in
+                    edge_medial::variable_width(std::slice::from_ref(&line), Role::GapFill, flow)
+                {
+                    // A closed line is begun where the nozzle comes in
+                    // (GCode.cpp `extrude_loop` starts a loop at its
+                    // point nearest the nozzle).
+                    if closed(gap) && path.points.first() == path.points.last() {
+                        let at = path.points.iter().position(|p| *p == item.enter);
+                        if let Some(at) = at {
+                            path.points.pop();
+                            path.points.rotate_left(at);
+                            path.points.push(path.points[0]);
+                        }
+                    }
+                    path.part = part;
+                    out.push(path);
+                }
+            }
+        }
+    }
+    for (index, path) in out.iter_mut().enumerate() {
+        path.in_turn = index > 0;
+    }
+    out
+}
+
+/// The distance from `p` to the segment from `a` to `b`.
+fn segment_distance(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let length = dx * dx + dy * dy;
+    let t = if length > 0.0 {
+        (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / length).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (p.0 - (a.0 + t * dx)).hypot(p.1 - (a.1 + t * dy))
 }
 
 #[cfg(test)]
@@ -2529,6 +2711,82 @@ mod tests {
     }
 
     #[test]
+    fn gap_lines_go_in_among_lines_laid_in_turn_where_they_add_least() {
+        let flow = Flow::new(0.45, 0.2, 0.4).unwrap();
+        let laid = |x: f64| ExtrusionPath {
+            points: vec![Point2::from_mm(x, 0.0), Point2::from_mm(x, 10.0)],
+            role: Role::TopSolidInfill,
+            flow,
+            in_turn: x > 0.0,
+            part: 1,
+        };
+        // Three lines up the area and a gap line beside the second, laid
+        // down: it goes after the second (the last of the lines beside
+        // it), turned to start where that one ends.
+        let gap = edge_medial::ThickPolyline {
+            points: vec![Point2::from_mm(5.3, 1.0), Point2::from_mm(5.3, 9.0)],
+            widths: vec![0.2e6, 0.2e6],
+            open_ends: (true, true),
+        };
+        let out = insert_gap_fill(vec![laid(0.0), laid(5.0), laid(30.0)], &[gap], &flow, 1);
+        let roles: Vec<Role> = out.iter().map(|path| path.role).collect();
+        assert_eq!(
+            roles,
+            [
+                Role::TopSolidInfill,
+                Role::TopSolidInfill,
+                Role::GapFill,
+                Role::TopSolidInfill
+            ]
+        );
+        assert_eq!(out[2].points[0], Point2::from_mm(5.3, 9.0));
+        assert!(!out[0].in_turn && out[1..].iter().all(|path| path.in_turn && path.part == 1));
+    }
+
+    #[test]
+    fn gap_lines_go_after_lines_laid_in_turn_when_that_travels_no_further() {
+        // A gap line past the end of the last line: put anywhere else it
+        // would add travel, so all gap lines come after the lines, and
+        // a gap line is begun at its end nearest where the lines finish
+        // only when it goes in among them.
+        let flow = Flow::new(0.45, 0.2, 0.4).unwrap();
+        let laid = |x: f64, up: bool| ExtrusionPath {
+            points: if up {
+                vec![Point2::from_mm(x, 0.0), Point2::from_mm(x, 10.0)]
+            } else {
+                vec![Point2::from_mm(x, 10.0), Point2::from_mm(x, 0.0)]
+            },
+            role: Role::TopSolidInfill,
+            flow,
+            in_turn: x > 0.0,
+            part: 3,
+        };
+        let gap = edge_medial::ThickPolyline {
+            points: vec![Point2::from_mm(10.3, 1.0), Point2::from_mm(10.3, 9.0)],
+            widths: vec![0.2e6, 0.2e6],
+            open_ends: (true, true),
+        };
+        let out = insert_gap_fill(
+            vec![laid(0.0, true), laid(5.0, false), laid(10.0, true)],
+            &[gap],
+            &flow,
+            3,
+        );
+        let roles: Vec<Role> = out.iter().map(|path| path.role).collect();
+        assert_eq!(
+            roles,
+            [
+                Role::TopSolidInfill,
+                Role::TopSolidInfill,
+                Role::TopSolidInfill,
+                Role::GapFill
+            ]
+        );
+        assert!(out.iter().all(|path| path.part == 3));
+        assert!(out[1..].iter().all(|path| path.in_turn));
+    }
+
+    #[test]
     fn what_solid_lines_leave_bare_is_gap_filled_where_asked() {
         // A long thin wedge: lines across it stop short of its point,
         // where it is too narrow for a line of the fill's own width.
@@ -2567,11 +2825,11 @@ mod tests {
         };
         let found = gaps(SurfaceKind::Top, GapFillTarget::TopBottom, true);
         assert!(!found.is_empty());
-        // In the wedge, thinner than the fill's own lines, and, the
-        // surface's lines being laid in turn, a part of their own after
-        // the surface's.
+        // In the wedge, thinner than the fill's own lines, and laid with
+        // the surface they belong to, in turn with its lines.
         for line in &found {
-            assert_eq!(line.part, 2);
+            assert_eq!(line.part, 1);
+            assert!(line.in_turn);
             assert!(line.flow.width < 0.4, "{}", line.flow.width);
             assert!(line.points.iter().all(|point| {
                 point.x >= 0

@@ -16,7 +16,7 @@ use edge_geom::{ExPolygon, Point2};
 
 pub use cells::cells;
 pub use diagram::{Source, VoronoiCell, VoronoiDiagram, VoronoiEdge, diagram, diagram_origin};
-pub use thick::{variable_width, varying_width};
+pub use thick::{variable_width, varying_width, without_repeated_loops};
 
 /// The reference's `SCALED_EPSILON`: lengths below it count as nothing.
 const EPSILON: f64 = 100.0;
@@ -56,7 +56,8 @@ impl ThickPolyline {
         self.points.len() > 2 && self.points.first() == self.points.last()
     }
 
-    fn reverse(&mut self) {
+    /// The same line the other way round.
+    pub fn reverse(&mut self) {
         self.points.reverse();
         self.widths.reverse();
         self.open_ends = (self.open_ends.1, self.open_ends.0);
