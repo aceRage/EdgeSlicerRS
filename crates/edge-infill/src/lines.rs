@@ -345,6 +345,61 @@ pub fn paths_anchored(
     lay(&rings, None, spacing, rows, angles, 0, joining)
 }
 
+/// Sparse lines across every ring of `areas`, in the order the
+/// reference's `fill_surface_by_multilines` hands them to
+/// `connect_infill`: one direction's rows after the other's, the rows in
+/// order across, and along a row the stretches in the order the
+/// reference's frame has them, each run that way. That frame is turned a
+/// quarter further than this one (`_infill_direction` adds a right angle
+/// and `make_fill_lines` lays its lines up the turned frame's y axis), so
+/// its lines run against `u` here. The fill makes these lines the
+/// reference's own way where it can (`crate::rectilinear`); this is what
+/// it falls back on.
+pub fn rows_in_order(
+    areas: &[ExPolygon],
+    spacing: f64,
+    rows: &[Rows],
+    angles: &[f64],
+) -> Vec<Vec<Point2>> {
+    let rings: Vec<&Polygon> = areas.iter().flat_map(ExPolygon::rings).collect();
+    if spacing <= 0.0 || rows.is_empty() || rings.is_empty() {
+        return Vec::new();
+    }
+    let (crossings, _) = crossings_of(&rings, angles, spacing, rows);
+    let by_row = along_rows(&crossings);
+    let row_of = |crossing: &Crossing| (crossing.direction, crossing.row);
+    let mut lines: Vec<Vec<Point2>> = Vec::new();
+    for row in by_row.chunk_by(|&a, &b| row_of(&crossings[a]) == row_of(&crossings[b])) {
+        for pair in row.as_chunks::<2>().0.iter().rev() {
+            lines.push(vec![crossings[pair[1]].point, crossings[pair[0]].point]);
+        }
+    }
+    lines
+}
+
+/// `lines`, every end on a ring of `areas`, joined along the rings and
+/// anchored as the reference's `connect_infill` does it (see
+/// [`crate::connect`]). `line` is the fill's line spacing, in scaled
+/// units. With no join allowed the lines are given back as they are.
+pub fn connected(
+    lines: Vec<Vec<Point2>>,
+    areas: &[ExPolygon],
+    line: f64,
+    joining: Joining,
+) -> Vec<Vec<Point2>> {
+    if joining.max_link <= 0 {
+        return lines;
+    }
+    let rings: Vec<&Polygon> = areas.iter().flat_map(ExPolygon::rings).collect();
+    crate::connect::connect_infill(
+        lines,
+        &rings,
+        line,
+        joining.anchor as f64,
+        joining.max_link as f64,
+    )
+}
+
 /// Solid lines as the reference's `FillRectilinear` lays them, across
 /// everything in `outer` at `angle`: a line runs from edge to edge of
 /// `outer`, and where it is joined to its neighbour it turns short of the

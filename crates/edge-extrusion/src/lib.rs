@@ -251,11 +251,24 @@ impl ExtrusionPath {
     /// nearest the nozzle round the way it is drawn, crossing each gap
     /// with the filament pulled back (WipeTower2.cpp `generate_path`).
     pub const TOWER_WALL: u32 = 1;
+    /// Set on the part number of an area whose lines may be taken in any
+    /// order but each only from its first point: a sparse grid, whose
+    /// lines the reference marks as not to be turned (Fill.cpp
+    /// `make_fills`, `params.can_reverse = false` for `ipGrid`, and
+    /// FillBase.cpp `set_reverse`). The area itself may still be begun
+    /// at its far end, which turns every line in it.
+    pub const KEPT_WAY: u32 = 1 << 30;
 
     /// Whether the path is one of the loops an area is filled with
     /// ([`Self::LOOPED`]).
     pub fn looped(&self) -> bool {
         self.part >= Self::LOOPED
+    }
+
+    /// Whether the path is laid only from its first point when the lines
+    /// of its area are ordered ([`Self::KEPT_WAY`]).
+    pub fn keeps_way(&self) -> bool {
+        self.part & Self::KEPT_WAY != 0
     }
 
     pub fn length_mm(&self) -> f64 {

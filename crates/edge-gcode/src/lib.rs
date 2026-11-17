@@ -3904,14 +3904,34 @@ impl Writer<'_> {
                     let reversed = turned && part.reversible();
                     part.runs[0].iter().map(|path| (*path, reversed)).collect()
                 } else {
-                    let ends: Vec<[Point2; 2]> =
-                        part.runs.iter().map(|run| run_ends(run)).collect();
-                    let turnable: Vec<bool> =
-                        part.runs.iter().map(|run| run_reversible(run)).collect();
+                    // An area begun at its far end has every line in it
+                    // turned and their order turned, before its lines are
+                    // chained (ExtrusionEntityCollection.cpp `reverse`):
+                    // a line that may not be turned in the chaining is
+                    // then laid from its last point.
+                    let runs: Vec<&Vec<&ExtrusionPath>> = if turned {
+                        part.runs.iter().rev().collect()
+                    } else {
+                        part.runs.iter().collect()
+                    };
+                    let ends: Vec<[Point2; 2]> = runs
+                        .iter()
+                        .map(|run| {
+                            let [head, tail] = run_ends(run);
+                            if turned { [tail, head] } else { [head, tail] }
+                        })
+                        .collect();
+                    let turnable: Vec<bool> = runs.iter().map(|run| run_reversible(run)).collect();
                     chain::chain(&ends, &|run| turnable[run], self.state.position)
                         .into_iter()
                         .flat_map(|(run, reversed)| {
-                            part.runs[run].iter().map(move |path| (*path, reversed))
+                            let flipped = reversed != turned;
+                            let paths: Vec<(&ExtrusionPath, bool)> = if flipped {
+                                runs[run].iter().rev().map(|path| (*path, true)).collect()
+                            } else {
+                                runs[run].iter().map(|path| (*path, false)).collect()
+                            };
+                            paths
                         })
                         .collect()
                 };
@@ -6101,9 +6121,15 @@ impl<'a> Part<'a> {
     }
 
     /// Whether the part may be begun at its far end: not when its lines
-    /// are laid in turn (the reference's `no_sort`).
+    /// are laid in turn (the reference's `no_sort`). An area of lines
+    /// that are not turned when ordered ([`ExtrusionPath::keeps_way`]) may
+    /// still be begun at its far end, which turns them all
+    /// (ExtrusionEntityCollection.cpp `reverse` turns every path, whatever
+    /// its `can_reverse`).
     fn reversible(&self) -> bool {
-        self.runs.len() > 1 || run_reversible(&self.runs[0])
+        self.runs.len() > 1
+            || run_reversible(&self.runs[0])
+            || self.runs[0].iter().all(|path| path.keeps_way())
     }
 }
 
@@ -6123,7 +6149,7 @@ fn run_ends(run: &[&ExtrusionPath]) -> [Point2; 2] {
 /// ironing is `no_sort`, Fill.cpp `make_ironing`).
 fn run_reversible(run: &[&ExtrusionPath]) -> bool {
     let [path] = run else { return false };
-    if path.role == Role::Ironing {
+    if path.role == Role::Ironing || path.keeps_way() {
         return false;
     }
     let [head, tail] = run_ends(run);
