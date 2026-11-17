@@ -191,9 +191,6 @@ const SILENT: &[Silent] = &[
             "extrusion_rate_smoothing_external_perimeter_only",
         ],
     ),
-    // Fan.
-    // CoolingBuffer.cpp l.936: a fan speed of its own when 0 or more.
-    silent("support_material_interface_fan_speed", Below(0.0, "-1")),
     // Geometry.
     // PrintObjectSlice.cpp l.319.
     silent("enable_order_independent_overlap_carving", Is("0")),
@@ -522,7 +519,7 @@ mod tests {
         // Turned off in other words, nothing either.
         let off = Settings::from_json(
             r#"{"z_offset": "0.0", "default_jerk": ["0"], "filament_shrink": ["100", "100%"],
-                "slow_down_layers": "1", "support_material_interface_fan_speed": ["-1", "-5"],
+                "slow_down_layers": "1",
                 "bottom_layer_direction": "-3", "use_relative_e_distances": "true",
                 "file_start_gcode": "", "mixed_filament_definitions": "\"\"",
                 "default_junction_deviation": "0.02", "gcode_flavor": "klipper",

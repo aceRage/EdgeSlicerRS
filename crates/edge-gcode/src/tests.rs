@@ -4960,3 +4960,49 @@ fn a_running_part_fan_is_never_told_less_than_the_printers_floor() {
         assert_eq!(*floored, if *free == 0 { 0 } else { (*free).max(102) });
     }
 }
+
+#[test]
+fn support_interfaces_have_a_fan_speed_of_their_own_once_the_fan_is_on() {
+    let part = [wall(0.0, 0.0, 10.0, 0)];
+    let support = [
+        line((20.0, 0.0), (30.0, 0.0), Role::Support),
+        line((20.0, 6.0), (30.0, 6.0), Role::SupportInterface),
+    ];
+    let layers: Vec<Layer<'_>> = [0.2, 0.4]
+        .into_iter()
+        .map(|z| Layer {
+            z,
+            support: &support,
+            ..one_layer(&part, &[0..1], &[])[0]
+        })
+        .collect();
+    let settings = PrintSettings {
+        support_interface_fan_speed: Some(30.0),
+        close_fan_the_first_x_layers: 1,
+        ..basic()
+    };
+    let text = print(&layers, &settings).0;
+    let (first, second) = text.split_at(text.rfind(";LAYER_CHANGE").unwrap());
+    // Not while the fan is kept off.
+    assert!(!first.contains("M106 S76"), "{first}");
+    // On for the interface, back to the layer's for what follows.
+    let order: Vec<&str> = second
+        .lines()
+        .filter(|line| line.starts_with(";TYPE:") || line.starts_with("M106 S"))
+        .collect();
+    assert_eq!(
+        order,
+        [
+            ";TYPE:Support",
+            "M106 S76",
+            ";TYPE:Support interface",
+            "M106 S255",
+            ";TYPE:Outer wall",
+            "M106 S0"
+        ],
+        "{second}"
+    );
+    // None asked for: the layer's speed throughout.
+    let plain = print(&layers, &basic()).0;
+    assert!(!plain.contains("M106 S76"));
+}

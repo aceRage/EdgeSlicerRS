@@ -1551,6 +1551,8 @@ struct State {
     /// change G-code is given as `max_layer_z` (GCode.cpp
     /// `m_max_layer_z`).
     max_z: f64,
+    /// The support interfaces' own fan speed, while it is on.
+    interface_fan: Option<u8>,
     /// The temperature a one-nozzle printer's tower last set, which it
     /// does not set again above the first layer (WipeTower2.cpp
     /// `m_old_temperature`).
@@ -3140,6 +3142,9 @@ impl Writer<'_> {
                 // (WipeTower.cpp `tool_change`).
                 self.state.framing = layer.wipe.is_some() && self.all[layer.filament].bambu_tower;
                 let before = self.state.position;
+                // The new filament starts at the layer's fan (CoolingBuffer.cpp
+                // closes the role fans at a tool change).
+                self.interface_fan(None)?;
                 let in_place = self.change_tool(
                     layer.filament,
                     index,
@@ -3295,6 +3300,7 @@ impl Writer<'_> {
         if self.state.farthest.take().is_some() && !self.state.pictured {
             self.timelapse(parts[0].z)?;
         }
+        self.interface_fan(None)?;
         self.fan_over_air(false)?;
         Ok(())
     }
@@ -3564,6 +3570,37 @@ impl Writer<'_> {
         Ok(())
     }
 
+    /// Support interfaces have a fan speed of their own once the fan is
+    /// on at all, where the filament gives one (GCode.cpp
+    /// `apply_role_based_fan_speed`, CoolingBuffer.cpp
+    /// `supp_interface_fan_control`): turned on as a line of `role` is
+    /// laid, and off again as anything else is, or with `None`, told by
+    /// the markers ironing's is ([`Self::settle_ironing_fan`]).
+    fn interface_fan(&mut self, role: Option<Role>) -> io::Result<()> {
+        let s = self.settings;
+        let wanted = (s.support_interface_fan_speed)
+            .filter(|_| {
+                role == Some(Role::SupportInterface)
+                    && self.state.layer >= s.close_fan_the_first_x_layers
+            })
+            .map(cooling::pwm);
+        if wanted == self.state.interface_fan {
+            return Ok(());
+        }
+        // What is laid over air is behind: its fan gives way first.
+        self.fan_over_air(false)?;
+        if let Some(speed) = self.state.interface_fan.take() {
+            self.out.extend_from_slice(FAN_IRONING);
+            writeln!(self.out, "OFF {speed}")?;
+        }
+        if let Some(speed) = wanted {
+            self.out.extend_from_slice(FAN_IRONING);
+            writeln!(self.out, "ON {speed}")?;
+        }
+        self.state.interface_fan = wanted;
+        Ok(())
+    }
+
     /// The islands `chosen` of a part, and of the fill with no island
     /// of its own that `loose` picks (all of it for none), in the
     /// settings of the part's region where it has its own.
@@ -3700,6 +3737,7 @@ impl Writer<'_> {
             return self.lines(paths, shelter);
         };
         // What is laid over air is behind: its fan gives way first.
+        self.interface_fan(None)?;
         self.fan_over_air(false)?;
         self.out.extend_from_slice(FAN_IRONING);
         writeln!(self.out, "ON {fan}")?;
@@ -4728,6 +4766,7 @@ impl Writer<'_> {
         let measure = is_wall
             && self.below.is_some()
             && (s.enable_overhang_speed || s.detect_overhang_wall || fan.is_some());
+        self.interface_fan(Some(role))?;
         if known.is_none() && !measure {
             self.fan_over_air(cooled)?;
             match parts {
@@ -6572,9 +6611,9 @@ const TOWER_RESOLUTION: f64 = 0.1;
 const FAN_MARK: &[u8] = b";_FAN_OVER_AIR_";
 const FAN_OVER_AIR: &[u8] = b";_FAN_OVER_AIR_ON\n";
 const FAN_AS_LAYER: &[u8] = b";_FAN_OVER_AIR_OFF\n";
-/// Starts the line a layer is written with where ironing begins and
-/// where it ends, when ironing has a fan speed of its own: `ON` or
-/// `OFF`, and that speed.
+/// Starts the line a layer is written with where ironing or a support
+/// interface begins and where it ends, when it has a fan speed of its
+/// own: `ON` or `OFF`, and that speed.
 const FAN_IRONING: &[u8] = b";_FAN_IRONING_";
 
 /// The arcs in a path, when arcs are asked for and it has the three

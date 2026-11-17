@@ -69,6 +69,10 @@ pub struct PrintSettings {
     /// The part fan while ironing, in percent; none when ironing gets
     /// the layer's (`ironing_fan_speed` below zero).
     pub ironing_fan_speed: Option<f64>,
+    /// The part fan while support interfaces are laid, in percent; none
+    /// when they get the layer's (`support_material_interface_fan_speed`
+    /// below zero).
+    pub support_interface_fan_speed: Option<f64>,
     pub bridge_speed: f64,
     /// Lines that fill the gaps between walls.
     pub gap_infill_speed: f64,
@@ -453,6 +457,7 @@ impl Default for PrintSettings {
             top_surface_speed: 100.0,
             ironing_speed: 20.0,
             ironing_fan_speed: None,
+            support_interface_fan_speed: None,
             bridge_speed: 25.0,
             gap_infill_speed: 30.0,
             detect_overhang_wall: true,
@@ -870,6 +875,8 @@ impl PrintSettings {
                 None => number("ironing_speed", defaults.ironing_speed)?,
             },
             ironing_fan_speed: first("ironing_fan_speed")?.filter(|speed| *speed >= 0.0),
+            support_interface_fan_speed: first("support_material_interface_fan_speed")?
+                .filter(|speed| *speed >= 0.0),
             bridge_speed: number("bridge_speed", defaults.bridge_speed)?,
             gap_infill_speed: number("gap_infill_speed", defaults.gap_infill_speed)?,
             detect_overhang_wall: flag("detect_overhang_wall", defaults.detect_overhang_wall)?,
