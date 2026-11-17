@@ -833,14 +833,23 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         // Each object is closed by itself, as the reference slices each
         // object apart: two objects closer than twice the closing radius
         // stay two.
+        // Then simplified by 0.0025 mm, unless the slicing resolution is
+        // finer than a micron (PrintObjectSlice.cpp `slice_volumes`: "safe
+        // enough to simplify the data to speed slicing up").
         let body_objects: Vec<Option<usize>> = bodies.iter().map(|body| body.object).collect();
+        let resolution = settings.float("resolution")?.unwrap_or(0.012);
+        let simplify = if resolution <= 0.001 {
+            0
+        } else {
+            scaled(0.0025)
+        };
         let mut layers = edge_slice::slice_regions_by_object(
             &borrowed,
             &body_objects,
             &planes,
             scaled(closing_radius),
             &largest_from,
-            0,
+            simplify,
         )?;
         // Height ranges and modifiers lay their settings over what of an
         // object's parts they take (`crate::regions`).

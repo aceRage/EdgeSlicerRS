@@ -235,9 +235,15 @@ pub fn slice_regions_vase(
 /// (Douglas-Peucker), zero for none.
 ///
 /// The reference closes and simplifies each part (volume) by itself
-/// before uniting an object's parts; here an object's parts are united
-/// first and closed and simplified together. Parts closer than twice the
-/// radius end up joined either way (measured on two parts 0.05 mm apart).
+/// before uniting an object's parts. Here, with `simplify`, each body of
+/// an object of several is closed and simplified by itself, as the
+/// reference does each part, and the bodies are then united and closed
+/// together; an object of one body is closed, then simplified. A body is
+/// an object's parts in one filament, which are closed and simplified
+/// together. Closing the bodies together again joins an object's parts
+/// standing closer than twice the radius, which the reference does not:
+/// it keeps two parts 0.05 mm apart in one object, in one filament, as two
+/// outlines (measured).
 pub fn slice_regions_by_object(
     bodies: &[Body<'_>],
     objects: &[Option<usize>],
@@ -334,6 +340,10 @@ fn object_layer<'a, 'b: 'a>(
     closing_radius: Coord,
     simplify: Coord,
 ) -> Result<LayerRegions, ClipError> {
+    let members: Vec<_> = members.collect();
+    // An object of several bodies has each closed and simplified by
+    // itself first, as the reference does each part.
+    let apart = simplify > 0 && members.len() > 1;
     // Contours that need no carving go straight into the final union.
     let mut plain: Vec<&Polygon> = Vec::new();
     let mut carved: Vec<ExPolygon> = Vec::new();
@@ -347,11 +357,21 @@ fn object_layer<'a, 'b: 'a>(
         open_chains += negative.map_or(0, |layer| layer.open_chains);
         let before = carved.len();
         match negative.filter(|layer| !layer.polygons.is_empty()) {
-            None => plain.extend(&solid.polygons),
+            None if !apart => plain.extend(&solid.polygons),
+            None => carved.extend(edge_clip::union(&solid.polygons)?),
             Some(negative) => carved.extend(edge_clip::difference(
                 &edge_clip::union(&solid.polygons)?,
                 &edge_clip::union(&negative.polygons)?,
             )?),
+        }
+        if apart {
+            let mine = carved.split_off(before);
+            let mine = if closing_radius > 0 {
+                edge_clip::closing(&mine, closing_radius, Join::MITER)?
+            } else {
+                mine
+            };
+            carved.extend(edge_clip::simplify(&mine, simplify)?);
         }
         if several {
             let mut material = if carved.len() > before {
@@ -378,7 +398,7 @@ fn object_layer<'a, 'b: 'a>(
     } else {
         united
     };
-    let regions = if simplify > 0 {
+    let regions = if simplify > 0 && !apart {
         edge_clip::simplify(&regions, simplify)?
     } else {
         regions
@@ -758,6 +778,60 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(run(1), run(8));
+    }
+
+    #[test]
+    fn slices_are_simplified_by_the_tolerance_each_body_by_itself() {
+        // A block whose front bows out by 2 um in the middle: within the
+        // 2.5 um tolerance, so the bend goes; 10 um is kept.
+        let bowed = |bow: f32| {
+            edge_mesh::primitives::prism(
+                &[(
+                    vec![
+                        [0.0, 0.0],
+                        [5.0, -bow],
+                        [10.0, 0.0],
+                        [10.0, 10.0],
+                        [0.0, 10.0],
+                    ],
+                    Vec::new(),
+                )],
+                0.0,
+                10.0,
+            )
+            .unwrap()
+        };
+        let (slight, marked) = (bowed(0.002), bowed(0.01));
+        let tolerance = edge_geom::scaled(0.0025);
+        let count = |mesh: &Mesh, simplify: Coord| {
+            let body = Body {
+                solid: mesh,
+                negative: None,
+                filament: 1,
+            };
+            let layers =
+                slice_regions_by_object(&[body], &[Some(0)], &[5.0], 0, &[], simplify).unwrap();
+            layers[0].regions[0].contour.points.len()
+        };
+        assert_eq!(count(&slight, 0), 5);
+        assert_eq!(count(&slight, tolerance), 4);
+        assert_eq!(count(&marked, tolerance), 5);
+        // Two bodies of one object are each simplified before they are
+        // put together.
+        let other = Mesh::from_triangle_soup(cuboid([20.0, 0.0, 0.0], [30.0, 10.0, 10.0]));
+        let bodies = [&slight, &other].map(|solid| Body {
+            solid,
+            negative: None,
+            filament: 1,
+        });
+        let layers =
+            slice_regions_by_object(&bodies, &[Some(0), Some(0)], &[5.0], 0, &[], tolerance)
+                .unwrap();
+        let mut points: Vec<usize> = (layers[0].regions.iter())
+            .map(|region| region.contour.points.len())
+            .collect();
+        points.sort_unstable();
+        assert_eq!(points, [4, 4]);
     }
 
     #[test]
