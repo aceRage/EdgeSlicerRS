@@ -347,12 +347,6 @@ const SILENT: &[Silent] = &[
         "top_surface_expansion",
         Is("0"),
     ),
-    // PrintObject.cpp l.5938.
-    gate(
-        "infill_combination",
-        Is("0"),
-        &["infill_combination_max_layer_height"],
-    ),
     // PrintObject.cpp l.554.
     silent("separated_infills", Is("0")),
     // Walls: PerimeterGenerator.cpp l.346.

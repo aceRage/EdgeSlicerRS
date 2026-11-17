@@ -11,6 +11,7 @@
 
 mod anchored;
 mod bridges;
+mod combine;
 mod connect;
 mod counterbore;
 mod curves;
@@ -25,9 +26,11 @@ mod settings;
 mod smooth;
 mod surfaces;
 
+pub use combine::{Combined, combination_plan, combine_infill};
 pub use counterbore::bridge_counterbores;
 pub use fill::{
-    FillError, FillParams, Frame, GapFillTarget, fill, fill_from, fill_under_tops, fill_within,
+    FillError, FillParams, Frame, GapFillTarget, append_parts, fill, fill_from, fill_under_tops,
+    fill_within,
 };
 pub use internal_bridges::{
     BridgeDirection, InternalBridgeFilter, OverInfill, bridge_over_infill_by,

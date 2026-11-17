@@ -135,6 +135,11 @@ pub struct InfillSettings {
     /// (`resolution`) the curves keep to.
     pub smooth_factor: f64,
     pub resolution: f64,
+    /// The most a group of layers whose sparse fill is laid once may
+    /// come to, in mm, where that is done (`infill_combination`, with
+    /// `infill_combination_max_layer_height`): see
+    /// [`crate::combine_infill`].
+    pub combination: Option<f64>,
     /// Whether the fill keeps one direction on every layer rather than
     /// turning a quarter on each odd one: Z contouring's
     /// `zaa_dont_alternate_fill_direction`, which counts only with
@@ -357,6 +362,7 @@ impl Default for InfillSettings {
             extra_solid_infills: String::new(),
             smooth_factor: 0.0,
             resolution: 0.01,
+            combination: None,
             steady_direction: false,
             lateral_lattice_angles: (-45.0, 45.0),
             infill_shift_step: 0.4,
@@ -681,6 +687,40 @@ impl InfillSettings {
             ));
         }
         unsupported.extend(spiral_notes);
+        // Sparse fill laid once every few layers (PrintObject.cpp
+        // `combine_infill`): never with no sparse fill. Their height
+        // together stays under the nozzle's bore, or under
+        // `infill_combination_max_layer_height` where that is less (a
+        // percentage of the bore; 0 is the bore).
+        let combination = if flag("infill_combination", false)? {
+            let nozzle = settings
+                .floats("nozzle_diameter")?
+                .and_then(|nozzles| nozzles.first().copied().flatten())
+                .unwrap_or(defaults.widths.nozzle_diameter);
+            let most = settings
+                .float_or_percent("infill_combination_max_layer_height")?
+                .unwrap_or(FloatOrPercent::Percent(100.0))
+                .resolve(nozzle);
+            let density = match settings.float_or_percent("sparse_infill_density")? {
+                Some(FloatOrPercent::Percent(percent) | FloatOrPercent::Value(percent)) => percent,
+                None => defaults.sparse_infill_density_percent,
+            };
+            if density >= 100.0 {
+                // There the reference lays the solid fill inside the part
+                // thick instead; not done here.
+                unsupported.push(
+                    "infill_combination at 100% sparse_infill_density: the solid fill is laid on every layer"
+                        .to_owned(),
+                );
+                None
+            } else if density > 0.0 {
+                Some(if most > 0.0 { most.min(nozzle) } else { nozzle })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         // The reference has a different way of laying shells for each
         // other value; only this one is ported. Bambu Studio's projects
         // say "enabled" for it, and older ones "1", which the reference
@@ -767,6 +807,7 @@ impl InfillSettings {
                 None => defaults.smooth_factor,
             },
             resolution: number("resolution", defaults.resolution)?,
+            combination,
             top_layer_direction: surface_direction("top_layer_direction")?,
             bottom_layer_direction: surface_direction("bottom_layer_direction")?,
             steady_direction: steady_direction(settings)?,
@@ -1067,6 +1108,54 @@ impl InfillSettings {
             .min(self.infill_anchor_max.resolve(spacing))
             .max(0.0);
         Ok(())
+    }
+
+    /// A sparse line laid this high: the line of a layer of sparse fill
+    /// laid for several (`LayerRegion::flow(frInfill, thickness)`).
+    pub fn sparse_flow(&self, height: f64) -> Result<Flow, FlowError> {
+        Flow::from_widths(
+            &self.widths,
+            self.sparse_infill_line_width,
+            Flow::auto_width(self.widths.nozzle_diameter),
+            height,
+            false,
+        )
+    }
+
+    /// How far, in units, the sparse fill laid for several layers is
+    /// kept off the rest of each layer's (PrintObject.cpp
+    /// `combine_infill`): half an inner wall's width and a solid line's
+    /// width and a half for the patterns whose fill reaches into the
+    /// walls, half otherwise; and the least area, in units squared,
+    /// worth laying so (`infill_area_threshold`, a solid line's spacing
+    /// squared).
+    pub fn combination_clearance(&self, layer_height: f64) -> Result<(Coord, f64), FlowError> {
+        let nozzle = self.widths.nozzle_diameter;
+        let flow = |width| {
+            Flow::from_widths(
+                &self.widths,
+                width,
+                Flow::auto_width(nozzle),
+                layer_height,
+                false,
+            )
+        };
+        let (wall, solid) = (
+            flow(self.inner_wall_line_width)?,
+            flow(self.internal_solid_infill_line_width)?,
+        );
+        let reach = match self.pattern {
+            Pattern::Lines
+            | Pattern::Grid
+            | Pattern::LateralLattice
+            | Pattern::Honeycomb
+            | Pattern::LateralHoneycomb => 1.5,
+            _ => 0.5,
+        };
+        let clearance = (0.5 * wall.scaled_width() as f32
+            + reach as f32 * solid.scaled_width() as f32) as Coord;
+        let spacing = solid.scaled_spacing() as f64;
+        Ok((clearance, spacing * spacing))
     }
 
     /// What filling a layer of this height needs.
@@ -1517,6 +1606,56 @@ mod tests {
         assert_eq!(
             read(r#"{"sparse_infill_pattern": "grid", "sparse_infill_smooth_factor": "40%"}"#),
             None
+        );
+    }
+
+    #[test]
+    fn combined_sparse_fill_is_read_with_its_height() {
+        let read = |json: &str| {
+            InfillSettings::from_settings(&Settings::from_json(json).unwrap()).unwrap()
+        };
+        // Up to the bore, or less where a smaller height is set.
+        assert_eq!(
+            read(r#"{"infill_combination": "1"}"#).combination,
+            Some(0.4)
+        );
+        let set = read(
+            r#"{"infill_combination": "1", "infill_combination_max_layer_height": "75%",
+                "nozzle_diameter": ["0.6"]}"#,
+        );
+        assert!((set.combination.unwrap() - 0.45).abs() < 1e-9);
+        assert_eq!(
+            read(r#"{"infill_combination": "1", "infill_combination_max_layer_height": "0"}"#)
+                .combination,
+            Some(0.4)
+        );
+        assert_eq!(
+            read(r#"{"infill_combination": "1", "infill_combination_max_layer_height": "1.2"}"#)
+                .combination,
+            Some(0.4)
+        );
+        // Off, or no sparse fill: nothing. Solid: said.
+        assert_eq!(read("{}").combination, None);
+        assert_eq!(
+            read(r#"{"infill_combination": "1", "sparse_infill_density": "0%"}"#).combination,
+            None
+        );
+        let solid = read(r#"{"infill_combination": "1", "sparse_infill_density": "100%"}"#);
+        assert_eq!(solid.combination, None);
+        assert!(solid.unsupported[0].starts_with("infill_combination"));
+        // A thick line keeps its width.
+        let thick = read("{}").sparse_flow(0.4).unwrap();
+        assert_eq!((thick.width, thick.height), (0.45, 0.4));
+        // Kept half an inner wall and a solid line and a half off for a
+        // grid, half of each for a gyroid.
+        let grid = read(r#"{"sparse_infill_pattern": "grid"}"#);
+        let (clearance, least) = grid.combination_clearance(0.2).unwrap();
+        assert_eq!(clearance, edge_geom::scaled(0.5 * 0.45 + 1.5 * 0.45));
+        assert!(least > 0.0);
+        let gyroid = read(r#"{"sparse_infill_pattern": "gyroid"}"#);
+        assert_eq!(
+            gyroid.combination_clearance(0.2).unwrap().0,
+            edge_geom::scaled(0.45)
         );
     }
 

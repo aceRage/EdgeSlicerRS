@@ -1237,19 +1237,27 @@ pub fn fill_under_tops(
         solid_ordered: ordered,
         ..*params
     };
-    // Its parts are numbered on from the rest's, so that no part of one
-    // runs into a part of the other.
+    append_parts(
+        &mut paths,
+        fill_within(&under, layer_index, &own, frame_of, no_overlap)?,
+    );
+    Ok(paths)
+}
+
+/// Adds the paths of another fill of the same layer after `paths`, its
+/// parts numbered on from theirs, so that no part of one runs into a part
+/// of the other.
+pub fn append_parts(paths: &mut Vec<ExtrusionPath>, more: Vec<ExtrusionPath>) {
     let flags = ExtrusionPath::LOOPED | ExtrusionPath::KEPT_WAY;
     let past = paths
         .iter()
         .map(|path| path.part & !flags)
         .max()
         .unwrap_or(0);
-    for mut path in fill_within(&under, layer_index, &own, frame_of, no_overlap)? {
+    for mut path in more {
         path.part = (path.part & flags) | ((path.part & !flags) + past);
         paths.push(path);
     }
-    Ok(paths)
 }
 
 /// Whether `other` overlaps `area` (ExPolygon.cpp `ExPolygon::overlaps`):
