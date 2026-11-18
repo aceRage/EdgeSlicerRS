@@ -689,7 +689,6 @@ mod tests {
             "first_layer_sequence_choice",
             "flashforge_serial_number",
             "gcode_add_line_number",
-            "grab_length",
             "has_filament_switcher",
             "host_type",
             "image_fill_detail",
@@ -809,8 +808,15 @@ mod tests {
     }
 
     /// Read by a stage and said where only partly followed: kept in the
-    /// table though a stage names them.
-    const PARTLY: [&str; 2] = ["stabilizer_supports", "prime_volume_mode"];
+    /// table though a stage names them. `handle_hotend_as_extruder` is read
+    /// only to say Bambu's tower interface switch where the reference acts
+    /// on it (edge-tower `type1::interface_features_supported`); the rack
+    /// itself is not followed.
+    const PARTLY: [&str; 3] = [
+        "stabilizer_supports",
+        "prime_volume_mode",
+        "handle_hotend_as_extruder",
+    ];
 
     /// The workspace's crates.
     fn crates() -> PathBuf {

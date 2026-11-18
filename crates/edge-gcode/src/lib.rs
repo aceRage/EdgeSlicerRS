@@ -10,7 +10,9 @@
 //!
 //! Not done: progress (`M73`) as the reference places it.
 
-mod arc;
+/// Arc fitting, which Bambu's prime tower (edge-tower `type1`) fits its
+/// walls with as well.
+pub mod arc;
 mod avoid;
 mod bambu_vars;
 pub mod calib;
@@ -2238,6 +2240,27 @@ impl Writer<'_> {
                     .unwrap_or(0.0)
             }
             _ => 0.0,
+        };
+        // On Bambu's tower a Bambu Lab printer's change counts the
+        // filament it pushes out to detect the new one, `grab_length` mm
+        // (Print.cpp `_make_wipe_tower`, at 2.4 mm³ a mm), and flushes at
+        // least 100 mm³, or nothing where nothing is left to flush
+        // (GCode.cpp `append_tcr`, `g_min_purge_volume`). Only there: a
+        // change with no tower, or on the other tower, gives the volume as
+        // it is (`set_extruder`, `append_tcr2`).
+        let flushed = if self.state.framing {
+            let flushed = if new_settings.bambu {
+                f64::from((flushed as f32 - new_settings.grab_length as f32 * 2.4).max(0.0))
+            } else {
+                flushed
+            };
+            if flushed as f32 >= f32::EPSILON {
+                flushed.max(100.0)
+            } else {
+                flushed
+            }
+        } else {
+            flushed
         };
         let length = (flushed as f32 / area(new_settings) as f32) as f64;
         v.set("flush_length", Value::Float(length));

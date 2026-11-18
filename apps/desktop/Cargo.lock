@@ -1404,6 +1404,7 @@ dependencies = [
  "edge-clip",
  "edge-config",
  "edge-extrusion",
+ "edge-gcode",
  "edge-geom",
  "thiserror 2.0.21",
 ]

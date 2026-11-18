@@ -64,6 +64,7 @@
 mod bambu;
 mod clearance;
 mod place;
+pub mod type1;
 
 use std::f64::consts::PI;
 
@@ -537,7 +538,13 @@ impl TowerSettings {
                 "wipe_tower_interface_extra_prime",
                 "enable_tower_interface_features",
             ] {
-                if on(key) {
+                // Bambu's own interface switch does nothing on a printer of
+                // one nozzle or the H2S (WipeTowerInterface.cpp
+                // `bambu_features_supported`).
+                if on(key)
+                    && (key != "enable_tower_interface_features"
+                        || type1::interface_features_supported(settings)?)
+                {
                     unsupported.push(format!(
                         "{key} \"1\": tower interfaces are not done; a change between two kinds of \
                          filament is primed on the tower as any other"

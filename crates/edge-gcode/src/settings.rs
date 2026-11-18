@@ -456,6 +456,10 @@ pub struct PrintSettings {
     /// (`flush_volumes_matrix` at `i * n + j`, n filaments), times
     /// `flush_multiplier`; empty where nothing is said of it.
     pub flush_volumes: Vec<f64>,
+    /// How much filament a Bambu Lab printer's filament change pushes out
+    /// to detect it, in mm (`grab_length`, the first extruder's: one
+    /// nozzle); the flush counts it (Print.cpp `_make_wipe_tower`).
+    pub grab_length: f64,
     /// How many filaments the project is set up with, used or not.
     pub filaments: usize,
     /// Every setting, by name, for the templates to refer to.
@@ -660,6 +664,7 @@ impl Default for PrintSettings {
             cooling_before_tower: 0.0,
             tools: 1,
             flush_volumes: Vec::new(),
+            grab_length: 0.0,
             filaments: 1,
             variables: variables(&Settings::default(), None, None, None, None),
             config: Vec::new(),
@@ -1452,6 +1457,10 @@ impl PrintSettings {
                     .map(|volume| volume.unwrap_or(0.0) * multiplier)
                     .collect()
             },
+            grab_length: settings
+                .floats("grab_length")?
+                .and_then(|lengths| lengths.first().copied().flatten())
+                .unwrap_or(0.0),
             tools: settings
                 .texts("nozzle_diameter")
                 .map_or(defaults.tools, |nozzles| nozzles.len().max(1)),

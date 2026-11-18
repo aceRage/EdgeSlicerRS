@@ -4448,6 +4448,90 @@ fn bambus_tower_frames_its_tool_change_and_ends_the_old_filament_first() {
     assert_eq!(text.matches("; filament end gcode").count(), 2);
 }
 
+#[test]
+fn bambus_tower_flushes_at_least_100_cubic_millimetres() {
+    // One nozzle, a flush of 30 mm³ from filament 0 to 1 and none back:
+    // a change on Bambu's tower flushes 100 mm³ at least, or nothing when
+    // nothing is to be flushed (GCode.cpp `append_tcr`,
+    // `g_min_purge_volume`).
+    let at = |x: f64, y: f64| Point2::from_mm(x, y);
+    let flow = Flow::new(0.5, 0.2, 0.4).unwrap();
+    let strokes = [
+        TowerStroke::Glide(at(40.0, 40.0)),
+        TowerStroke::LayAs(at(60.0, 40.0), 30.0, flow),
+    ];
+    let tool = |tower: bool, flush: f64, grab: f64| PrintSettings {
+        bambu_tower: true,
+        prime_tower: tower,
+        single_nozzle: true,
+        tools: 1,
+        flush_volumes: vec![0.0, flush, 0.0, 0.0],
+        grab_length: grab,
+        change_filament_gcode: Some(
+            "; flush [flush_length] {flush_length_1} {flush_length_2}\nT[next_extruder]".into(),
+        ),
+        ..bambu(&[("start", "PRINT_START")])
+    };
+    let part = [wall(0.0, 0.0, 10.0, 0)];
+    let first = one_layer(&part, &[0..1], &[])[0];
+    let flushes_of = |filaments: [usize; 3], tower: bool, flush: f64, grab: f64| -> Vec<String> {
+        let layers: Vec<Layer<'_>> = filaments
+            .iter()
+            .map(|&filament| Layer {
+                filament,
+                wipe: tower.then_some(TowerWipe {
+                    start: at(40.0, 40.0),
+                    strokes: &strokes,
+                    flow,
+                    wipe_path: &[],
+                }),
+                ..first
+            })
+            .collect();
+        let mut out = Vec::new();
+        write_tools(
+            &mut out,
+            &layers,
+            &[tool(tower, flush, grab), tool(tower, flush, grab)],
+        )
+        .unwrap();
+        String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .filter(|line| line.starts_with("; flush "))
+            .map(str::to_owned)
+            .collect()
+    };
+    let flushes = |filaments: [usize; 3], tower: bool| flushes_of(filaments, tower, 30.0, 0.0);
+    let area = std::f32::consts::PI * 0.875 * 0.875;
+    let length = |volume: f32| format!("{:.4}", (volume / area) as f64);
+    let floored = length(100.0).trim_end_matches('0').to_owned();
+    // A Bambu Lab printer pushing 17.4 mm out to grab the new filament (the
+    // A2L) flushes 41.76 mm³ less (Print.cpp `_make_wipe_tower`): 200 mm³
+    // is 158.24, still over the floor; 120 is 78.24, floored at 100.
+    let grabbed = flushes_of([0, 1, 0], true, 200.0, 17.4);
+    assert!(
+        grabbed[1].starts_with(&format!("; flush {}", &length(158.24)[..6])),
+        "{grabbed:?}"
+    );
+    let grabbed = flushes_of([0, 1, 0], true, 120.0, 17.4);
+    assert!(
+        grabbed[1].starts_with(&format!("; flush {}", &length(100.0)[..6])),
+        "{grabbed:?}"
+    );
+    // (The first is the print's taking up of filament 0.)
+    let tower = flushes([0, 1, 0], true);
+    assert_eq!(tower.len(), 3, "{tower:?}");
+    assert_eq!(tower[1], format!("; flush {floored} {floored} 0"));
+    assert_eq!(tower[2], "; flush 0 0 0");
+    // With no tower the change gives the volume as it is (`set_extruder`).
+    let bare = flushes([0, 1, 0], false);
+    assert!(
+        bare[1].starts_with(&format!("; flush {}", &length(30.0)[..6])),
+        "{bare:?}"
+    );
+}
+
 /// A copy labelled for cancelling, a 10 mm square at `x`.
 fn copy_at(name: &str, object: usize, identify: u32, x: f64) -> ObjectLabel {
     ObjectLabel {
