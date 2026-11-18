@@ -1202,6 +1202,100 @@ fn opened(outline: &[(f64, f64)], gaps: &[f64], half: f64) -> Vec<Vec<(f64, f64)
     pieces
 }
 
+/// A closed outline with a point put in at each end of every gap of
+/// `gaps` (each how far along the outline it is from its first point,
+/// `half` mm either side), unless it falls within 0.01 mm of a point
+/// already there (WipeTower2.cpp `remove_points_from_polygon`,
+/// `move_point_along_polygon`, `insert_points`).
+fn with_gap_ends(outline: &[(f64, f64)], gaps: &[f64], half: f64) -> Vec<(f64, f64)> {
+    let count = outline.len();
+    if gaps.is_empty() || count < 3 {
+        return outline.to_vec();
+    }
+    let mut marks = Vec::with_capacity(count);
+    let mut total = 0.0;
+    for (index, a) in outline.iter().enumerate() {
+        marks.push(total);
+        let b = outline[(index + 1) % count];
+        total += (b.0 - a.0).hypot(b.1 - a.1);
+    }
+    if total <= 0.0 {
+        return outline.to_vec();
+    }
+    // Each end: the edge it lies on, how far along that edge, and where.
+    let mut ends: Vec<(usize, f64, (f64, f64))> = Vec::with_capacity(2 * gaps.len());
+    for gap in gaps {
+        for along in [gap - half, gap + half] {
+            let along = along.rem_euclid(total);
+            let index = (marks.partition_point(|mark| *mark <= along).max(1) - 1).min(count - 1);
+            let (a, b) = (outline[index], outline[(index + 1) % count]);
+            let length = (b.0 - a.0).hypot(b.1 - a.1);
+            let into = along - marks[index];
+            let share = if length > 0.0 { into / length } else { 0.0 };
+            ends.push((
+                index,
+                into,
+                (a.0 + share * (b.0 - a.0), a.1 + share * (b.1 - a.1)),
+            ));
+        }
+    }
+    ends.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    let near = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).powi(2) + (a.1 - b.1).powi(2) < 1e-4;
+    let mut out = Vec::with_capacity(count + ends.len());
+    let mut next = 0;
+    for (index, point) in outline.iter().enumerate() {
+        out.push(*point);
+        let following = outline[(index + 1) % count];
+        while next < ends.len() && ends[next].0 == index {
+            let end = ends[next].2;
+            if !near(end, *out.last().unwrap_or(point)) && !near(end, following) {
+                out.push(end);
+            }
+            next += 1;
+        }
+    }
+    out
+}
+
+/// An offset outline's points as ClipperLib's `FixupOutPolygon` leaves
+/// them for the reference: a point that repeats the one before, or lies in
+/// exact line with its neighbours, is taken out, again and again until
+/// none is; two within a few nanometres count as one. Exactly in line
+/// means here along one of the bed's axes, where the reference's points
+/// are in line too; on a slanted stretch its points, worked in single
+/// precision, are not, and stay.
+fn clipper_one_points(points: &[Point2]) -> Vec<Point2> {
+    let close = |a: Point2, b: Point2| (a.x - b.x).abs() <= 10 && (a.y - b.y).abs() <= 10;
+    let mut out: Vec<Point2> = points.to_vec();
+    loop {
+        let count = out.len();
+        if count < 3 {
+            return out;
+        }
+        let mut kept = Vec::with_capacity(count);
+        let mut changed = false;
+        for index in 0..count {
+            let (a, b) = (out[(index + count - 1) % count], out[index]);
+            let c = out[(index + 1) % count];
+            // In line along the bed's axes only: on a slanted stretch the
+            // reference's points come from single precision and never lie
+            // exactly in line, so ClipperLib keeps them there.
+            let in_line = (a.x == b.x && b.x == c.x) || (a.y == b.y && b.y == c.y);
+            if close(a, b) || in_line {
+                changed = true;
+                // Taken out one at a time, so a run is judged afresh.
+                kept.extend_from_slice(&out[index + 1..]);
+                break;
+            }
+            kept.push(b);
+        }
+        if !changed {
+            return out;
+        }
+        out = kept;
+    }
+}
+
 /// How the tower is laid out, in mm from the corner of its wall: the
 /// reference's `m_wipe_tower_width`, `m_wipe_tower_depth` and
 /// `m_wipe_tower_height`.
@@ -1924,14 +2018,25 @@ pub fn plan_changes(
                 0
             };
         }
-        let mut ring = vec![region(&wall)];
+        // The loops go out from the wall with each gap's ends in it as
+        // points of its own, as the reference offsets the wall it cut
+        // the gaps into (WipeTower2.cpp `generate_support_rib_wall`
+        // returns `insert_skip_polygon`). Where such a point lies on a
+        // slanted stretch it stays a corner of the loops, all but in
+        // line with its neighbours.
+        let base = with_gap_ends(&wall, &gaps, GAP_HALF * line);
+        let mut ring = vec![region(&base)];
         for _ in 0..loops {
-            ring = edge_clip::offset(&ring, scaled(spacing), Join::MITER)?;
+            ring = edge_clip::offset_keeping_points(&ring, scaled(spacing), Join::MITER)?;
             ring.truncate(1);
             let Some(outer) = ring.first() else { break };
-            let outline: Vec<(f64, f64)> = outer
-                .contour
-                .points
+            // Points as ClipperLib leaves them, which the reference offsets
+            // with: one in exact line with its neighbours goes, one the
+            // least bit off the line stays (a gap's end on a slanted
+            // stretch), and so does one of two a few nanometres apart
+            // that Clipper2 makes of such a point.
+            let points = clipper_one_points(&outer.contour.points);
+            let outline: Vec<(f64, f64)> = points
                 .iter()
                 .map(|p| (unscaled(p.x), unscaled(p.y)))
                 .collect();
@@ -2209,6 +2314,41 @@ mod tests {
                 .iter()
                 .all(|stroke| matches!(stroke, TowerStroke::Lay(..)))
         );
+    }
+
+    #[test]
+    fn a_gap_s_ends_are_points_of_the_outline_the_brim_grows_from() {
+        // A box with one corner cut off: 10 + 10 + 6 mm, then the cut.
+        let outline = [
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (4.0, 10.0),
+            (0.0, 6.0),
+        ];
+        let with = with_gap_ends(&outline, &[28.0], 1.0);
+        assert_eq!(with.len(), 7);
+        for end in &with[4..6] {
+            assert!((end.0 - end.1 + 6.0).abs() < 1e-9, "{end:?} on the cut");
+        }
+        // Grown, a point on the slanted cut stays one, a point in line
+        // along an axis does not (ClipperLib's way).
+        let points: Vec<Point2> = [
+            (0.0, 0.0),
+            (5.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (4.0, 10.0),
+            (2.0, 8.0),
+            (0.0, 6.0),
+        ]
+        .iter()
+        .map(|(x, y)| Point2::from_mm(*x, *y))
+        .collect();
+        let kept = clipper_one_points(&points);
+        assert_eq!(kept.len(), 6);
+        assert!(!kept.contains(&Point2::from_mm(5.0, 0.0)));
+        assert!(kept.contains(&Point2::from_mm(2.0, 8.0)));
     }
 
     #[test]
