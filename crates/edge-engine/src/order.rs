@@ -15,9 +15,13 @@
 use std::collections::HashMap;
 
 /// Two areas no further apart than this share of the larger are the same.
-/// The reference compares them exactly; here, where the same shape cut in
-/// two places comes out a hair different, that would leave the order to
-/// chance.
+/// The reference compares them exactly. It cuts each object in the
+/// object's own frame, so copies of one object come out the same to the
+/// unit and tie; here parts are cut where they stand on the plate, and
+/// copies come out a hair different (on mcbrim_test's first layer, by up
+/// to 2e-4 mm² in 609 after elephant foot compensation), which would
+/// leave the order to chance. Parts that are not copies but differ by
+/// less than this are taken in the reference's order only by chance.
 const SAME_AREA: f64 = 1e-6;
 
 /// The first layer's order: `pieces` gives, for each tool on it in
