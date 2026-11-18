@@ -2314,8 +2314,14 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             return Err(edge_tower::CLEARANCE_ERROR.into());
         }
     }
-    // On the bed, each tool is judged by its smallest piece as cut,
-    // pieces too slight to print a line of not counted.
+    // On the bed, each tool is judged by its smallest piece, pieces too
+    // slight to print a line of not counted. A piece is measured as the
+    // reference keeps it for this (`raw_slices`, backed up in
+    // PrintObjectSlice.cpp `PrintObject::slice` once `slice_volumes` is
+    // done): its region's share of the layer after XY size and elephant
+    // foot compensation, circle compensation and polyholes. Elephant foot
+    // compensation shrinks a share along the outline of the part only, so
+    // of blocks side by side the ones at the ends come out smaller.
     let mut on_bed = if layers.is_empty() {
         Vec::new()
     } else {
@@ -2333,13 +2339,14 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         };
         let mut pieces = Vec::with_capacity(on_bed.len());
         for tool in &on_bed {
-            let cut = layers[0]
-                .cut_by_filament
-                .iter()
-                .filter(|(key, _)| regions.filament(*key) == tools[*tool])
-                .flat_map(|(_, regions)| regions);
+            let kept = (0..used.len())
+                .filter(|slot| tool_of[*slot] == *tool)
+                .flat_map(|slot| match shares.get(slot) {
+                    Some(own) => own[0].as_slice(),
+                    None => layers[0].regions.as_slice(),
+                });
             let mut smallest = f64::INFINITY;
-            for region in cut {
+            for region in kept {
                 let shrunk = edge_clip::offset(
                     std::slice::from_ref(region),
                     -scaled(0.2 * line),
