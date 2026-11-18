@@ -125,13 +125,26 @@ fn footprint(
                 }
             })
             .collect();
+        // Each filament's block: its own category, or for 0 the one Bambu's
+        // presets give its type (WipeTowerEstimate.cpp, through
+        // `WipeTower::adhesiveness_category`), so that PLA and PETG, or PLA
+        // and a support for it, are estimated in blocks of their own. A list
+        // too short reads its first entry (`ConfigOptionVector::get_at`).
+        let at = |key: &str, filament: usize| -> Option<String> {
+            settings
+                .texts(key)
+                .and_then(|all| all.get(filament).or(all.first()).cloned())
+        };
         let categories: Vec<i64> = (ground.filaments.iter())
             .map(|filament| {
-                settings
-                    .texts("filament_adhesiveness_category")
-                    .and_then(|all| all.get(*filament).or(all.last()).cloned())
+                let configured = at("filament_adhesiveness_category", *filament)
                     .and_then(|text| text.trim().parse().ok())
-                    .unwrap_or(0)
+                    .unwrap_or(0);
+                let material = at("filament_type", *filament).unwrap_or_default();
+                let support = at("filament_is_support", *filament).is_some_and(|flag| flag == "1");
+                i64::from(crate::type1::adhesiveness_category(
+                    configured, &material, support,
+                ))
             })
             .collect();
         let blocks = |width: f32| blocks_depth(&purges, &categories, width, layer, pw, spacing);
@@ -576,5 +589,33 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(moved.x > 100.0 && !moved.onto_objects, "{moved:?}");
+    }
+
+    #[test]
+    fn bambus_tower_estimates_a_block_per_kind_of_filament() {
+        // PLA, PLA, Support For PLA and PLA on an A1 with no category set:
+        // the support filament takes a block of its own, by its type, so the
+        // tower is 45.5 mm deep, not 34.25, and the reference moves it from
+        // 220 to 256 - 45.5 - 15 - 3.428 = 192.072 (b_a1_foursup_rect).
+        let (settings, tower) = tower(
+            r#"{"enable_prime_tower": "1", "printer_model": "Bambu Lab A1",
+                "prime_tower_width": "35", "wipe_tower_x": ["15"], "wipe_tower_y": ["220"],
+                "filament_type": ["PLA", "PLA", "PLA", "PLA"],
+                "filament_is_support": ["0", "0", "1", "0"],
+                "filament_prime_volume": ["45", "45", "45", "45"],
+                "nozzle_diameter": ["0.4"], "prime_tower_brim_width": "3",
+                "prime_tower_infill_gap": "150%"}"#,
+        );
+        let four = Ground {
+            filaments: vec![0, 1, 2, 3],
+            height: 6.2,
+            ..ground()
+        };
+        let (_, depth, _) = estimated_size(&settings, &tower, &four).unwrap().unwrap();
+        assert!((depth - 45.5).abs() < 1e-4, "{depth}");
+        let moved = relocate(&settings, &tower, &four, || Ok(Vec::new()))
+            .unwrap()
+            .unwrap();
+        assert!((moved.y - 192.072).abs() < 1e-3, "{moved:?}");
     }
 }
