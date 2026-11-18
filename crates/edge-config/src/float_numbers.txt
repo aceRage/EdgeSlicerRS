@@ -26,6 +26,7 @@ counter_coef_2
 counter_coef_3
 counter_limit_max
 counter_limit_min
+curved_tops_max_angle
 cut
 cut_grid
 cut_x
@@ -62,6 +63,8 @@ fan_max_speed
 fan_min_speed
 fan_speedup_time
 fast_tilt_time
+filament_change_length
+filament_change_length_nc
 filament_colour_angle
 filament_colour_twist
 filament_cooling_before_tower
@@ -86,7 +89,13 @@ filament_minimal_purge_on_wipe_tower
 filament_multitool_ramming_flow
 filament_multitool_ramming_volume
 filament_preheat_temperature_delta
+filament_prime_volume
+filament_prime_volume_nc
 filament_rack_nozzle_diameter
+filament_ramming_travel_time
+filament_ramming_travel_time_nc
+filament_ramming_volumetric_speed
+filament_ramming_volumetric_speed_nc
 filament_retract_length_nc
 filament_retract_length_toolchange
 filament_retract_lift_above
@@ -102,6 +111,7 @@ filament_stamping_loading_speed
 filament_toolchange_delay
 filament_tower_interface_pre_extrusion_dist
 filament_tower_interface_pre_extrusion_length
+filament_tower_interface_purge_volume
 filament_tower_ironing_area
 filament_unloading_speed
 filament_unloading_speed_start
@@ -133,6 +143,7 @@ hollowing_closing_distance
 hollowing_min_thickness
 hollowing_quality
 hotend_cooling_rate
+hotend_cooling_rate_on_rack
 hotend_heating_rate
 image_fill_detail
 infill_direction
@@ -260,7 +271,16 @@ pressure_advance
 prime_tower_acceleration
 prime_tower_brim_chamfer_max_width
 prime_tower_brim_width
+prime_tower_feedrate_factor
+prime_tower_ironing_speed
 prime_tower_line_width
+prime_tower_side_scrape_along_length
+prime_tower_side_scrape_height
+prime_tower_side_scrape_length
+prime_tower_side_scrape_point_spacing
+prime_tower_side_scrape_speed
+prime_tower_side_scrape_wall_gap
+prime_tower_tail_slowdown_volume
 prime_tower_width
 prime_tower_wipe_distance
 prime_tower_wipe_speed
@@ -396,6 +416,7 @@ xy_contour_compensation
 xy_hole_compensation
 z_hop
 z_offset
+zaa_max_segment_rate
 zaa_min_z
 zaa_minimize_perimeter_height
 zhop

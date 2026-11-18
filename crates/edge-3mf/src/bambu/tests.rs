@@ -170,14 +170,14 @@ fn the_bambu_form_carries_the_converted_settings_under_bambus_tag() {
     let all = entries(&own);
     assert!(
         text(&all, "3D/3dmodel.model")
-            .contains(r#"<metadata name="Application">EdgeSlicer-2.4.9.0</metadata>"#)
+            .contains(r#"<metadata name="Application">EdgeSlicer-2.4.9.3</metadata>"#)
     );
     let model_settings = text(&all, "Metadata/model_settings.config");
     assert!(
         model_settings.contains("layerling_design")
             && model_settings.contains("make_overhang_printable")
     );
-    assert!(text(&all, "Metadata/slice_info.config").contains(r#"value="02.04.09.00""#));
+    assert!(text(&all, "Metadata/slice_info.config").contains(r#"value="02.04.09.03""#));
 }
 
 #[test]

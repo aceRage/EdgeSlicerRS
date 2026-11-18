@@ -27,7 +27,7 @@ pub(crate) const BASE: usize = 1 << 20;
 
 /// The settings of the reference's `PrintObjectConfig` (PrintConfig.hpp),
 /// which an object may set for itself, in order of name.
-pub const OBJECT_KEYS: [&str; 168] = [
+pub const OBJECT_KEYS: [&str; 172] = [
     "adaptive_layer_height",
     "apply_scarf_seam_on_circles",
     "bridge_acceleration",
@@ -42,6 +42,9 @@ pub const OBJECT_KEYS: [&str; 168] = [
     "brim_width",
     "calib_flowrate_topinfill_special_order",
     "circle_compensation_manual_offset",
+    "curved_tops_enabled",
+    "curved_tops_layers",
+    "curved_tops_max_angle",
     "default_acceleration",
     "default_jerk",
     "default_junction_deviation",
@@ -146,6 +149,7 @@ pub const OBJECT_KEYS: [&str; 168] = [
     "support_interface_interlock_layers",
     "support_interface_loop_pattern",
     "support_interface_not_for_body",
+    "support_interface_nozzle_temperature",
     "support_interface_pattern",
     "support_interface_spacing",
     "support_interface_speed",
@@ -201,7 +205,7 @@ pub const OBJECT_KEYS: [&str; 168] = [
 /// The settings of the reference's `PrintRegionConfig` (PrintConfig.hpp),
 /// which an object, a part, a modifier or a height range may set, in order
 /// of name.
-pub const REGION_KEYS: [&str; 191] = [
+pub const REGION_KEYS: [&str; 193] = [
     "adaptive_infill_gradient",
     "adaptive_infill_interior_density",
     "adaptive_infill_mode",
@@ -328,6 +332,7 @@ pub const REGION_KEYS: [&str; 191] = [
     "precise_outer_wall",
     "print_flow_ratio",
     "relative_bridge_angle",
+    "retract_after_outer_wall",
     "role_based_wipe_speed",
     "scarf_angle_threshold",
     "scarf_joint_flow_ratio",
@@ -390,6 +395,7 @@ pub const REGION_KEYS: [&str; 191] = [
     "wipe_speed",
     "zaa_dont_alternate_fill_direction",
     "zaa_enabled",
+    "zaa_max_segment_rate",
     "zaa_min_z",
     "zaa_minimize_perimeter_height",
     "zaa_speed_scaling",
@@ -1573,6 +1579,40 @@ pub(crate) mod tests {
         );
         assert!(!gaps.iter().any(|gap| gap.starts_with("travel_speed")));
         assert!(!gaps.iter().any(|gap| gap.starts_with("brim_width")));
+    }
+
+    /// The lists are the reference's `PrintObjectConfig` and
+    /// `PrintRegionConfig` (PrintConfig.hpp): a bump of the reference that
+    /// adds or takes away one fails here.
+    #[test]
+    fn the_key_lists_are_the_references() {
+        let header = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../reference/EdgeSlicer/src/libslic3r/PrintConfig.hpp"),
+        )
+        .unwrap();
+        let declared = |class: &str| -> Vec<String> {
+            let start = header
+                .find(&format!("PRINT_CONFIG_CLASS_DEFINE(\n    {class},"))
+                .unwrap_or_else(|| panic!("no {class}"));
+            let body = &header[start..start + header[start..].find("\n)").unwrap()];
+            let mut keys: Vec<String> = body
+                .split("((")
+                .skip(1)
+                .filter_map(|entry| {
+                    let entry = entry.split("))").next()?;
+                    let key = entry.rsplit(',').next()?.trim();
+                    entry
+                        .trim_start()
+                        .starts_with("Config")
+                        .then(|| key.to_owned())
+                })
+                .collect();
+            keys.sort();
+            keys
+        };
+        assert_eq!(declared("PrintObjectConfig"), OBJECT_KEYS);
+        assert_eq!(declared("PrintRegionConfig"), REGION_KEYS);
     }
 
     #[test]

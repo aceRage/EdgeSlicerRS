@@ -1261,7 +1261,7 @@ pub fn vfa(
         ("alternate_extra_wall", "0"),
         ("top_shell_layers", "0"),
         ("bottom_shell_layers", "1"),
-        // Ahead of the pin: EdgeSlicer 5c07d87e33 (on the fork's main):
+        // As the reference since EdgeSlicer 5c07d87e33:
         // with one bottom layer, no bottom thickness either, which would
         // add solid layers under the test (a vase's bottom follows it).
         ("bottom_shell_thickness", "0"),
@@ -1421,7 +1421,7 @@ pub fn input_shaping(
         ("wall_loops", "1"),
         ("top_shell_layers", "0"),
         ("bottom_shell_layers", "1"),
-        // Ahead of the pin: EdgeSlicer 5c07d87e33 (on the fork's main).
+        // As the reference since EdgeSlicer 5c07d87e33.
         ("bottom_shell_thickness", "0"),
         ("sparse_infill_density", "0%"),
         ("detect_thin_wall", "0"),
@@ -1547,7 +1547,7 @@ pub fn cornering(
         ("wall_loops", "1"),
         ("top_shell_layers", "0"),
         ("bottom_shell_layers", "1"),
-        // Ahead of the pin: EdgeSlicer 5c07d87e33 (on the fork's main).
+        // As the reference since EdgeSlicer 5c07d87e33.
         ("bottom_shell_thickness", "0"),
         ("sparse_infill_density", "0%"),
         ("detect_thin_wall", "0"),

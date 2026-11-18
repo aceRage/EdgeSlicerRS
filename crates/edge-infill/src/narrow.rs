@@ -86,19 +86,11 @@ impl Stroke {
 /// line, and of short strokes running out into a corner the first
 /// stays and loops are made of the rest.
 ///
-/// Not as the reference, where this goes against what it is plainly
-/// for. Its `is_initial_line_touching_long_lines` is described as
-/// answering for the stroke asked about ("this information was
-/// propagated into the current line") and reads what the strokes
-/// before it were told instead, in this pass over the columns or an
-/// earlier one. The stroke a run begins with is then never asked what
-/// was noted of it, only the strokes after it are: a lone short stroke
-/// after a long one goes, the very one the note is made to keep, and is
-/// laid by itself as a narrow area; and of a run into a corner the
-/// first two stay, the second on what the first was told a pass
-/// before. What `filter_vibrating_extrusions` was written to replace
-/// (PrusaSlicer's FillEnsuring.cpp before 2.9) asked every stroke of a
-/// run, the first too, where that run began.
+/// As the reference's `is_initial_line_touching_long_lines` answers since
+/// aceRage/EdgeSlicer#977 (before it, it read what the strokes before
+/// it were told, so the stroke a run begins with was never asked: a
+/// lone short stroke after a long one went, and of a run into a corner
+/// the first two stayed).
 fn goes(columns: &[Vec<Stroke>], column: usize, index: usize) -> bool {
     let stroke = &columns[column][index];
     if !stroke.is_short() {
@@ -178,13 +170,11 @@ fn filter(columns: &mut [Vec<Stroke>]) {
                     let skips = state.skips + i32::from(!is_short);
                     if next.state.set {
                         // Reached a second way: kept is whatever makes
-                        // it likelier to go. The reference means this
-                        // too ("update data in such a way that will
-                        // maximize the possibility of removing this
-                        // node") but writes the greater count of short
-                        // strokes into the count of skips, and the
-                        // count of short strokes stays the first
-                        // comer's. That mistake is not carried over.
+                        // it likelier to go, as in the reference since
+                        // aceRage/EdgeSlicer#977 (before it, the greater
+                        // count of short strokes was written into the
+                        // count of skips, and the count of short strokes
+                        // stayed the first comer's).
                         next.state.short = next.state.short.max(short);
                         next.state.skips = next.state.skips.min(skips);
                         if next.state.began_beside_long {
@@ -264,12 +254,10 @@ fn outline(columns: &[Vec<(Coord, Coord, Coord)>], spacing: Coord) -> Vec<Polygo
             let from = strokes.partition_point(|stroke| stroke.2 <= low.y);
             let to = strokes.partition_point(|stroke| stroke.1 <= high.y);
             // The first of them not taken already carries the polygon
-            // on. The reference looks for it the same way and then
-            // takes the first of them whether or not it is free
-            // (`candidates_begin` where `candidate` is meant), so two
-            // runs that come to the same pair of strokes both go on
-            // into the first and the second starts a polygon of its
-            // own. That is not carried over.
+            // on, as in the reference since aceRage/EdgeSlicer#977
+            // (`trace_solid_infill_sections`; before it, it took the
+            // first of them whether or not it was free,
+            // `candidates_begin` where `candidate` is meant).
             match (from..to).find(|&index| !used[index]) {
                 Some(index) => {
                     used[index] = true;
@@ -481,14 +469,12 @@ fn clip_end(line: &mut ThickPolyline, mut distance: f64) {
 /// stops the seam gap short of where it began, and is cut into paths
 /// where its width changes.
 ///
-/// Not as the reference, each where it goes against what it is plainly
-/// for: there every loop starts at its point nearest the object's own
-/// origin, the place the last one ended at never being noted (`last_pos`
-/// is set once and not again, where FillConcentric.cpp sets it after
-/// every line); here each starts nearest where the one before it ended,
-/// which for a loop is where it began.
-/// And there a line that is no loop loses the seam gap from its end as
-/// well; here only loops do.
+/// Each loop starts nearest where the one before it ended, which for a
+/// loop is where it began, and only loops lose the seam gap from their
+/// end, as in the reference since aceRage/EdgeSlicer#977
+/// (FillConcentricInternal.cpp; before it, every loop started nearest
+/// the object's own origin, and a line that is no loop lost the seam gap
+/// as well).
 pub(crate) fn loops(
     area: &ExPolygon,
     inside: &[ExPolygon],
@@ -852,8 +838,7 @@ mod tests {
         // them began beside a long stroke and all five stay for it;
         // the run from the second did not, and goes, back to the
         // stroke it began with. The first stays. (In the reference
-        // the second stays too: it is asked what the first was told,
-        // not what it was.)
+        // before aceRage/EdgeSlicer#977 the second stayed too.)
         let mut corner = strokes(&[
             &[(0.0, 10.0)],
             &[(0.0, 3.5)],
@@ -869,8 +854,7 @@ mod tests {
         );
         // One short stroke after a long one and nothing after it: a
         // run that began beside a long stroke, and it stays. (The
-        // reference asks the long stroke, which no run has reached,
-        // and takes the short one out.)
+        // reference before aceRage/EdgeSlicer#977 took it out.)
         let mut lone = strokes(&[&[(0.0, 10.0)], &[(0.0, 10.0)], &[(0.0, 2.4)]]);
         filter(&mut lone);
         assert_eq!(removed(&lone), [[false], [false], [false]]);
@@ -897,8 +881,9 @@ mod tests {
         // sixth: the lower one passes two long strokes and counts three
         // short ones, the upper counts five. The stroke they meet in is
         // the sixth of the upper run and goes, though the lower run
-        // reaches it first. (The reference keeps the first comer's
-        // count, by a slip of the pen, and the stroke with it.)
+        // reaches it first. (The reference before
+        // aceRage/EdgeSlicer#977 kept the first comer's count, and the
+        // stroke with it.)
         let mut columns = strokes(&[
             &[(0.0, 2.0), (6.0, 8.0)],
             &[(0.0, 4.5), (6.0, 8.0)],

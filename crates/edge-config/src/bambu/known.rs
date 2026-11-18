@@ -819,4 +819,8 @@ pub(super) const FILAMENT_FLOW_VARIANT: &[&str] = &[
     "filament_flush_temp",
     "filament_flush_temp_fast",
     "filament_cooling_before_tower",
+    "filament_ramming_travel_time",
+    "filament_ramming_travel_time_nc",
+    "filament_ramming_volumetric_speed",
+    "filament_ramming_volumetric_speed_nc",
 ];

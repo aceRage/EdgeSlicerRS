@@ -2436,9 +2436,10 @@ impl Writer<'_> {
                 // a Snapmaker U1 finds each tool's value by its dynamic
                 // flow calibration and no profile carries it, so a value
                 // sent for the ram would stand for the rest of the print.
-                // The reference sends it regardless and never sets it
-                // back (WipeTower2.cpp `toolchange_Unload`); the fix
-                // there is aceRage/EdgeSlicer#1002.
+                // The reference does the same since
+                // aceRage/EdgeSlicer#1002 (WipeTower2.cpp
+                // `toolchange_Unload`, `pressure_advance_reset`); before
+                // it the value was sent regardless and never set back.
                 let scripted = [&s.filament_start_gcode, &s.change_filament_gcode]
                     .into_iter()
                     .flatten()
@@ -3285,12 +3286,12 @@ impl Writer<'_> {
                 // A tool changed where it was comes round the tower and in
                 // through the gap in its wall (GCode.cpp `append_tcr2`, in
                 // place: `travel_to_tower_gap` after the change G-code).
-                // Not as the reference, on purpose: it goes round to where
-                // the block starts and in from there, level with the
-                // block's first row and so across the wall beside the gap
-                // (`travel_to_tower_gap` is given `start_wipe_pos`, not
-                // the gap); here it goes in through the gap, as that code
-                // is plainly for.
+                // It goes in through the gap, as that code is plainly for
+                // and as the reference does since aceRage/EdgeSlicer#1034
+                // (`travel_to_tower_gap` given `gap_entry_pos`); before it
+                // the reference went round to where the block starts and
+                // in level with the block's first row, across the wall
+                // beside the gap.
                 if in_place {
                     let first =
                         (layer.enter.first().copied()).or(layer.wipe.map(|wipe| wipe.start));
@@ -5302,14 +5303,14 @@ impl Writer<'_> {
             // 1mm/sec". The line goes at the speed of the point it
             // leaves.
             //
-            // The reference asks the two the other way round, and so
-            // comes to the second only when the speed has changed by
-            // 1 mm/s or less: the first move back at full speed after
-            // an overhang is written at the whole number of mm/s the
-            // measuring rounds to (F9720 for a wall at 162.36 mm/s) and
-            // only the one after it at the wall's own (F9741.893), or
-            // none if the path ends there. Here a move within 1 mm/s
-            // of the wall's own speed goes at that speed at once.
+            // A move within 1 mm/s of the wall's own speed goes at that
+            // speed at once, F asked first, as in the reference since
+            // aceRage/EdgeSlicer#964 (GCode.cpp `_extrude`). Before it the
+            // reference asked the two the other way round, so the first
+            // move back at full speed after an overhang was written at the
+            // whole number of mm/s the measuring rounds to (F9720 for a
+            // wall at 162.36 mm/s) and only the one after it at the wall's
+            // own (F9741.893), or none if the path ended there.
             let wanted = f64::from(readings[index - 1].speed) * 60.0;
             if (own - wanted).abs() <= 60.0 {
                 set = own;
@@ -5401,15 +5402,13 @@ impl Writer<'_> {
             {
                 s.initial_layer_speed
             }
-            // Not as the reference, which gives every line of the first
-            // layer but a bottom surface's the first layer's speed
-            // outright (GCode.cpp `_extrude`), ironing with the rest: a
-            // first layer ironed (`ironing_type` at `solid`) is then
-            // ironed at `initial_layer_infill_speed`, 105 mm/s with the
-            // U1's presets where ironing is set to 30. Ironing is slow
-            // because that is how it smooths, so here it is never laid
-            // faster than its own speed, and on the first layer no
-            // faster than that layer's fill either.
+            // Ironing is slow because that is how it smooths, so it is
+            // never laid faster than its own speed, and on the first
+            // layer no faster than that layer's fill either, as the
+            // reference does since aceRage/EdgeSlicer#948 (GCode.cpp
+            // `_extrude`). Before it the reference ironed a first layer
+            // at `initial_layer_infill_speed`, 105 mm/s with the U1's
+            // presets where ironing is set to 30.
             Role::Ironing if first_layer && s.initial_layer_infill_speed > 0.0 => {
                 s.ironing_speed.min(s.initial_layer_infill_speed)
             }
@@ -5759,9 +5758,11 @@ impl Writer<'_> {
         if long {
             self.retract(false)?;
             // A wipe moves the nozzle, and the way is found again from
-            // where it ends (GCode.cpp `travel_to`). Not as the
-            // reference, on purpose: by then it has forgotten that the
-            // move was to go straight, and routes it after all.
+            // where it ends (GCode.cpp `travel_to`), except for a move
+            // that is to go straight, which stays so, as the reference
+            // does since aceRage/EdgeSlicer#959 (`disabled_once`); before
+            // it the reference had forgotten that by then and routed the
+            // move after all.
             if self.state.position != from {
                 way = self.way(to);
             }

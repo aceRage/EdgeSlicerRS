@@ -299,8 +299,9 @@ impl Scorer for AutoArranger<'_> {
 /// The order items are tried in (`sortfunc`, Arrange.cpp l.816): by
 /// priority, then the hotter bed first, then printing by layer the lower
 /// first filament and the larger, by object the shorter and the larger.
-/// The reference sorts unstably, so items alike in all of these go in an
-/// order it leaves to chance; here they keep the order they were given in.
+/// Items alike in all of these keep the order they were given in, as in
+/// the reference since aceRage/EdgeSlicer#1000 (firstfit.hpp
+/// `std::stable_sort`; before it, an unstable sort left that to chance).
 fn sort_items(store: &mut [usize], arena: &[Item], seq: bool) {
     store.sort_by(|&a, &b| {
         let (i1, i2) = (&arena[a], &arena[b]);
@@ -388,11 +389,10 @@ fn pack_items(
         let mut best_result: Option<PackResult> = None;
         let mut best_all_plates = f64::MAX;
         let mut j = 0;
-        // Each item is tried from the turn it was given on every bed. The
-        // reference starts each bed from where the last bed's search left
-        // the item (firstfit.hpp l.131 passes the item itself, which
-        // `_trypack` turns), so the turns it tries on one bed depend on the
-        // bed before.
+        // Each item is tried from the turn it was given on every bed, as in
+        // the reference since aceRage/EdgeSlicer#1000 (firstfit.hpp; before
+        // it, each bed started from where the last bed's search left the
+        // item).
         let initial_rotation = arena[index].rotation();
         let initial_translation = arena[index].translation();
         // An item an empty new bed does not take is put on none rather
@@ -627,9 +627,9 @@ pub fn arrange(items: &mut [Piece], fixed: &[Piece], bed: [Coord; 4], params: &P
         accuracy: params.accuracy,
     };
     let bin_area = bin.area().abs();
-    // The reference counts every item it is handed, the fixed ones twice
-    // over (Arrange.cpp l.835 and l.849); how much is left to place is a
-    // share of what is to be placed.
+    // How much is left to place is a share of what is to be placed, as in
+    // the reference since aceRage/EdgeSlicer#1000 (Arrange.cpp; before it,
+    // every item it was handed counted, the fixed ones twice over).
     let arranger = AutoArranger {
         params,
         bin_area,
@@ -648,9 +648,9 @@ pub fn arrange(items: &mut [Piece], fixed: &[Piece], bed: [Coord; 4], params: &P
     if params.allow_rotations {
         for &i in &shapes {
             let turn = min_area_rotation(&arena[i].transformed());
-            // The reference sets this as the item's whole turn, measured on
-            // the outline already turned by its own (Arrange.cpp l.1013);
-            // it is a turn more.
+            // A turn more on the outline already turned, as in the reference
+            // since aceRage/EdgeSlicer#1000 (Arrange.cpp `itm.rotate`; before
+            // it, set as the item's whole turn).
             let total = arena[i].rotation() + turn;
             arena[i].set_rotation(total);
             let bb = arena[i].bounding_box();

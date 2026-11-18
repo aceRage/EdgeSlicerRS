@@ -796,9 +796,10 @@ fn a_line_of_seams_that_stops_short_of_the_top_takes_in_the_layer_beneath_its_fi
         .collect();
     let back = plan(&layers, Seam::Back);
     // Every layer up to the 25th is in the line, the 12th with them.
-    // (The reference, having looked upward and stopped short of the
-    // top, steps down twice before it looks again, and leaves the layer
-    // beneath the first seam out.)
+    // (So does the reference since aceRage/EdgeSlicer#965; before it,
+    // having looked upward and stopped short of the top, it stepped down
+    // twice before it looked again, and left the layer beneath the first
+    // seam out.)
     for at in 0..25 {
         assert!(
             seams(&back, at).perimeters[0].finalized.is_some(),

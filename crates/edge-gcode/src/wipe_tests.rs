@@ -604,9 +604,10 @@ fn a_square_holes_wall_is_come_at_from_past_its_corner() {
     // degrees, so the point the wall is come at from is a third of that
     // round from its last edge: straight on past the corner, exactly as
     // far from it as the nozzle is wide. The wall behind is beside that
-    // point, and the wall is come at from it. (In the reference this
-    // turns on a rounding: it wants the hole's own wall nearer the point
-    // than the nozzle's width, which is just what it is not.)
+    // point, and the wall is come at from it, as in the reference since
+    // aceRage/EdgeSlicer#960 (GCode.cpp `extrude_loop`). (Before it this
+    // turned on a rounding there: it wanted the hole's own wall nearer
+    // the point than the nozzle's width, which is just what it is not.)
     let hole = |x: f64, y: f64, side: f64, depth: usize| {
         let mut wall = wall(x, y, side, depth);
         wall.is_hole = true;

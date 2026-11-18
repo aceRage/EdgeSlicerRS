@@ -73,12 +73,11 @@ fn alias(name: &str) -> &str {
 /// the one its profile names, by name or by number; failing that, by the
 /// model it is.
 ///
-/// The reference looks for `default_bed_type` in the printer preset
-/// only. The profiles that give one (Bambu's) give it in the model's
-/// file, which the reference never reads for this, so its Bambu printers
-/// start on the High Temp Plate whatever their profile says. The key is
-/// plainly there to be the default, so it is read from the model's file
-/// too, after the preset.
+/// `default_bed_type` is read from the model's file too, after the
+/// preset, as the reference does for Bambu machines since
+/// aceRage/EdgeSlicer#949 (before it, the preset only, so its Bambu
+/// printers started on the High Temp Plate). Here it is read for every
+/// vendor's model; the reference leaves the other vendors' key unread.
 fn default_bed_type(printer: &Settings, model: Option<&PrinterModel>) -> &'static str {
     let model_id = model.and_then(|model| model.model_id.as_deref());
     let named = printer

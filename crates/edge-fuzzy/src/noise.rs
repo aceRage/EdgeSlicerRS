@@ -135,14 +135,16 @@ pub(crate) fn gradient_coherent_noise_3d(x: f64, y: f64, z: f64, seed: i32) -> f
 /// design. Overflow of a signed `int` is undefined in C++, and a compiler
 /// that reasons from that (clang and GCC at -O2) proves the product is
 /// never negative and drops the mask. The reference's own macOS build of
-/// libnoise does: its `IntValueNoise3D` returns negative numbers, and its
-/// `ValueNoise3D` converts them as unsigned, so it ranges over (-3, 1]
-/// where libnoise documents [-1, 1]. A compiler that wraps (MSVC) keeps
-/// the mask. So the reference's Voronoi noise depends on what built it.
+/// libnoise did, before aceRage/EdgeSlicer#945: its `IntValueNoise3D`
+/// returned negative numbers, and its `ValueNoise3D` converted them as
+/// unsigned, so it ranged over (-3, 1] where libnoise documents [-1, 1].
+/// A compiler that wraps (MSVC) keeps the mask.
 ///
-/// Different on purpose: this engine takes the code as written
-/// ([`ValueHash::AsWritten`]), which is what libnoise documents and gives
-/// the same result everywhere. The other reading is kept so the tests can
+/// This engine takes the code as written ([`ValueHash::AsWritten`]),
+/// which is what libnoise documents and gives the same result everywhere,
+/// as the reference's builds do since aceRage/EdgeSlicer#945 (libnoise
+/// patched to do the sum in `unsigned int`,
+/// deps/libnoise/0001-value-noise-unsigned.patch). The other reading is kept so the tests can
 /// hold every step of the port against the real library.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ValueHash {

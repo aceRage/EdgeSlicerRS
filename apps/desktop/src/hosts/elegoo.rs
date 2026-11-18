@@ -28,16 +28,15 @@
 //!   printing printer is sent all of it and then answers `Ack` 1. Here a
 //!   busy printer is refused first, with the reference's words for that
 //!   refusal to another printer.
-//! - The reference's websocket has no read time-out
-//!   (`WebSocketClient::receive` ignores its argument and blocks), so a
-//!   printer that goes quiet leaves the job hanging; its 30 s and 60 s
-//!   limits are only checked when a message arrives. Here every read is
-//!   timed and the limits hold.
-//! - The reference turns an `Ack` that arrives after 30 s into a failure
-//!   even when it is 0 (ElegooLink.cpp l.909); here an `Ack` is read as it
-//!   is, whenever it comes within the limit.
-//! - The reference logs every websocket message whole (l.836, l.962),
-//!   the printer's mainboard serial with it; nothing here is logged.
+//! - Every read is timed and the 30 s and 60 s limits hold, and an `Ack`
+//!   is read as it is whenever it comes within the limit, as in the
+//!   reference since aceRage/EdgeSlicer#982 (`WebSocketClient::set_deadline`,
+//!   ElegooLink.cpp `wait_timed_out`; before it, a read blocked for good
+//!   and an `Ack` 0 after 30 s was a failure).
+//! - Nothing of a websocket message is logged here. The reference logs
+//!   each one with the printer's mainboard serial taken out
+//!   (`canvas_redact_frame`, since aceRage/EdgeSlicer#981; before it,
+//!   whole).
 
 use std::{
     net::{TcpStream, ToSocketAddrs},

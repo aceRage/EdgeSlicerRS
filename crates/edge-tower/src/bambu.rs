@@ -602,9 +602,11 @@ impl Generator<'_> {
 
     /// The open part of the layer below, which a row over it bridges
     /// (`get_floating_area`). Nothing is open over the solid first layer.
-    /// Below is the tower's layer laid last: not as the reference with the
-    /// layers that have no tool change left out, which looks at the
-    /// print's layer below, laid or not.
+    /// Below is the tower's layer laid last, as the reference has it with
+    /// the layers that have no tool change left out since
+    /// aceRage/EdgeSlicer#1019 (WipeTower.cpp `get_floating_area`,
+    /// `plan_layer_is_laid`); before it the print's layer below was looked
+    /// at, laid or not.
     fn floating(&self, index: usize) -> Option<(f32, f32)> {
         let below = self.laid_below(index)?;
         if below == self.first {
@@ -859,12 +861,13 @@ impl Generator<'_> {
         let mut loops = ((self.brim_width + spacing / 2.0) / spacing) as i32;
         if !first {
             // A loop fewer for each layer of the tower laid above its
-            // first, none below it. Not as the reference with the layers
-            // that have no tool change left out, which counts the print's
-            // layers between, laid or not, so the brim is mostly gone by
-            // the tower's second layer (`finish_layer`,
-            // `wipe_tower_printed_layer_distance`, whose own comment has it
-            // count the layers printed).
+            // first, none below it, as the reference counts them with the
+            // layers that have no tool change left out since
+            // aceRage/EdgeSlicer#1019 (`finish_layer`,
+            // `wipe_tower_printed_layer_distance` given
+            // `plan_layer_is_laid`). Before it the print's layers between
+            // were counted, laid or not, so the brim was mostly gone by the
+            // tower's second layer.
             let climbed = if index < self.first {
                 -1
             } else {
@@ -1106,10 +1109,11 @@ pub(crate) fn plan(
     let across = width - 2.0 * line;
     for (index, layer) in plan.iter_mut().enumerate() {
         // The tower's first layer stays solid: its blocks lay more
-        // instead. Not as the reference with the layers that have no tool
-        // change left out, which keeps the print's first layer solid, one
-        // the tower is not laid on, and spreads the rows of the tower's
-        // first (`plan_tower`, "apply solid fill for the first layer").
+        // instead, as the reference has it with the layers that have no
+        // tool change left out since aceRage/EdgeSlicer#1019 (`plan_tower`,
+        // "apply solid fill for the first layer", at `m_first_layer_idx`).
+        // Before it the print's first layer was kept solid, one the tower
+        // is not laid on, and the rows of the tower's first were spread.
         if index == first && extra_spacing > 1.0 + EPSILON {
             layer.spacing = 1.0;
             for change in &mut layer.changes {

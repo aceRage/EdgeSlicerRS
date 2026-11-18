@@ -841,7 +841,7 @@ not yet: a vendor's system profile is not imported
 not yet: filament presets a profile update took away are not brought back
 # The menu bar in a browser (index.html, menu.js), and "About".
 Menu bar
-EdgeSlicerRS: a slicer for EdgeSlicer, written anew in Rust. It follows the C++ EdgeSlicer it is built beside, 2.4.9.0.
+EdgeSlicerRS: a slicer for EdgeSlicer, written anew in Rust. It follows the C++ EdgeSlicer it is built beside, 2.4.9.3.
 Licence: AGPL-3.0.
 Export the STL as (a full path)
 Path of the folder to export the STL files to

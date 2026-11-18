@@ -325,10 +325,10 @@ Working:
   counts as being in several materials when more than one filament has
   a share of it, where the reference counts each object's regions; the
   two lengths arrive in whole nanometres, where the reference carries
-  fractions of one; an outline edge of no length does not spoil the
-  lengths measured along a ring (the reference divides by zero there),
-  and a region that simplifying parts in two is shrunk piece by piece
-  (the reference keeps the first piece and drops the rest). On a comb
+  fractions of one. An outline edge of no length does not spoil the
+  lengths measured along a ring, and a region that simplifying parts in
+  two is shrunk piece by piece, as the reference does both since
+  aceRage/EdgeSlicer#947. On a comb
   with teeth 0.5 to 2 mm wide (`tools/make_fixture.py`, `comb`) the
   first layer's outer wall lies within 0.011 mm of the C++ slicer's
   everywhere; it was up to 0.17 mm off while wide parts were shrunk by
@@ -371,10 +371,10 @@ Working:
   middles as they then lie. A port of the reference's
   `adjust_layer_series_to_align_object_height` (Slicing.cpp). Walls,
   fill, skirt, prime tower and supports on those layers are laid at the
-  layer's own height. Not as the reference, marked in the code: a layer
-  that has reached the least or greatest height takes no further share
-  (the reference gives it one, and overshoots; it shows only where the
-  five layers differ in height, which they do not here). On a 20 mm
+  layer's own height. A layer that has reached the least or greatest
+  height takes no further share, as in the reference since
+  aceRage/EdgeSlicer#955 (before it, the reference gave it one, and
+  overshot). On a 20 mm
   cube at 0.2 mm on a 0.25 mm first layer both slicers end at 20.05 mm
   without it and with it lay the last five layers at 0.19 mm, to
   19.24, 19.43, 19.62, 19.81 and 20.00 mm; on one 20.14 mm tall, at
@@ -402,13 +402,13 @@ Working:
   where the reference does it: on the layers as cut, before paint, size
   compensation and the elephant's foot; a brim goes round what the
   slope puts on the bed. On a layer in several filaments what is added
-  goes to the filament above it. Not as the reference, marked in the
-  code: the reach is `tan(angle)` times the height of the layer that
-  overhangs, where the reference takes the `layer_height` setting for
-  every layer (with a precise height on as well, a slope under the
-  changed layers lies up to 0.043 mm from the C++ slicer's); and
-  everything on the plate is grown as one stack, which differs only
-  where a part floats over nothing. Against the C++ slicer, same layers
+  goes to the filament above it. The reach is `tan(angle)` times the
+  height of the layer that overhangs, as in the reference since
+  aceRage/EdgeSlicer#955 (before it, the `layer_height` setting for
+  every layer: with a precise height on as well, a slope under the
+  changed layers lay up to 0.043 mm from the C++ slicer's). Not as the
+  reference, marked in the code: everything on the plate is grown as
+  one stack, which differs only where a part floats over nothing. Against the C++ slicer, same layers
   throughout: on the mushroom at the default 55° the wall length of a
   layer differs by 0.01% on average and 0.1% at most, layer extents by
   0.001 mm and 0.004 mm; at 30° by 0.02% and 0.005 mm at most; on the
@@ -637,31 +637,25 @@ Working:
   4%, 6% and 54% short: bridges over infill and sparse fill are
   sorted out differently there, as above), and the joins of short
   lines no longer make up for it; layer by layer the two files differ
-  by 1.28 m in all where they differed by 2.00 m. Not as the reference, each marked in the
-  code: there every loop starts at its point nearest the object's own
-  origin, the place the last one ended at never being noted, and here
-  where the one before it ended; a line that is no loop is not
-  shortened by the seam gap at its end; the loops of an area are laid
-  each after the one that starts nearest, not in the reference's chain
-  of nearest pairs; and three mistakes in `filter_vibrating_extrusions`
-  and in the tracing of the wide part are not carried over (a stroke
-  reached by two runs of short strokes counts the first comer's run
-  there, not the deeper; a run of strokes that finds the stroke beside
-  it taken goes on into that one all the same; and whether a stroke's
-  run began beside a long stroke is read there off the strokes before
-  it, whatever they were last told, where the function that reads it
-  is described as answering for the stroke itself and what it
-  replaced in PrusaSlicer asked every stroke of a run where that run
-  began: so the stroke a run begins with is never asked, a lone short
-  stroke after a long one is taken out, the one the note is made to
-  keep, and of a run into a corner the first two stay). Round a
-  `tube` that is seen as one line: the last stroke against the round
-  wall is a short one after a long one, the reference takes it out and
-  lays a line of 4.3 mm there by itself as a narrow area on each solid
-  layer, and here it stays with the lines, which have none to lay
-  there (strokes are counted half a spacing from where the fill puts
-  its lines), as they have none in the same place on the other side
-  of the tube in either.
+  by 1.28 m in all where they differed by 2.00 m. Not as the reference,
+  marked in the code: the loops of an area are laid each after the one
+  that starts nearest, not in the reference's chain of nearest pairs.
+  Each loop starts where the one before it ended, a line that is no
+  loop is not shortened by the seam gap at its end, and the three
+  mistakes there were in `filter_vibrating_extrusions` and in the
+  tracing of the wide part are not made (a stroke reached by two runs
+  of short strokes counting the first comer's run, not the deeper; a
+  run taking the stroke beside it when it is taken; and the stroke a
+  run begins with never asked where its run began), as in the
+  reference since aceRage/EdgeSlicer#977; the figures above are from
+  before it. Round a `tube` that is seen as one line: the last stroke
+  against the round wall is a short one after a long one, the
+  reference before that fix took it out and laid a line of 4.3 mm
+  there by itself as a narrow area on each solid layer, and here it
+  stays with the lines, which have none to lay there (strokes are
+  counted half a spacing from where the fill puts its lines), as they
+  have none in the same place on the other side of the tube in
+  either.
   Solid fill inside the part is fitted to its area as top and bottom
   surfaces are, as in the reference (FillRectilinear.cpp
   `fill_surface_by_lines` fits all fill at full density but bridges,
@@ -875,15 +869,14 @@ feature filaments (`wall_filament`, `sparse_infill_filament`,
   lines are swept in order, and otherwise when there is no row beside
   it left to go on to (FillRectilinear.cpp, the joins along the outline
   on one line). For solid fill such a join is no longer than three
-  line spacings, and for a bridge as long as the side is. The reference
-  means that limit and does not keep it (Fill.cpp works it out from a
-  spacing not yet set, which leaves it at nothing, and nothing is no
-  limit; fixed there in aceRage/EdgeSlicer#968), so until its fix a
-  bottom surface with round holes in it is a little shorter here:
-  4.30 m against 4.32 on `holes` and 0.51 against 0.52 on the `tube`,
-  which were the reference's length to the tenth of a millimetre with
-  no limit kept (4315.5 mm and 519.8 mm in both, from 18.6 and 7.2 mm
-  short before rows were joined round holes at all). Sparse lines round the
+  line spacings, and for a bridge as long as the side is, as the
+  reference keeps it since aceRage/EdgeSlicer#968 (before it, Fill.cpp
+  worked the limit out from a spacing not yet set, and nothing is no
+  limit: a bottom surface with round holes in it was a little shorter
+  here, 4.30 m against 4.32 on `holes` and 0.51 against 0.52 on the
+  `tube`, which were the reference's length to the tenth of a
+  millimetre with no limit kept, 4315.5 mm and 519.8 mm in both, from
+  18.6 and 7.2 mm short before rows were joined round holes at all). Sparse lines round the
   holes of `holes` and `counterbore` are within 0.1% (`rectilinear`;
   1.4 and 1.7% short before). `top_surface_pattern`,
   `bottom_surface_pattern` and `internal_solid_infill_pattern` say whether
@@ -1101,17 +1094,16 @@ feature filaments (`wall_filament`, `sparse_infill_filament`,
   is contoured as a whole loop, where the reference contours each of
   its pieces of one width by itself. As in the reference nothing is
   contoured with `spiral_mode` or `dithering_local_z_mode` on, and
-  each says so. Four things are not as in the reference, each a
-  mistake there: a contoured wall is closed with the seam gap and no
-  scarf (the reference lays a scarf's way up and way down flat along
-  the contour at full flow, the joint twice); ironing keeps its speed
-  (the reference slows it for its height over the ironing line's own,
-  down to 10 mm/s); a wipe after a contoured line goes back along it
-  at the heights it was laid at (the reference wipes at the height
-  the line ended at, back up a slope through what it has just laid);
-  and a travel never goes down on the way, the nozzle coming down to
-  a line that starts lower once it is there (the reference travels
-  straight from one height to the other). One is noted: where a layer
+  each says so. A contoured wall is closed with the seam gap and no
+  scarf, ironing keeps its speed, and a wipe after a contoured line
+  goes back along it at the heights it was laid at, as in the
+  reference since aceRage/EdgeSlicer#974 (before it, each a mistake
+  there: the joint laid twice, ironing slowed to 10 mm/s, the wipe at
+  the height the line ended at). One thing is not as in the
+  reference, a mistake there: a travel never goes down on the way,
+  the nozzle coming down to a line that starts lower once it is there
+  (the reference travels straight from one height to the other,
+  GCode.cpp `_extrude`). One is noted: where a layer
   is slowed to cool, a contoured move slowed for its height is held to
   the layer's cap like any other line, where the reference slows such
   moves in proportion. With `zaa_enabled` off a file is byte for byte
@@ -1173,12 +1165,11 @@ feature filaments (`wall_filament`, `sparse_infill_filament`,
     through it (a cubic B-spline of one stretch to every 4 mm of line,
     each seam counting for more the sharper its corner), and each seam
     is moved to the curve, the less the sharper its corner, a corner of
-    55 degrees or more not at all. What differs by intent: where a
-    line stops short of the top layer the reference, turning to look
-    downward, steps down twice and leaves the layer beneath the line's
-    first seam out of it (a slip; a line of twenty seams or more is
-    seldom put right by its second tries), and here that layer is in
-    the line; a wall is
+    55 degrees or more not at all. Where a line stops short of the top
+    layer, the layer beneath the line's first seam is in the line, as in
+    the reference since aceRage/EdgeSlicer#965 (SeamPlacer.cpp
+    `find_seam_string`; before it, turning to look downward it stepped
+    down twice and left that layer out). What differs by intent: a wall is
     measured against everything on the layer beneath, not its own
     object's layer alone; a loop opened at a seam that is not one of
     its points is opened at the nearest point of the loop, where the
@@ -1275,19 +1266,17 @@ feature filaments (`wall_filament`, `sparse_infill_filament`,
     run on from one width into the next. The nozzle comes down to the
     foot of the slope where it would come down to the layer, never
     lower than the layer's bottom, and is wiped on round the loop from
-    where the slope came up. Five things are not as in the reference,
-    each a mistake there: a slope of no length is a plain seam with
-    its gap, where the reference closes the loop with neither; an
-    inner wall's way up starts two fifths on whatever the seam gap,
-    where the reference clips nothing with the gap at 0;
-    `scarf_joint_speed` holds the joint on a small loop too, where the
-    reference lets it go at `small_perimeter_speed` (half of a
-    100 mm/s wall is 50 mm/s on a loop small enough to go at 60, as
-    the fix to the reference has it, aceRage/EdgeSlicer#958); a joint speed of 0
-    is the wall's own speed, and said, where the reference then goes
-    as fast as the hot end melts; and how far a seam may hang out is a
-    share of the wall's own width, where the reference takes the width
-    as set, which is 0 when it is left to follow the nozzle. One thing
+    where the slope came up. A slope of no length is a plain seam with
+    its gap; an inner wall's way up starts two fifths on whatever the
+    seam gap; `scarf_joint_speed` holds the joint on a small loop too
+    (half of a 100 mm/s wall is 50 mm/s on a loop small enough to go at
+    60); a joint speed of 0 is the wall's own speed (and said here);
+    and how far a seam may hang out is a share of the wall's own width:
+    all five as in the reference since aceRage/EdgeSlicer#958, each a
+    mistake there before it (the loop closed with neither slope nor
+    gap, nothing clipped with the gap at 0, `small_perimeter_speed` on
+    a small loop, a joint as fast as the hot end melts, and the width
+    as set, 0 when it follows the nozzle). One thing
     is different without being wrong there: the nozzle goes down to
     the foot of the slope as a move of its own after the travel, where
     the reference makes an unretracted travel's last leg the way down.
@@ -1319,14 +1308,14 @@ feature filaments (`wall_filament`, `sparse_infill_filament`,
     wall generator, walls laid either way round, every wall order,
     arcs and scarf seams (after a scarf they are made about where the
     loop's flat part begins and its way down ends, as in the
-    reference). Two things are not as in the reference, each a mistake
-    there: an outer wall is taken to lie beside the point it is itself
-    come at from, where the reference measures, and on the part's side
-    of a corner of 270 degrees or more (any corner of a square hole)
-    finds that point exactly a nozzle's width away, in reach or out of
-    it by a rounding; and a filament whose own `wipe` is off gets no
-    inward wipe, where the reference makes one if any filament's is
-    on. One thing is narrower: the walls looked for beside a seam are
+    reference). An outer wall is not looked for beside the point it is
+    itself come at from, as in the reference since aceRage/EdgeSlicer#960
+    (before it, the reference measured it, and on the part's side of a
+    corner of 270 degrees or more found that point exactly a nozzle's
+    width away, in reach or out of it by a rounding). One thing is not
+    as in the reference, a mistake there: a filament whose own `wipe`
+    is off gets no inward wipe, where the reference makes one if any
+    filament's is on (GCode.cpp `set_extruders`). One thing is narrower: the walls looked for beside a seam are
     the island's loops, where the reference also has the walls of thin
     parts that are not loops among them.
   - Order of fill and supports: the fill of an island comes in parts,
@@ -1428,13 +1417,13 @@ feature filaments (`wall_filament`, `sparse_infill_filament`,
     spiral lift, which is then one `G17` and `G3` in place of its many
     short moves. The prime tower's rounded ribs stay straight moves
     (the reference fits them within 0.1 mm). An arc counts by its
-    bulge when the print is checked against the bed. Three things are
-    not as in the reference, each a mistake there: it leaves a path's
-    middle point out when it looks for the circle a path strays from
-    least, it keeps the wrong angle with an arc it had to turn about,
-    and it takes a counter-clockwise arc whose middle point is exactly
-    due east of its centre for no arc at all, which cuts the arc of a
-    round wall drawn square to the axes in two on every layer.
+    bulge when the print is checked against the bed. A path's middle
+    point is tried when the circle a path strays from least is looked
+    for, an arc turned about keeps its own angle, and a
+    counter-clockwise arc whose middle point is exactly due east of its
+    centre is an arc, as in the reference since aceRage/EdgeSlicer#950
+    (before it, each was a mistake there, the last cutting the arc of a
+    round wall drawn square to the axes in two on every layer).
   - Paths without arcs: with arc fitting off, every wall, fill line
     and support line is thinned to `resolution` before it is written,
     as the reference thins them (PrintObject.cpp
@@ -1630,11 +1619,12 @@ feature filaments (`wall_filament`, `sparse_infill_filament`,
     a smooth timelapse's tower on every layer, sparse layers combined
     into one (`wipe_tower_sparse_layers_combination`), the tower's own
     acceleration (`prime_tower_acceleration`) and tower interfaces
-    (`wipe_tower_interface_*`, `enable_tower_interface_features`). Not
-    as the reference, on purpose: a plain (rectangle) wall is laid at the
-    tower's wall speed, where the reference writes it with no speed and
-    it goes at whatever the change G-code left in force (30 mm/s on an
-    A1); and a layer whose every change is to a soluble or support
+    (`wipe_tower_interface_*`, `enable_tower_interface_features`). A
+    plain (rectangle) wall is laid at the tower's wall speed, as the
+    reference does at the pin (WipeTower.cpp `print_outer_wall`;
+    before it, it wrote the wall with no speed, at whatever the change
+    G-code left in force, 30 mm/s on an A1). Not as the reference, on
+    purpose: a layer whose every change is to a soluble or support
     filament lays its frame and wall after its first block, where the
     reference lays them before the change with the nozzle put away.
   - A prime tower, on every layer up to the last tool change: a wall, a
@@ -1838,19 +1828,20 @@ a tool change. The `; printing object` and `; stop printing object`
 comments (`gcode_label_objects`) are written whenever that setting is on,
 labels or not, as the reference writes them (GCode.cpp `process_layer`);
 with them on and labels off the copies are printed copy after copy all the
-same (2026-11-16). Not as the reference, on purpose: where a tool is
-changed in place (the U1) the reference writes the stop after the change
-G-code, so a printer skipping that copy skips the retraction, wipe and lift
-before the change too; here the stop comes before the change. The
+same (2026-11-16). Where a tool is changed in place (the U1) the stop
+comes before the change, so a printer skipping that copy does not skip
+the retraction, wipe and lift before it, as in the reference since
+aceRage/EdgeSlicer#1041 (GCode.cpp `append_tcr2`; before it, the stop
+came after the change G-code). The
 copies on a layer come in the reference's order (2026-11-16,
 `copy_order.rs`): their middles chained as ShortestPath.cpp
 `chain_print_object_instances` chains them, its k-d tree and heap ported
 for the ties and, with no prime tower, for which end the chain starts
 from. And the copies a tool prints on a layer with a prime tower are
-chained from the tower, as the reference means to, where it starts from
-the first plate's corner (it makes its point from `wipe_tower_x` in
-millimetres taken as nanometres, unscaled and without the plate's place,
-GCode.cpp l.9725 at the pin), so the copies come in another order there. With labels off
+chained from the tower, as the reference does since
+aceRage/EdgeSlicer#1041 (GCode.cpp `process_layer`, `wt_pos` scaled and
+with the plate's origin; before it, the chain started from the first
+plate's corner). With labels off
 (`exclude_object` off, not a Bambu Lab printer) and `gcode_label_objects`
 off, nothing changes.
 
@@ -1880,14 +1871,15 @@ bands of a second filament, `tools/make_fixture.py`) on a U1, a P1S and
 a Voron 2.4 of one nozzle: the tower on 4 / 4 layers, up to 0.800 / 0.800
 mm, each layer at the same height as the reference's; with the setting
 off nothing changes. The U1 refused with the tower at x 222 and accepted
-at 226, as the reference. Not as the reference, on purpose (each said
-in the code, the reference's being plain mistakes): the brim's chamfer steps a loop for each
+at 226, as the reference. The brim's chamfer steps a loop for each
 layer of the tower laid, not for each of the print's layers; Bambu's
-tower keeps its first laid layer solid where the tower is spread for its
-height; a row's or a ram's layer below is the tower's layer laid last;
-and the spiral the clearance allows for takes `travel_slope` in degrees,
-which makes the check 2.3 mm stricter on a U1 (the reference accepts the
-tower at x 224 and 225, here refused).
+tower keeps its first laid layer solid; a row's or a ram's layer below
+is the tower's layer laid last; and the spiral the clearance allows for
+takes `travel_slope` in degrees, which makes the check 2.3 mm stricter
+on a U1: all as in the reference since aceRage/EdgeSlicer#1019 and
+#1020 (WipeTower.cpp `plan_layer_is_laid`, Print.cpp `deg2rad`; before
+them, plain mistakes there, and the reference accepted the tower at
+x 224 and 225).
 
 **The way to the prime tower, and the retractions round it** (2026-11-13,
 `edge-parity`). The reference's own tower (WipeTower2) lays its frame,
@@ -1944,8 +1936,8 @@ crossed there where the wall is begun elsewhere here; mcbrim plates
 56 / 56 and 100 / 100), as are those to it, from it, between islands of
 `splitbands` and round a change. What is left: on `splitbands` with no
 sparse layers the reference's 27 more are its old descent over the
-part, each with a retraction and a push back (aceRage/EdgeSlicer#1020,
-not copied); on the mcbrim plates the rest is between the part's own
+part, each with a retraction and a push back (not copied, and gone
+from the reference since aceRage/EdgeSlicer#1020); on the mcbrim plates the rest is between the part's own
 lines (gap fill, bottom surface, supports: 1949 here, 2056 there on
 plate 1; 725 / 626 on plate 2), not near the tower, so plate 1's total
 is further from the reference's though every kind of move at the tower
@@ -2162,14 +2154,15 @@ objects labelled for skipping are done since (below) and compared. The reference
 own files timed here come to within 7 s on the cubes and 35 s on the
 two-filament prints (about 1.5 s a tool change, not yet found).
 
-A C++ error this turned up: above the prime tower's top the reference
-marks every layer but the last as having a tower (ToolOrdering.cpp
+A C++ error this turned up at the old pin: above the prime tower's top
+the reference marked every layer but the last as having a tower (ToolOrdering.cpp
 `collect_extruders`' last pass, the loop that keeps tower layers within
 `max_layer_height`, about line 1316), though the Type1 tower lays nothing
 there, so the A1's timelapse picture, which is taken before the tower's
-work on such a layer, is never taken: on `twotone` (30 layers, the tower
-20) layers 21 to 29 have none. Not copied: here every layer has its
-picture.
+work on such a layer, was never taken: on `twotone` (30 layers, the
+tower 20) layers 21 to 29 had none. Not copied: here every layer has its
+picture, as in the reference since aceRage/EdgeSlicer#1014
+(ToolOrdering.cpp `fill_wipe_tower_partitions` stops at the tower's top).
 
 **On hardware so far:** a deck across a 30 mm gap printed on an Elegoo
 Centauri Carbon on 2026-11-10 and the bridge held; the wall across the
@@ -2339,10 +2332,10 @@ reference measures the lines of a bridge too, and slows a wall over lines
 of the layer beneath that it expects to curl
 (`slowdown_for_curled_perimeters`), which is not estimated here.
 Infill is not all a port yet: solid lines are joined along
-the walls in sweep order, each to its neighbour on the next row
-whatever the distance, as the reference's rectilinear fill joins them
-(it means to stop at three spacings, but works the limit out from a
-spacing that is still zero). Monotonic lines follow the reference's
+the walls in sweep order, each to its neighbour on the next row no
+further than three spacings, as the reference's rectilinear fill joins
+them since aceRage/EdgeSlicer#968 (before it, whatever the distance).
+Monotonic lines follow the reference's
 rule but not always its order: of the orders the rule allows the
 reference looks for a short one with an ant colony run on random
 numbers, and here the shortest is worked out exactly for up to twelve
@@ -2379,9 +2372,9 @@ its foot printed, where the reference cuts the first layer down by the
 collision of the layer above and leaves the foot unprinted: the same
 with dense bottom layers, while without them the reference's feet sit on
 the part (the bottom gap is held here in both, 0.2 mm on the 3DBenchy
-and on a slope); and one of the reference's mistakes is not copied, in
-its overhang clusters (a second overhang on a layer joining a cluster is
-never supported). The smoothing pushes a ball clear of the part by the
+and on a slope); and a second overhang on a layer joining a cluster is
+supported, as in the reference since aceRage/EdgeSlicer#984
+(TreeSupport.cpp `detect_overhangs`; before it, never). The smoothing pushes a ball clear of the part by the
 square of the distance, as the reference does (it reads like a slip,
 but moved the distance itself the balls swing back and forth instead of
 settling, and the support comes no further from the part). On `ledge` the reference holds up a 0.37 mm overhang round
@@ -2871,8 +2864,9 @@ two these take their settings from and 14 of the reference's test
 data), and a file is the same on one thread as on all of them. Every extruding move in the 50 files is at its
 layer's height or, on a scarf, between the layer's bottom and its top.
 
-Three rows are left out of the table because they differ on purpose
-(Status, above). With `seam_slope_min_length` at 0, which the Centauri
+Three rows are left out of the table because they differed on purpose
+when it was made (Status, above); the reference does as this engine in
+all three since aceRage/EdgeSlicer#958. With `seam_slope_min_length` at 0, which the Centauri
 Carbon's presets have, the reference closes each loop of the cylinder
 with no gap at all, and here it stops a seam gap short as with no
 scarf. With `seam_gap` at 0 the reference starts an inner wall's way up
@@ -3096,7 +3090,8 @@ line of seams goes the way its best seam does. On a part of fewer
 triangles the points are the reference's: the cube's four leaning
 positions each pick the reference's corner of two.
 
-The reference's skipped layer (Status, above) is in its files, and the
+The reference's skipped layer (Status, above; gone from the reference
+since aceRage/EdgeSlicer#965) is in its files at the old pin, and the
 figures show it: with the slip copied, for the measure only, `aligned`
 comes to 49.2% and 60.8% (40.0% and 56.4% without), the steps at
 `aligned` to 75.4% from 53.8%, the `holes` part at `aligned` to 36.3%
@@ -3351,34 +3346,37 @@ before, on one thread and on seven, on 56 files: seven parts with each
 printer's presets as they are, with `arachne`, with scarf seams on all
 loops and with the outer wall first.
 
-Two things differ from the reference on purpose (Status, above). On
-the frame, the reference comes at the wall round the square hole from
-past its corner on all 29 layers that have one, and so does this
-engine; but there the point is exactly 0.4 mm from the wall it belongs
-to, and the reference only counts a wall nearer than 0.4 mm, so it is
-the rounding of that point's coordinates that lets the move be made.
-Here the wall counts as beside its own point. And the reference makes
+Two things differed from the reference on purpose when this was
+measured (Status, above). On the frame, the reference comes at the wall
+round the square hole from past its corner on all 29 layers that have
+one, and so does this engine; but at the old pin the point was exactly
+0.4 mm from the wall it belongs to, and the reference only counted a
+wall nearer than 0.4 mm, so it was the rounding of that point's
+coordinates that let the move be made. Here the wall is not looked for
+beside its own point, as in the reference since aceRage/EdgeSlicer#960.
+And the reference makes
 the inward wipe for a filament whose own `wipe` is off, if any other
 filament's is on (found by reading; the two-filament fixture's
 settings name one filament, and the reference prints it in one).
 
-Fuzzy skin differs from the reference in three ways, on purpose:
+Fuzzy skin differs from the reference in two ways, on purpose (a third,
+the Voronoi noise below, is gone since aceRage/EdgeSlicer#945):
 
 - The reference's fuzz is random and comes out differently every time
   it slices. Here each wall's random numbers are seeded from the wall
   itself (its layer's height, its first point, how many points it has),
   so a file is the same on every run and at any thread count, which is
   why the lengths above only agree to a fraction of a percent.
-- `voronoi` noise is libnoise's as written. The reference's result
-  depends on what compiled it: libnoise's value noise overflows a signed
-  integer on purpose, and a compiler that takes that for impossible
-  (clang, so the macOS build) drops a mask and returns noise from -3 to
-  1 where libnoise documents -1 to 1, pushing walls out by up to three
-  times the thickness set. A compiler that wraps gives what this engine
-  gives; MSVC is expected to, which has not been checked on Windows. On
-  the mushroom the macOS build lays 1.24 m of overhang
-  wall with `voronoi` fuzz where this engine lays 0.23 m, as both do
-  with any other noise.
+- `voronoi` noise is libnoise's as written, as in the reference since
+  aceRage/EdgeSlicer#945, which patches libnoise to do its sum in
+  `unsigned int`. Before it the reference's result depended on what
+  compiled it: libnoise's value noise overflows a signed integer on
+  purpose, and a compiler that takes that for impossible (clang, so the
+  macOS build) dropped a mask and returned noise from -3 to 1 where
+  libnoise documents -1 to 1, pushing walls out by up to three times
+  the thickness set. On the mushroom the macOS build laid 1.24 m of
+  overhang wall with `voronoi` fuzz where this engine lays 0.23 m, as
+  both do with any other noise.
 - A wall is cut where fuzz starts and stops by plain geometry, not
   through the clipping library the reference uses for it.
 
@@ -3433,14 +3431,13 @@ top surface `monotonic`.
 
 Where the two differ, and why:
 
-- A first layer that is ironed (`solid`) is ironed at
-  `initial_layer_infill_speed` by the reference, 105 mm/s with the U1's
-  presets where ironing is set to 30: its writer gives every line of
-  the first layer but a bottom surface's the first layer's speed
-  outright, ironing with the rest (GCode.cpp `_extrude`). Here ironing
-  never goes faster than its own speed, and on the first layer no
-  faster than that layer's fill either. That is the whole of the 7% by
-  which `solid` takes longer here on the made parts: with
+- A first layer that is ironed (`solid`): ironing never goes faster
+  than its own speed, and on the first layer no faster than that
+  layer's fill either, as in the reference since aceRage/EdgeSlicer#948
+  (GCode.cpp `_extrude`; before it, the reference ironed the first
+  layer at `initial_layer_infill_speed`, 105 mm/s with the U1's presets
+  where ironing is set to 30). That was the whole of the 7% by which
+  `solid` took longer here on the made parts against the old pin: with
   `initial_layer_infill_speed` set to 30 the time added is 612 s
   against 614 s on the cube and 1724 s in both on `steps`.
 - On two layers of `steps` with `solid` the ironing is 4.7% short of
@@ -3636,7 +3633,8 @@ somewhere else but into as many pieces, unless it falls on the ring's
 start and cuts nothing: on the `holes` fixture that happens here on
 49 loops (the 12 mm hole on 29 layers, the tube on 20), and with the
 reference's mistake on 48 loops of the boss and the tube that part's
-outer walls are 581 arcs against 678.
+outer walls are 581 arcs against 678. The reference does not make that
+mistake since aceRage/EdgeSlicer#950; these figures are from before it.
 Tree supports are arcs for 94% of their length
 against 90% (1825 against 2719 on the `shelf`, whose supports are 30%
 shorter here, as above). On the box-shaped parts nothing changed but
@@ -3767,12 +3765,12 @@ sparse fill is what lies beside the bridge, neither slicer's toolpaths
 change at all. A second layer over a bridge over air is the first
 layer's length again in both, on the next layer, laid the same way,
 with the bottom shell one layer higher; over infill it is laid square
-to the first in both. There the reference drops from the layer
-whatever of a surface it cuts is narrower than two lines and prints
-nothing in its place (an error in it, not copied: going by the lengths
-of line laid, 7 to 21 mm² less is filled on each such layer of a
-sloping part than with the option off); here everything that is not
-second bridge stays what it was.
+to the first in both. Everything that is not second bridge stays what
+it was, as in the reference since aceRage/EdgeSlicer#952 (before it,
+the reference dropped whatever of a surface it cut that was narrower
+than two lines and printed nothing in its place: going by the lengths
+of line laid, 7 to 21 mm² less was filled on each such layer of a
+sloping part than with the option off).
 
 With no filter the bridges over infill appear on the same layers as
 the reference's (every second layer under a sloping top: a bridge is
@@ -3957,13 +3955,15 @@ so there the last column says little; a wide hole 14 by 6 mm, tried
 apart, is covered across the 6 mm in both, and partly bridged across
 the 6 mm in both.
 
-Different from the reference on purpose, both marked in the code. The
-reference does this to every part of a region with nothing under it
-that can be spanned, so long as the region has a hole anywhere
-(`!surface->expolygon.holes.empty()`); here the hole has to be on the
-edge of that part, which is what makes it a hole that narrows. A deck
-across two posts with a small hole drilled into one post loses the
-walls of its first layer in the reference (118 mm of wall over air
+Different from the reference at the old pin, on purpose; both are as
+in the reference since aceRage/EdgeSlicer#963 (PerimeterGenerator.cpp
+`unsupported_with_a_hole_on_the_edge`, `counterbore_outline_is_convex`),
+and what follows is the reference as it was. The reference did this to every part of a region
+with nothing under it that can be spanned, so long as the region had a
+hole anywhere (`!surface->expolygon.holes.empty()`); here the hole has
+to be on the edge of that part, which is what makes it a hole that
+narrows. A deck across two posts with a small hole drilled into one
+post lost the walls of its first layer in the reference (118 mm of wall over air
 with the option off, none with it on, in either mode) and keeps them
 here; a table top on four legs with such a hole has, partly bridged,
 only the strips from leg to leg printed in its first layer in the
@@ -3971,7 +3971,7 @@ reference (1179 mm of bridge where 3472 mm is laid with the option
 off, or with it on and no hole), the layer after going down on air
 between them, and is left as it was here. And a sacrificial layer is
 made only where the wide hole's outline is convex, which the reference
-tells by whether any corner of the outline, simplified, turns the
+told by whether any corner of the outline, simplified, turned the
 wrong way at all: simplifying keeps the outline's first point, and
 where that is in the middle of a straight side rounding leaves it a
 nanometre off, to either side. The hexagonal hole's first point lies a
@@ -4069,20 +4069,18 @@ round its corner: 0.40 mm straight and 1.27 mm that way, which is over
 that belongs to no island is laid last, with long moves from object to
 object that the reference, printing object by object, does not make.
 
-Not as the reference, on purpose, where it is in error. It picks the
-shorter way round a ring from lengths it has corrected twice over, so
-some moves go the longer way about, by up to the length of the two
-edges they meet the ring on; here the shorter way is taken. It makes
-the outline moves are routed by on a layer's first such move and keeps
-it, and a move between supports leaves the top surfaces in: supports
-come first, so on a layer that has them moves in the part cross top
-surfaces that they go round on other layers; here each kind of move has
-its own. A move that was to go straight (from a brim, say) is routed
-after all once a wipe has moved the nozzle; here it stays straight. And
-two that change nothing a print would show: a point met at the start
-of an edge is left on the ring instead of stepped a tenth of a
-micrometre off it, and the width of a part is misjudged across from the
-edge that closes a ring. With `max_travel_detour_distance` at 50% the
+Five errors of the reference that this engine did not copy are fixed
+there since aceRage/EdgeSlicer#959 (AvoidCrossingPerimeters.cpp), so
+here and there alike: the shorter way round a ring is taken (it picked
+it from lengths corrected twice over, by up to the length of the two
+edges a move meets the ring on); the outline moves are routed by is
+made again for the part's moves after the supports' (it was made on a
+layer's first such move and kept, so on a layer with supports moves in
+the part crossed top surfaces); a move that was to go straight (from a
+brim, say) stays straight after a wipe; a point met at the start of an
+edge is stepped a tenth of a micrometre off the ring; and the width of
+a part is judged rightly across from the edge that closes a ring. The
+figures above are from before the fix. With `max_travel_detour_distance` at 50% the
 two differ more than without it (`tube` 20 travels crossing against 3,
 `holes` 104 against 116): whether a way round is within the limit goes
 by where the move starts, and the seams are not in the same places.
@@ -4360,16 +4358,17 @@ comes from outside this:
   cut there, and on a funnel 60 mm across that is 74 mm/s against 82
   for 2 mm each side.
 
-Two things the reference does are not copied. After an overhang its
-first move back at full speed is written at the whole number of mm/s
-its measuring rounds to (F9720) and only the next at the wall's speed
-(F9741.893), or none if the path ends there, because it asks whether
-the speed has changed by more than 1 mm/s before it asks whether the
-wall is back at its own; here it is back at its own speed at once.
-And where it compares a crossing with the point before it, it reads
-that point through a reference into a list it is adding to
+Two things the reference did were not copied, and both are fixed there
+since aceRage/EdgeSlicer#964. After an overhang its first move back at
+full speed was written at the whole number of mm/s its measuring rounds
+to (F9720) and only the next at the wall's speed (F9741.893), because
+it asked whether the speed had changed by more than 1 mm/s before it
+asked whether the wall was back at its own; here, and now there
+(GCode.cpp `_extrude`), it is back at its own speed at once. And where
+it compared a crossing with the point before it, it read that point
+through a reference into a list it was adding to
 (ExtrusionProcessor.hpp `prev_point`), which is freed memory once the
-list has grown; here it is the point.
+list has grown; here, and now there, it is a copy of the point.
 
 Print time does not move by more than seconds: the speeds along an
 overhang were near enough before, in pieces. The Benchy is 41 m 13 s
@@ -4626,16 +4625,17 @@ What moved it, largest first:
 
 What is left:
 
-- Cooling. The reference counts a slowed layer as longer than it is.
-  CoolingBuffer.cpp `parse_layer_gcode` copies the last position,
-  extruder included, before it zeroes the extruder for relative E, so
-  a line that sets only the feed rate (the `G1 F` that starts every
-  path) is read as the previous line's extrusion again: after a
-  deretraction, a 1.5 mm move at the path's speed. The layers it
-  slows come out short of `slow_down_layer_time`, the cube's 7.91 s of
-  8 (its counting, done over in a script, gives 8.009 with the extra
+- Cooling. The reference at the old pin counted a slowed layer as
+  longer than it is. CoolingBuffer.cpp `parse_layer_gcode` copied the
+  last position, extruder included, before it zeroed the extruder for
+  relative E, so a line that sets only the feed rate (the `G1 F` that
+  starts every path) was read as the previous line's extrusion again:
+  after a deretraction, a 1.5 mm move at the path's speed. The layers
+  it slowed came out short of `slow_down_layer_time`, the cube's 7.91 s
+  of 8 (its counting, done over in a script, gives 8.009 with the extra
   moves, 7.912 without), the Benchy's upper layers about 7.4 s. Not
-  copied: here a slowed layer takes `slow_down_layer_time`. On the
+  copied: here a slowed layer takes `slow_down_layer_time`, as in the
+  reference since aceRage/EdgeSlicer#973 (the extruder zeroed first). On the
   Benchy that is 51 s of the reference's layer time at the speeds
   written, which is most of what is left on it (its walls, gap fill
   and sparse fill are 42 s longer here), and all of the cube's 8 s.

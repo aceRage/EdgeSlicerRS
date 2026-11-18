@@ -1061,8 +1061,11 @@ fn convert_settings(
             ints_value(&target_filament.ids),
         );
     }
-    // Bambu's one switch for the bundle our three tower interface options
-    // split: on when any of them is.
+    // enable_tower_interface_features is Bambu Studio's own switch here
+    // as well and goes out as it is; our three tower interface options
+    // are a split-up version of the same bundle Bambu Studio can only turn
+    // on whole: any of them on writes the switch on too
+    // (Format/BambuExport.cpp `convert_impl`).
     if matches!(scope, Scope::Project | Scope::Print) {
         let keys = [
             "wipe_tower_interface_temp",
@@ -1073,7 +1076,9 @@ fn convert_settings(
             .into_iter()
             .filter(|key| cfg.get(key).is_some())
             .collect();
-        if present.is_empty() {
+        let native = cfg.text("enable_tower_interface_features");
+        let native_on = matches!(native, Some("1") | Some("true"));
+        if present.is_empty() && native.is_none() {
             out.remove("enable_tower_interface_features");
         } else {
             let on: Vec<&str> = present
@@ -1086,10 +1091,17 @@ fn convert_settings(
                 BambuValue {
                     vector: false,
                     strings: false,
-                    values: vec![if on.is_empty() { "0" } else { "1" }.into()],
+                    values: vec![
+                        if native_on || !on.is_empty() {
+                            "1"
+                        } else {
+                            "0"
+                        }
+                        .into(),
+                    ],
                 },
             );
-            if !on.is_empty() && on.len() < 3 {
+            if !native_on && !on.is_empty() && on.len() < 3 {
                 local.notes.push(format!(
                     "{at}: enable_tower_interface_features written as on although only {} is on: Bambu Studio turns on its whole tower interface bundle (interface temperature, run-in, extra prime, interface wall gaps and, on the H2 series, a firmware purge)",
                     on.join(", ")

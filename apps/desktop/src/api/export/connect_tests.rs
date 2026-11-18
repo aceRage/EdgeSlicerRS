@@ -155,7 +155,7 @@ fn a_sliced_plate_goes_to_bambu_connect_as_the_reference_hands_it() {
     // (`BambuStudio-<version>`), as "Export plate sliced file" does.
     assert!(
         text(&all, "3D/3dmodel.model")
-            .contains(r#"<metadata name="Application">BambuStudio-2.4.9.0</metadata>"#),
+            .contains(r#"<metadata name="Application">BambuStudio-2.4.9.3</metadata>"#),
         "{}",
         text(&all, "3D/3dmodel.model")
     );

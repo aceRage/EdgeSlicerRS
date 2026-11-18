@@ -11,22 +11,21 @@
 //! for one (GCode.cpp `GCode::_needSAFC`, and `_extrude`, which scales
 //! every move by its own length).
 //!
-//! Not as the reference, both where it goes against what it is plainly
-//! for:
+//! Two things are done as the reference does them since
+//! aceRage/EdgeSlicer#977 (`_needSAFC`), which before it went against
+//! what it is plainly for:
 //!
-//! - `_needSAFC` asks whether the pattern *set* for a line's kind is one
-//!   of the straight ones, not what the line was laid as, so the loops
-//!   a narrow solid area is filled with
-//!   (`detect_narrow_internal_solid_infill`) pass for straight lines
-//!   there and every short stretch of a loop is thinned: a loop round a
-//!   curve, cut into chords of half a millimetre, is laid at two thirds
-//!   of its plastic from end to end. Here a loop keeps its flow.
-//! - It takes a bottom surface for whatever is on the first layer
-//!   (`on_first_layer() && bottom_surface_pattern == ...`): there every
-//!   kind of solid fill goes by the bottom surface's pattern, and a
-//!   bottom surface on any other layer (one resting on supports) is
-//!   never compensated, though `modify_flow` names its kind. Here each
-//!   kind goes by its own pattern on every layer.
+//! - The loops a narrow solid area is filled with
+//!   (`detect_narrow_internal_solid_infill`) keep their flow. Before the
+//!   fix the pattern *set* for a line's kind was asked, not what the
+//!   line was laid as, so those loops passed for straight lines and a
+//!   loop round a curve, cut into chords of half a millimetre, was laid
+//!   at two thirds of its plastic; the reference now marks them
+//!   (`narrow_area_fill`) and leaves them alone.
+//! - Each kind of solid fill goes by its own pattern on every layer.
+//!   Before the fix whatever was on the first layer went by the bottom
+//!   surface's pattern, and a bottom surface on any other layer (one
+//!   resting on supports) was never compensated.
 
 use edge_config::{ConfigError, Settings};
 use edge_extrusion::{ExtrusionPath, Role};

@@ -1804,12 +1804,11 @@ pub fn plan_changes(
             // The brim does not go on up a tower that has got shallower.
             let as_deep = (blocks - deep[0]).abs() < 1e-9;
             // A loop fewer for each layer of the tower laid above its
-            // first. Not as the reference with layers left out, which
-            // counts the print's layers between, laid or not, so the brim
-            // is mostly gone by the tower's second layer
-            // (WipeTower2.cpp `finish_layer`,
-            // `wipe_tower_printed_layer_distance`, whose own comment has it
-            // count the layers printed).
+            // first, as the reference counts them with layers left out
+            // since aceRage/EdgeSlicer#1019 (WipeTower2.cpp `finish_layer`,
+            // `wipe_tower_printed_layer_distance`). Before it the print's
+            // layers between were counted, laid or not, so the brim was
+            // mostly gone by the tower's second layer.
             let climbed = (first_laid + 1..=layer).filter(|at| laid[*at]).count();
             loops = if settings.brim_chamfer && as_deep {
                 loops
