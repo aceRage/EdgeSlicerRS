@@ -65,8 +65,8 @@ pub use scarf::{Scarf, ScarfSeam};
 pub use seam::Seam;
 pub use seam_plan::{SeamMeasures, SeamMesh, SeamObject, SeamPart, SeamScene, measure_seams};
 pub use settings::{
-    AccelerationForm, Labelling, Lift, ObjectLabel, ObjectRun, OverhangFan, Plate, PrintSettings,
-    Timelapse, WallDirection, WallOrder, gcode_template,
+    AccelerationForm, FinalPurge, Labelling, Lift, ObjectLabel, ObjectRun, OverhangFan, Plate,
+    PrintSettings, PurgeDrop, Timelapse, WallDirection, WallOrder, gcode_template,
 };
 pub use spiral_vase::Spiral;
 
@@ -2529,6 +2529,16 @@ impl Writer<'_> {
             // the filament pushed back there (`append_tcr2`,
             // `travel_to_tower_gap`, `unretract`), before the change pulls
             // it back by the whole of the change's length.
+            //
+            // Not as the reference, on purpose: where the tower stands
+            // lower than the layer, it goes down to the tower here, before
+            // the change G-code, with nothing to lay there unless the old
+            // filament is rammed, and straight back up for the change
+            // G-code ("Restore layer Z before toolchange"), a retraction
+            // and push back each way (GCode.cpp `append_tcr2`,
+            // `will_go_down && !changes_in_place`). Here the nozzle stays at
+            // the layer's height until after the change; it goes down once,
+            // to lay the block.
             None => {
                 if let Some(over) =
                     over.filter(|_| self.state.primed && !s.bambu_tower && !in_place)
@@ -2653,6 +2663,55 @@ impl Writer<'_> {
             )?;
         }
         Ok(in_place)
+    }
+
+    /// The last filament unloaded over the prime tower once the print is
+    /// done ([`FinalPurge`]; GCode.cpp `WipeTowerIntegration::finalize`,
+    /// `append_tcr2` with no new tool; WipeTower2.cpp `toolchange_Unload`).
+    /// Dropped onto the tower, the nozzle goes over it at the height it is
+    /// at, down to the purge's layer, rams the filament and waits clear of
+    /// the ram; otherwise it comes round the tower to its corner and
+    /// unloads there at the height it is at. Either way the unload ends
+    /// with the planner's queue run empty, and the nozzle goes back up.
+    fn final_purge(&mut self) -> Result<(), GcodeError> {
+        let s = self.settings;
+        let Some(purge) = s.final_purge.as_ref() else {
+            return Ok(());
+        };
+        if !self.state.primed {
+            return Ok(());
+        }
+        self.flush_labels()?;
+        self.state.routing.kind = Kind::Outside;
+        match &purge.drop {
+            Some(drop) => {
+                self.travel(purge.start, false, None)?;
+                self.lower_to_tower(drop.z)?;
+                for line in drop.lines.iter().filter(|line| line.points.len() >= 2) {
+                    let motion = Motion {
+                        speed: drop.speed,
+                        ..self.motion(line.role, &line.flow, false)
+                    };
+                    self.travel(line.points[0], false, None)?;
+                    for point in &line.points[1..] {
+                        self.extrude(*point, line.role, &line.flow, motion)?;
+                    }
+                }
+                let length = self
+                    .state
+                    .position
+                    .map_or(0.0, |at| distance(at, drop.park));
+                self.go(drop.park, None, RAM_PARK_SPEED, length)?;
+            }
+            None => {
+                self.tower_route(purge.start, self.state.position)?;
+                self.travel(purge.start, false, None)?;
+                self.prime()?;
+            }
+        }
+        self.sync_planner()?;
+        self.leave_tower()?;
+        Ok(())
     }
 
     /// On one nozzle the reference's own tower sets the new filament's
@@ -6534,6 +6593,9 @@ impl Writer<'_> {
         if opened && let Some((_, off)) = s.power_loss_recovery {
             self.out.extend_from_slice(off.as_bytes());
         }
+        // The last filament unloaded over the prime tower (GCode.cpp
+        // `_do_export`: `m_wipe_tower->finalize`).
+        self.final_purge()?;
         // The stringing grid gives back the filament's retraction for the
         // last one (GCode.cpp `restore_temp_retract_grid_retraction`).
         if self.state.stringing_set {

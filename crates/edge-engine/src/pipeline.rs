@@ -2274,7 +2274,9 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let clearance = (tower_settings.skip_sparse && used.len() > 1)
         .then(|| edge_tower::Clearance::from_settings(&settings))
         .transpose()?;
-    let clearance_objects: Vec<edge_tower::Object> = if clearance.is_some() {
+    // Each object's outline on the bed and height, for what the toolhead
+    // clears round the tower.
+    let object_outlines = || -> Vec<edge_tower::Object> {
         let meshes: Vec<&Mesh> = if objects.is_empty() {
             bodies.iter().map(|body| &body.solid).collect()
         } else {
@@ -2292,6 +2294,9 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 })
             })
             .collect()
+    };
+    let clearance_objects: Vec<edge_tower::Object> = if clearance.is_some() {
+        object_outlines()
     } else {
         Vec::new()
     };
@@ -2546,7 +2551,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             }
         }
     }
-    let tower = edge_tower::plan_changes(&rams, &heights.all(), &tower_settings)?;
+    let mut tower = edge_tower::plan_changes(&rams, &heights.all(), &tower_settings)?;
     // And by what the tower lays, layer by layer (Print.cpp
     // `validate_compacted_wipe_tower_clearance`).
     if let Some(clearance) = &clearance {
@@ -2555,6 +2560,37 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             .collect();
         if !edge_tower::tower_clears(clearance, &tower, &tops, &clearance_objects)? {
             return Err(edge_tower::CLEARANCE_ERROR.into());
+        }
+    }
+    // The last filament's final purge goes down onto the tower to ram it
+    // only where the print leaves the toolhead room there; otherwise it is
+    // unloaded where the nozzle is, at the print's height (Print.cpp
+    // `select_final_purge_variant`, `final_purge_drop_clearance_ok`).
+    if let Some(index) = tower.layers.iter().position(|layer| {
+        layer
+            .final_purge
+            .as_ref()
+            .is_some_and(|purge| purge.ram.is_some())
+    }) {
+        let purge = tower.layers[index]
+            .final_purge
+            .as_ref()
+            .map(|purge| purge.height);
+        let below = tower.layers[index]
+            .z
+            .unwrap_or_else(|| heights.top_of(index));
+        let purge_z = below + purge.unwrap_or(0.0);
+        let clears = {
+            let clearance = edge_tower::Clearance::from_settings(&settings)?;
+            let objects = if clearance_objects.is_empty() {
+                object_outlines()
+            } else {
+                clearance_objects.clone()
+            };
+            edge_tower::purge_drop_clears(&clearance, &tower, purge_z, &objects)?
+        };
+        if !clears && let Some(purge) = tower.layers[index].final_purge.as_mut() {
+            purge.ram = None;
         }
     }
     // Each tool's turn on a layer, as its regions there, in order.
@@ -3409,9 +3445,24 @@ impl Sliced {
         let mut prints: Vec<PrintSettings> = (0..highest)
             .map(|filament| PrintSettings::for_filament(&self.settings, filament))
             .collect::<Result<_, _>>()?;
+        // The last filament unloaded over the tower once the print is done.
+        let final_purge = (self.tower.layers.iter().enumerate()).find_map(|(index, layer)| {
+            let purge = layer.final_purge.as_ref()?;
+            let below = layer.z.unwrap_or_else(|| self.top_of(index));
+            Some(edge_gcode::FinalPurge {
+                start: purge.start,
+                drop: purge.ram.as_ref().map(|ram| edge_gcode::PurgeDrop {
+                    z: below + purge.height,
+                    lines: ram.lines.clone(),
+                    speed: ram.speed,
+                    park: ram.park,
+                }),
+            })
+        });
         for print in &mut prints {
             print.produced_at = Some(produced_at.to_owned());
             print.plate = self.plate_facts.clone();
+            print.final_purge = final_purge.clone();
             print.tower_envelope = self.tower.envelope;
             print.tower_footprint = self.tower.footprint;
             print.own_heights = self.below.is_some();

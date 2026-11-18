@@ -2259,7 +2259,10 @@ the reference compares exactly, so where it has identical parts in
 several filaments its order among them can differ (plate 3 of
 `mcbrim_test.3mf` starts 1, 5, 4, 3, 2 there and 1, 3, 4, 5, 2 here). The tower has no
 cone wall, which is noted when the profile asks for it. The tower is
-turned end for end on alternate layers, as the reference's is. A filament with no tool of its own (the fifth on a
+turned end for end on alternate layers, as the reference's is, and once the
+print is done the last filament is unloaded over it as there (its final
+purge: rammed on a layer of its own where the printer and filament ram and
+the print leaves room, otherwise at the print's height). A filament with no tool of its own (the fifth on a
 four-tool printer) is written as the reference writes it, with a warning.
 Filaments mixed from others are not read.
 

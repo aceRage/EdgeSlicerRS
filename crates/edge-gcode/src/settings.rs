@@ -1,6 +1,6 @@
 use edge_avoid::Detour;
 use edge_config::{ConfigError, FloatOrPercent, Settings, Value as Setting};
-use edge_extrusion::Flow;
+use edge_extrusion::{ExtrusionPath, Flow};
 use edge_geom::Point2;
 use edge_template::{Value, Variables};
 
@@ -229,6 +229,9 @@ pub struct PrintSettings {
     /// Set by the pipeline; none for no tower, Bambu Lab's tower, or a
     /// wall without gaps.
     pub tower_envelope: Option<[f64; 4]>,
+    /// The last filament unloaded over the prime tower once the print is
+    /// done (`edge_tower::FinalPurge`); set by the pipeline.
+    pub final_purge: Option<FinalPurge>,
 
     pub filament_diameter: f64,
     pub filament_flow_ratio: f64,
@@ -564,6 +567,7 @@ impl Default for PrintSettings {
             min_layer_time_pause: 0.0,
             pause_park: crate::pause::Park::Away,
             tower_envelope: None,
+            final_purge: None,
             filament_diameter: 1.75,
             filament_flow_ratio: 1.0,
             print_flow_ratio: 1.0,
@@ -1170,6 +1174,7 @@ impl PrintSettings {
             min_layer_time_pause: settings.float("min_layer_time_pause")?.unwrap_or(0.0),
             pause_park,
             tower_envelope: None,
+            final_purge: None,
             filament_diameter: number("filament_diameter", defaults.filament_diameter)?,
             filament_flow_ratio: number("filament_flow_ratio", defaults.filament_flow_ratio)?,
             print_flow_ratio: number("print_flow_ratio", defaults.print_flow_ratio)?,
@@ -2903,4 +2908,27 @@ mod tests {
         assert!(!u1.bambu);
         assert_eq!(u1.power_loss_recovery, Some(("M413 S1\n", "M413 S0\n")));
     }
+}
+
+/// The last filament unloaded over the reference's own prime tower once
+/// the print is done (GCode.cpp `WipeTowerIntegration::finalize`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FinalPurge {
+    /// Where the nozzle goes over the tower.
+    pub start: Point2,
+    /// Down onto the tower to ram the filament there, where it clears the
+    /// print; none to unload where the nozzle is, at the print's height.
+    pub drop: Option<PurgeDrop>,
+}
+
+/// The final purge's ram on the tower.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PurgeDrop {
+    /// The top of the tower's layer it is laid on, in mm.
+    pub z: f64,
+    pub lines: Vec<ExtrusionPath>,
+    /// How fast the lines are laid, in mm a second.
+    pub speed: f64,
+    /// Where the nozzle then waits, clear of them.
+    pub park: Point2,
 }

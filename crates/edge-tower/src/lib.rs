@@ -73,7 +73,9 @@ use edge_extrusion::{ExtrusionPath, Flow, FlowError, Role, TowerStroke};
 use edge_geom::{ExPolygon, Point2, Polygon, scaled, unscaled};
 
 pub use bambu::Type1;
-pub use clearance::{CLEARANCE_ERROR, Clearance, Object, estimate_clears, tower_clears};
+pub use clearance::{
+    CLEARANCE_ERROR, Clearance, Object, estimate_clears, purge_drop_clears, tower_clears,
+};
 pub use place::{Ground, Moved, PlaceError, estimated_size, relocate};
 
 /// The tower's lines are this many nozzle diameters wide
@@ -184,6 +186,10 @@ pub struct TowerSettings {
     /// One nozzle takes every filament in turn
     /// (`single_extruder_multi_material`).
     pub single_nozzle: bool,
+    /// The printer rams (`enable_filament_ramming`), which with a filament
+    /// set to be rammed has the last one unloaded over the tower when the
+    /// print is done ([`FinalPurge`]).
+    pub printer_ramming: bool,
     /// The printer gets the reference's other tower, WipeTower.cpp's: a
     /// Bambu Lab printer, or one set to it (`wipe_tower_type` `type1`;
     /// Print.cpp `wipe_tower_type`).
@@ -267,6 +273,7 @@ impl Default for TowerSettings {
             brim_chamfer: true,
             brim_chamfer_max: 4.0,
             single_nozzle: true,
+            printer_ramming: true,
             bambu_tower: false,
             purge_in_tower: true,
             order_by_flush: true,
@@ -624,6 +631,9 @@ impl TowerSettings {
             )?
             .max(0.0),
             single_nozzle,
+            printer_ramming: settings
+                .flag("enable_filament_ramming")?
+                .unwrap_or(defaults.printer_ramming),
             bambu_tower,
             purge_in_tower,
             order_by_flush: (single_nozzle && purge_in) || bambu_tower,
@@ -974,6 +984,9 @@ pub struct TowerLayer {
     /// left out, wherever no more than one tool change has been made yet
     /// (`finish_layer`, "it must be still the first layer").
     pub first_speed: bool,
+    /// On the tower's last layer: the last filament unloaded over the
+    /// tower once the print is done, where it is.
+    pub final_purge: Option<FinalPurge>,
 }
 
 /// The whole tower.
@@ -991,6 +1004,26 @@ pub struct Tower {
     /// for a tower whose wall has gaps (`wipe_tower_wall_gap`) and is not
     /// Bambu Lab's, whose nozzle goes in straight, as there.
     pub envelope: Option<[f64; 4]>,
+}
+
+/// The last filament unloaded over the tower once the print is done
+/// (Print.cpp `_make_wipe_tower`, `need_final_purge`; WipeTower2.cpp
+/// `tool_change(-1)`): where the printer is of one nozzle, or rams and
+/// the filament is set to be rammed. It goes on a layer of its own on top
+/// of the tower, in the frame of the tower's last layer.
+#[derive(Clone, Debug)]
+pub struct FinalPurge {
+    /// Where the nozzle goes on the tower: the corner of its whole depth.
+    pub start: Point2,
+    /// The ram, when the filament is rammed there (a printer of a nozzle
+    /// for each filament; one nozzle's ram on the tower is not done). With
+    /// it the nozzle goes down onto the tower to lay it, where it clears
+    /// the print ([`purge_drop_clears`]); without it the filament is
+    /// unloaded where the nozzle is, at the print's height.
+    pub ram: Option<Rammed>,
+    /// The tower's layer it sits on, and how thick its own is.
+    pub layer: usize,
+    pub height: f64,
 }
 
 /// The speed of a block's next row, in mm/min, from the last
@@ -2054,6 +2087,79 @@ pub fn plan_changes(
             *out = TowerLayer::default();
         }
     }
+    // The last filament is unloaded over the tower once the print is
+    // done, on a layer of its own on top of it, where the printer is of
+    // one nozzle, or rams and the filament is set to be rammed (Print.cpp
+    // `_make_wipe_tower`, `need_final_purge`; WipeTower2.cpp
+    // `tool_change(-1)`, `toolchange_Unload`). It is laid out in the
+    // frame of the tower's last layer, which the reference does not turn
+    // again for it, from the corner of the whole tower's depth.
+    if let Some(filament) = changes[last].last().map(|change| change.filament) {
+        let rammed = (settings.ramming.get(filament))
+            .or(settings.ramming.last())
+            .copied()
+            .flatten();
+        let needed = settings.single_nozzle || (settings.printer_ramming && rammed.is_some());
+        if needed {
+            let height = heights[last];
+            let lift = shape.lift(deep[last]);
+            let at = |x: f64, y: f64| place_turned(last, lift, x, y + lift);
+            // Only a printer of a nozzle for each filament rams here: one
+            // nozzle's ram on the tower is not done (said as a note).
+            let ram = match rammed.filter(|_| !settings.single_nozzle) {
+                Some(ram) => {
+                    let ratio = settings.ram_ratio(Some(filament));
+                    let wide = line * ratio;
+                    let per_mm = |width: f64| height * (width - height * (1.0 - PI / 4.0));
+                    let pitch = wide * settings.extra_spacing;
+                    let (left, right) = (1.5 * line, span - 1.5 * line);
+                    let rammed_flow = Flow::new(wide, height, settings.nozzle_diameter)?;
+                    let mut left_over = ram.volume / per_mm(wide);
+                    let (mut x, mut y, mut rightward) = (left, line / 2.0 + pitch / 2.0, true);
+                    let mut room = right - left;
+                    let mut lines = Vec::new();
+                    let mut points = vec![at(x, y)];
+                    let ram_path = |points: Vec<Point2>| ExtrusionPath {
+                        points,
+                        role: Role::PrimeTower,
+                        flow: rammed_flow,
+                        in_turn: false,
+                        part: 0,
+                    };
+                    while left_over > 1e-4 {
+                        let stretch = left_over.min(room);
+                        x += if rightward { stretch } else { -stretch };
+                        points.push(at(x, y));
+                        left_over -= stretch;
+                        room -= stretch;
+                        if room < 1e-3 {
+                            lines.push(ram_path(std::mem::take(&mut points)));
+                            y += pitch;
+                            rightward = !rightward;
+                            room = right - left;
+                            points.push(at(x, y));
+                        }
+                    }
+                    if points.len() >= 2 {
+                        lines.push(ram_path(points));
+                    }
+                    y += (wide - line) / 2.0;
+                    Some(Rammed {
+                        lines,
+                        speed: ram.flow / per_mm(wide),
+                        park: at(x, y + line),
+                    })
+                }
+                None => None,
+            };
+            tower.layers[last].final_purge = Some(FinalPurge {
+                start: at(line / 2.0, line / 2.0),
+                ram,
+                height,
+                layer: last,
+            });
+        }
+    }
     // The ground it takes: its first layer, out to the edge of the lines.
     let half = line / 2.0;
     let middles = tower.layers[first_laid]
@@ -2776,6 +2882,65 @@ mod tests {
         // The wall is as deep as that.
         let [_, min_y, _, max_y] = wall_extent(&rammed, 1);
         assert!((max_y - min_y - with.depth() - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_last_filament_is_unloaded_over_the_tower_where_it_rams() {
+        let ram = Ramming {
+            volume: 0.5,
+            flow: 20.0,
+        };
+        let changes = |filament: usize| {
+            vec![
+                vec![],
+                vec![Change {
+                    ram: None,
+                    volume: 45.0,
+                    filament,
+                    old: Some(1 - filament),
+                }],
+            ]
+        };
+        let rams = TowerSettings {
+            single_nozzle: false,
+            ramming: vec![None, Some(ram)],
+            ..on()
+        };
+        // The printer rams and the last filament is set to be rammed: a
+        // ram from the tower's front corner, in its last layer's frame.
+        let tower = plan_changes(&changes(1), &[0.2; 2], &rams).unwrap();
+        let purge = tower.layers[1].final_purge.as_ref().unwrap();
+        assert_eq!((purge.layer, purge.height), (1, 0.2));
+        let laid = purge.ram.as_ref().unwrap();
+        let length: f64 = laid.lines.iter().map(ExtrusionPath::length_mm).sum();
+        assert!((length - 2.612).abs() < 2e-3, "{length}");
+        assert!((laid.speed - 104.48).abs() < 0.01, "{}", laid.speed);
+        // A filament not set to be rammed, or a printer that does not ram,
+        // has none on a printer of a nozzle for each filament.
+        assert!(
+            plan_changes(&changes(0), &[0.2; 2], &rams).unwrap().layers[1]
+                .final_purge
+                .is_none()
+        );
+        let still = TowerSettings {
+            printer_ramming: false,
+            ..rams.clone()
+        };
+        assert!(
+            plan_changes(&changes(1), &[0.2; 2], &still).unwrap().layers[1]
+                .final_purge
+                .is_none()
+        );
+        // One nozzle always unloads over the tower, without a ram here.
+        let one = TowerSettings {
+            single_nozzle: true,
+            ..still
+        };
+        let purge = plan_changes(&changes(1), &[0.2; 2], &one).unwrap().layers[1]
+            .final_purge
+            .clone()
+            .unwrap();
+        assert!(purge.ram.is_none());
     }
 
     #[test]

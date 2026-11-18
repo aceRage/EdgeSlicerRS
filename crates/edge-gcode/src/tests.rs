@@ -5403,3 +5403,73 @@ fn a_layer_too_short_even_slowed_is_paused_off_the_print() {
         )
     );
 }
+
+#[test]
+fn the_last_filament_is_unloaded_over_the_tower_once_the_print_is_done() {
+    let loops = [wall(0.0, 0.0, 10.0, 0)];
+    let plan = one_layer(&loops, &[0..1], &[]);
+    let mut ram = line((40.75, 40.85), (43.35, 40.85), Role::PrimeTower);
+    ram.flow = Flow::new(1.0, 0.2, 0.4).unwrap();
+    let dropped = FinalPurge {
+        start: Point2::from_mm(40.25, 40.25),
+        drop: Some(PurgeDrop {
+            z: 0.4,
+            lines: vec![ram],
+            speed: 104.0,
+            park: Point2::from_mm(43.35, 41.6),
+        }),
+    };
+    let settings = PrintSettings {
+        final_purge: Some(dropped.clone()),
+        klipper: true,
+        ..PrintSettings::default()
+    };
+    let mut out = Vec::new();
+    write(&mut out, &plan, &settings).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    let at = |wanted: &str| {
+        lines
+            .iter()
+            .position(|line| line.starts_with(wanted))
+            .unwrap()
+    };
+    // To the tower, down to the purge's layer, the ram, the wait clear of
+    // it, the planner's queue run empty, and only then the end G-code.
+    let (start, ram, park, sync) = (
+        at("G1 X40.250 Y40.250"),
+        at("G1 X43.350 Y40.850 E"),
+        at("G1 X43.350 Y41.600"),
+        at("M400"),
+    );
+    assert!(start < ram && ram < park && park < sync, "{text}");
+    assert!(
+        lines[start..ram]
+            .iter()
+            .any(|line| line.starts_with("G1 Z0.400"))
+    );
+    assert!(sync < at("M104 S0"));
+    // Not dropped: unloaded over the tower's corner at the print's height.
+    let stay = PrintSettings {
+        final_purge: Some(FinalPurge {
+            drop: None,
+            ..dropped
+        }),
+        ..settings
+    };
+    let mut out = Vec::new();
+    write(&mut out, &plan, &stay).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(!text.contains("G1 X43.350 Y40.850 E"));
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines
+        .iter()
+        .position(|line| line.starts_with("G1 X40.250 Y40.250"))
+        .unwrap();
+    assert!(lines[start..].contains(&"M400"));
+    assert!(
+        lines[start..]
+            .iter()
+            .all(|line| !line.starts_with("G1 Z0.400"))
+    );
+}
