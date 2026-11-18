@@ -7,17 +7,6 @@
 //! `need_thick_bridge_flow`), and how the parts of one visit are joined
 //! (`merge_tcr`). Written as the reference's writer writes it
 //! ([`super::writer`]), in the tower's frame.
-//!
-//! Where this differs from the reference on purpose:
-//!
-//! - The purge rows' speed ramp. The reference's built-in ramp
-//!   (`toolchange_wipe_new`, `wipe_speed_map`) stops at the fifth row at
-//!   min(target, 0.875 x target + 50), so on an A1 the rows never pass
-//!   F4775 where the tower speed is F5400. The ramp it was made from (the
-//!   reference before the block planner, Bambu Studio and Orca) goes on
-//!   adding 50 mm/min a row up to the target; the map kept only its first
-//!   five steps. The ramp here climbs to the target, as it is plainly meant
-//!   to. A filament's own speed curve is followed as there.
 
 use std::f32::consts::PI;
 
@@ -61,15 +50,6 @@ pub struct Visit {
     pub is_finish_first: bool,
 }
 
-/// Choices for checking the laying against the reference.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct LayOptions {
-    /// Lay the purge rows' speeds as the reference does, stopping at the
-    /// fifth row (see the module's notes); for comparing with its G-code
-    /// only.
-    pub reference_speed_ramp: bool,
-}
-
 /// `is_valid_gcode`: a line that is neither empty nor a comment.
 fn has_moves(gcode: &str) -> bool {
     gcode.split('\n').any(|line| {
@@ -88,7 +68,6 @@ struct BlockState {
 struct Layer<'a> {
     plan: &'a Plan,
     settings: &'a Settings,
-    options: LayOptions,
     blocks: Vec<BlockState>,
     current_tool: usize,
     left_to_right: bool,
@@ -694,8 +673,9 @@ impl Layer<'_> {
         Ok(visit)
     }
 
-    /// The built-in speed ramp of the purge rows, row `row` (from 0).
-    fn ramp(&self, target: f32, row: usize, last: f32) -> f32 {
+    /// The built-in speed ramp of the purge rows, row `row` (from 0): the
+    /// map holds its fifth step for every row after, as Bambu Studio's does.
+    fn ramp(target: f32, row: usize) -> f32 {
         let steps = [
             0.33 * target,
             0.375 * target,
@@ -703,13 +683,7 @@ impl Layer<'_> {
             0.875 * target,
             target.min(0.875 * target + 50.0),
         ];
-        if row < steps.len() {
-            steps[row]
-        } else if self.options.reference_speed_ramp {
-            last
-        } else {
-            target.min(last + 50.0)
-        }
+        steps[row.min(steps.len() - 1)]
     }
 
     /// `toolchange_wipe_new`: the purge, row by row.
@@ -767,7 +741,7 @@ impl Layer<'_> {
         for i in 0usize.. {
             wipe_speed = match &curve {
                 Some(map) => map.get(i).copied().unwrap_or(wipe_speed),
-                None => self.ramp(target, i, wipe_speed),
+                None => Self::ramp(target, i),
             };
             let bridge = self.needs_bridge_flow(writer.y(), height);
             if bridge {
@@ -1146,11 +1120,7 @@ fn wall_filament(plan: &Plan, settings: &Settings) -> Option<usize> {
 
 /// Lays the planned tower (WipeTower.cpp `generate`, the layers' part):
 /// for each layer, its visits in the order they are made.
-pub fn lay(
-    plan: &Plan,
-    settings: &Settings,
-    options: LayOptions,
-) -> Result<Vec<Vec<Visit>>, PlanError> {
+pub fn lay(plan: &Plan, settings: &Settings) -> Result<Vec<Vec<Visit>>, PlanError> {
     if settings.smooth_timelapse {
         return Err(PlanError::Unsupported(
             "timelapse_type \"1\": the tower laid whole on every layer for a smooth timelapse is not \
@@ -1174,7 +1144,6 @@ pub fn lay(
     let mut state = Layer {
         plan,
         settings,
-        options,
         blocks: plan
             .blocks
             .iter()
@@ -1385,7 +1354,7 @@ mod tests {
     fn each_layer_lays_its_wall_and_the_change_its_purge() {
         let s = settings("");
         let planned = plan(&s, &layers(20), 0).unwrap();
-        let visits = lay(&planned, &s, LayOptions::default()).unwrap();
+        let visits = lay(&planned, &s).unwrap();
         assert_eq!(visits.len(), 20);
         for layer in &visits {
             assert_eq!(
@@ -1421,29 +1390,13 @@ mod tests {
     }
 
     #[test]
-    fn the_rows_climb_to_the_tower_speed() {
+    fn the_rows_ramp_up_and_hold_the_fifth_step() {
         let s = settings("");
         let planned = plan(&s, &layers(20), 0).unwrap();
-        // 21 mm³/s at 0.0914 mm³/mm is past the 90 mm/s cap: 5400 mm/min.
-        let ours = row_feeds(&lay(&planned, &s, LayOptions::default()).unwrap(), 1);
-        assert_eq!(ours[..5], [1782, 2025, 2473, 4725, 4775]);
-        // 50 mm/min more each row after the fifth, up to 5400.
-        assert!(ours.len() > 6 && ours[5..].windows(2).all(|w| w[1] - w[0] == 50));
-        assert!(*ours.last().unwrap() > 4775 && *ours.last().unwrap() <= 5400);
-        assert!(ours.windows(2).all(|w| w[1] >= w[0]));
-        // As the reference lays them: no faster than the fifth row.
-        let reference = row_feeds(
-            &lay(
-                &planned,
-                &s,
-                LayOptions {
-                    reference_speed_ramp: true,
-                },
-            )
-            .unwrap(),
-            1,
-        );
-        assert_eq!(*reference.iter().max().unwrap(), 4775);
+        // 21 mm³/s at 0.0914 mm³/mm is past the 90 mm/s cap: 5400 mm/min,
+        // which the rows never reach (Bambu Studio's map).
+        let feeds = row_feeds(&lay(&planned, &s).unwrap(), 1);
+        assert_eq!(feeds, [1782, 2025, 2473, 4725, 4775]);
     }
 
     #[test]
@@ -1517,13 +1470,14 @@ mod tests {
         let planned = plan(&s, &input, 0).unwrap();
         let petg = planned.blocks.iter().find(|b| b.category == 300).unwrap();
         assert_eq!(petg.layer_types[10], LayerType::Contact);
-        let visits = lay(&planned, &s, LayOptions::default()).unwrap();
+        let visits = lay(&planned, &s).unwrap();
         // Below it the PETG block is filled solid by a PLA ("Solid"), and the
-        // contact layer's purge runs at 20 mm/s.
+        // contact layer's purge ramps up towards 20 mm/s (its held fifth
+        // step is 1100 mm/min).
         assert!(
             visits[10]
                 .iter()
-                .any(|v| v.is_contact && v.gcode.contains(" F1200"))
+                .any(|v| v.is_contact && v.gcode.contains(" F1100"))
         );
         assert!(
             visits[9]
@@ -1536,9 +1490,6 @@ mod tests {
     fn smooth_timelapse_is_refused() {
         let s = settings(r#", "timelapse_type": "1""#);
         let planned = plan(&s, &layers(4), 0).unwrap();
-        assert!(matches!(
-            lay(&planned, &s, LayOptions::default()),
-            Err(PlanError::Unsupported(_))
-        ));
+        assert!(matches!(lay(&planned, &s), Err(PlanError::Unsupported(_))));
     }
 }

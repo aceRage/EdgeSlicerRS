@@ -151,12 +151,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let gcode = PathBuf::from(args.next().ok_or("PROJECT.3mf GCODE [--plate N]")?);
     let mut plate = None;
     let mut lines_out: Option<PathBuf> = None;
-    let mut reference_ramp = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--plate" => plate = Some(args.next().ok_or("--plate N")?.parse::<u32>()?),
             "--lines" => lines_out = Some(PathBuf::from(args.next().ok_or("--lines OUT")?)),
-            "--reference-ramp" => reference_ramp = true,
             _ => return Err(format!("unknown argument {arg}").into()),
         }
     }
@@ -192,13 +190,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (layers, first_tool) = layers_of(&text);
     let plan = type1::plan(&settings, &layers, first_tool.unwrap_or(0))?;
     if let Some(out) = &lines_out {
-        let visits = type1::lay(
-            &plan,
-            &settings,
-            type1::LayOptions {
-                reference_speed_ramp: reference_ramp,
-            },
-        )?;
+        let visits = type1::lay(&plan, &settings)?;
         std::fs::write(out, pseudo_gcode(&plan, &visits))?;
     }
 

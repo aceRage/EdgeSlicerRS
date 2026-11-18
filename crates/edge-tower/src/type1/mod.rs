@@ -17,7 +17,7 @@ mod plan;
 mod settings;
 mod writer;
 
-pub use lay::{LayOptions, Visit, lay};
+pub use lay::{Visit, lay};
 pub use plan::{
     Block, Box2, Change, ChangeIn, Layer, LayerIn, LayerType, Plan, PlanError, PurgeEstimate, Ribs,
     auto_brim, estimate_brim_real_width, estimate_rib_tower_bbox_side, estimate_tower_blocks_depth,
