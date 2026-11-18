@@ -48,11 +48,11 @@ const LENGTH_TOLERANCE: f64 = 0.05;
 /// How far an arc may stray from sparse infill and from supports, in mm
 /// (libslic3r.h `SPARSE_INFILL_RESOLUTION`, `SUPPORT_RESOLUTION`).
 /// Everything else is held to the `resolution` setting.
-pub(crate) const SPARSE_INFILL_RESOLUTION: f64 = 0.04;
-pub(crate) const SUPPORT_RESOLUTION: f64 = 0.0375;
+pub const SPARSE_INFILL_RESOLUTION: f64 = 0.04;
+pub const SUPPORT_RESOLUTION: f64 = 0.0375;
 
 /// A tolerance in mm as the fitter takes it.
-pub(crate) fn tolerance(mm: f64) -> f64 {
+pub fn tolerance(mm: f64) -> f64 {
     mm / SCALING_FACTOR
 }
 
@@ -279,16 +279,16 @@ fn circle_of(points: &[Point2], max_radius: f64, tolerance: f64) -> Option<Circl
 
 /// A circular move (Circle.hpp `ArcSegment`).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Arc {
-    pub(crate) center: Point2,
+pub struct Arc {
+    pub center: Point2,
     /// In coordinate units.
-    pub(crate) radius: f64,
-    pub(crate) start: Point2,
-    pub(crate) end: Point2,
+    pub radius: f64,
+    pub start: Point2,
+    pub end: Point2,
     /// Counter-clockwise, a `G3`; otherwise clockwise, a `G2`.
-    pub(crate) ccw: bool,
+    pub ccw: bool,
     /// Along the arc, in coordinate units.
-    pub(crate) length: f64,
+    pub length: f64,
     /// The angle turned through: positive counter-clockwise, negative
     /// clockwise.
     angle: f64,
@@ -305,7 +305,7 @@ impl Arc {
     }
 
     /// Length along the arc in mm.
-    pub(crate) fn length_mm(&self) -> f64 {
+    pub fn length_mm(&self) -> f64 {
         self.length * SCALING_FACTOR
     }
 
@@ -370,7 +370,7 @@ impl Arc {
 
     /// The box round the arc in coordinate units, bulge and all: min x,
     /// min y, max x, max y.
-    pub(crate) fn bounds(&self) -> [f64; 4] {
+    pub fn bounds(&self) -> [f64; 4] {
         let (cx, cy) = (self.center.x as f64, self.center.y as f64);
         let (sx, sy) = (self.start.x as f64, self.start.y as f64);
         let (ex, ey) = (self.end.x as f64, self.end.y as f64);
@@ -599,7 +599,7 @@ fn ray_intersects_segment(origin: Point2, direction: (f64, f64), a: Point2, b: P
 
 /// How a stretch of a path is laid.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Kind {
+pub enum Kind {
     /// Straight from point to point.
     Line,
     /// As one arc from its first point to its last; the points between
@@ -610,10 +610,10 @@ pub(crate) enum Kind {
 /// A stretch of a path: from the point at `start` to the one at `end`
 /// (ArcFitter.hpp `PathFittingData`).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Part {
-    pub(crate) start: usize,
-    pub(crate) end: usize,
-    pub(crate) kind: Kind,
+pub struct Part {
+    pub start: usize,
+    pub end: usize,
+    pub kind: Kind,
 }
 
 impl Part {
@@ -695,7 +695,7 @@ fn fit_parts(points: &[Point2], tolerance: f64) -> Vec<Part> {
 /// that are within `tolerance` of the line between those kept, measured
 /// to the segment. (edge-clip has the same for outlines.) Also what a
 /// path is thinned with when no arcs are fitted to it (`simplify.rs`).
-pub(crate) fn douglas_peucker(points: &[Point2], tolerance: f64) -> Vec<Point2> {
+pub fn douglas_peucker(points: &[Point2], tolerance: f64) -> Vec<Point2> {
     let Some(&first) = points.first() else {
         return Vec::new();
     };
@@ -770,9 +770,9 @@ fn projection_onto(p: Point2, a: Point2, b: Point2) -> Point2 {
 /// with its `fitting_result`). The parts follow one another from the
 /// first point to the last. A path of fewer than two points has none.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Fitted {
-    pub(crate) points: Vec<Point2>,
-    pub(crate) parts: Vec<Part>,
+pub struct Fitted {
+    pub points: Vec<Point2>,
+    pub parts: Vec<Part>,
 }
 
 impl Fitted {
@@ -781,7 +781,7 @@ impl Fitted {
     /// stretch, straight or arc, the points that are within the same
     /// tolerance of the line between their neighbours. An arc keeps
     /// those that outline it, which a wipe follows.
-    pub(crate) fn new(points: &[Point2], tolerance: f64) -> Self {
+    pub fn new(points: &[Point2], tolerance: f64) -> Self {
         if points.len() < 2 {
             return Self {
                 points: points.to_vec(),
@@ -818,7 +818,7 @@ impl Fitted {
     }
 
     /// A path laid straight throughout.
-    pub(crate) fn straight(points: Vec<Point2>) -> Self {
+    pub fn straight(points: Vec<Point2>) -> Self {
         let parts = if points.len() < 2 {
             Vec::new()
         } else {
@@ -837,7 +837,7 @@ impl Fitted {
     }
 
     /// `Polyline::reverse`: the same path from its other end.
-    pub(crate) fn reverse(&mut self) {
+    pub fn reverse(&mut self) {
         self.points.reverse();
         let last = self.points.len().saturating_sub(1);
         for part in &mut self.parts {
@@ -854,7 +854,7 @@ impl Fitted {
     /// the arc ends abreast of the cut; one that cannot be ended there
     /// becomes straight moves. A path no longer than `distance` is left
     /// with fewer than two points and no parts.
-    pub(crate) fn clip_end(&mut self, mut distance: f64) {
+    pub fn clip_end(&mut self, mut distance: f64) {
         // `ExtrusionLoop::clip_end` asks for nothing to be done with
         // nothing to clip.
         if distance <= 0.0 {
@@ -906,7 +906,7 @@ impl Fitted {
     /// `Polyline::split_at_index`: the path up to the point at `index`
     /// and the path from it on. An arc the cut falls within is ended, and
     /// begun again, abreast of that point.
-    pub(crate) fn split_at_index(&self, index: usize) -> (Self, Self) {
+    pub fn split_at_index(&self, index: usize) -> (Self, Self) {
         let last = self.points.len() - 1;
         if index == 0 {
             return (Self::straight(vec![self.points[0]]), self.clone());
@@ -987,7 +987,7 @@ impl Fitted {
     }
 
     /// `Polyline::append_before`: a straight move from a new first point.
-    pub(crate) fn push_front(&mut self, p: Point2) {
+    pub fn push_front(&mut self, p: Point2) {
         if self.points.first() == Some(&p) {
             return;
         }
@@ -1051,7 +1051,7 @@ impl Fitted {
     /// units along its points and the path from there on. The segment
     /// the cut falls on becomes two straight moves, even where an arc
     /// ran through it. None for a length the path does not have.
-    pub(crate) fn split_at_length(&self, length: f64) -> Option<(Self, Self)> {
+    pub fn split_at_length(&self, length: f64) -> Option<(Self, Self)> {
         let (first, last) = (*self.points.first()?, *self.points.last()?);
         let whole: f64 = self
             .points
@@ -1096,7 +1096,7 @@ impl Fitted {
     /// `ExtrusionLoop::split_at` for a loop of one path: the closed path
     /// (its last point is its first) taken once round from `p` instead,
     /// which is one of its points or a point on it.
-    pub(crate) fn start_at(&mut self, p: Point2) {
+    pub fn start_at(&mut self, p: Point2) {
         let (head, mut tail) = self.split_at(p);
         *self = if !head.is_valid() {
             tail

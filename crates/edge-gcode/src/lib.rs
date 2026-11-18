@@ -10,7 +10,9 @@
 //!
 //! Not done: progress (`M73`) as the reference places it.
 
-mod arc;
+/// Arc fitting, which Bambu's prime tower (edge-tower `type1`) fits its
+/// walls with as well.
+pub mod arc;
 mod avoid;
 mod bambu_vars;
 pub mod calib;
