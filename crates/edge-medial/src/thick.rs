@@ -145,13 +145,19 @@ fn open(line: &ThickPolyline, role: Role, flow: &Flow, tolerance: f64) -> Vec<Ex
         }
         index += 1;
     }
+    // The last part is laid at its average width like every other part.
+    // The reference weighs each of its segments by the width at the
+    // segment's start instead (VariableWidth.cpp, "handle the remaining
+    // segment"), which lays the tip of a line that narrows to its end too
+    // wide; that is deliberately not followed here, and is fixed in the
+    // C++ slicer by aceRage/EdgeSlicer#1097.
     if start < lines.len() {
         let (mut total, mut weighted) = (0.0, 0.0);
         let mut points = Vec::with_capacity(lines.len() - start + 1);
         for rest in &lines[start..] {
             let length = rest.length();
             total += length;
-            weighted += length * rest.a_width;
+            weighted += length * 0.5 * (rest.a_width + rest.b_width);
             points.push(rest.a);
         }
         points.extend(lines.last().map(|last| last.b));
@@ -272,6 +278,28 @@ mod tests {
                 .windows(2)
                 .all(|pair| pair[0].points.last() == pair[1].points.first())
         );
+    }
+
+    #[test]
+    fn the_last_part_of_a_taper_is_laid_at_its_average_width() {
+        let flow = Flow::new(0.45, 0.2, 0.4).unwrap();
+        // A wide first segment, then a step down and a narrowing of 0.04 mm
+        // over the last two segments: one cut at the step, and the
+        // narrowing, under the 0.05 mm limit, is the last part.
+        let taper = line(
+            &[(0.0, 0.0), (4.0, 0.0), (6.0, 0.0), (8.0, 0.0)],
+            &[0.4, 0.4, 0.3, 0.27, 0.27, 0.26],
+        );
+        let paths = variable_width(&[taper], Role::GapFill, &flow);
+        let [first, last] = paths.as_slice() else {
+            panic!("expected two paths, got {}", paths.len())
+        };
+        let gap = |path: &ExtrusionPath| path.flow.width - 0.2 * (1.0 - 0.25 * PI);
+        assert!((gap(first) - 0.4).abs() < 1e-6);
+        // (2 x 0.285 + 2 x 0.265) / 4, not the start widths' (2 x 0.3 + 2 x
+        // 0.27) / 4 = 0.285.
+        assert!((gap(last) - 0.275).abs() < 1e-6, "{}", gap(last));
+        assert_eq!(last.points.last(), Some(&Point2::from_mm(8.0, 0.0)));
     }
 
     #[test]
