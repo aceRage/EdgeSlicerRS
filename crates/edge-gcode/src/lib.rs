@@ -2420,6 +2420,12 @@ impl Writer<'_> {
         }
         let ram = ram.filter(|_| self.state.primed);
         let rammed = ram.is_some();
+        // The reference's own tower (WipeTower2.cpp) unloads the old tool
+        // on it for every change it has a block for, and that unload ends
+        // by letting the planner's queue run empty, on Klipper too since
+        // aceRage/EdgeSlicer#875, so that the change G-code does not run
+        // while the unload is still queued (`toolchange_Unload`).
+        let unloads = over.is_some() && s.prime_tower && !s.bambu_tower;
         // A tool of the reference's other tower changed where it is
         // (described below).
         let in_place =
@@ -2472,31 +2478,23 @@ impl Writer<'_> {
                     if index == 0
                         && let Some(advance) = ram_advance
                     {
-                        if s.klipper {
-                            writeln!(self.out, "SET_PRESSURE_ADVANCE ADVANCE={advance:.4}")?;
-                        } else if s.reprap {
-                            writeln!(self.out, "M572 D{from} S{advance:.6}")?;
-                        } else {
-                            writeln!(self.out, "M900 K{advance:.6}")?;
-                        }
+                        self.pressure_advance(from, advance)?;
                     }
                     for point in &line.points[1..] {
                         self.extrude(*point, line.role, &line.flow, motion)?;
                     }
                 }
+                self.tower_temperature(to, layer)?;
                 // The filament's own value back, where the profile has
                 // one and the ram changed it.
                 if let (Some(_), Some(own)) = (ram_advance, s.pressure_advance) {
-                    if s.klipper {
-                        writeln!(self.out, "SET_PRESSURE_ADVANCE ADVANCE={own:.4}")?;
-                    } else if s.reprap {
-                        writeln!(self.out, "M572 D{from} S{own:.6}")?;
-                    } else {
-                        writeln!(self.out, "M900 K{own:.6}")?;
-                    }
+                    self.pressure_advance(from, own)?;
                 }
                 let length = self.state.position.map_or(0.0, |at| distance(at, ram.park));
                 self.go(ram.park, None, RAM_PARK_SPEED, length)?;
+                if unloads {
+                    self.sync_planner()?;
+                }
                 // Back up to the layer before the change G-code, which
                 // may take the head anywhere (GCode.cpp `append_tcr2`,
                 // "Restore layer Z before toolchange").
@@ -2534,18 +2532,10 @@ impl Writer<'_> {
                     self.travel(over, false, None)?;
                     self.prime()?;
                 }
-            }
-        }
-        // On one nozzle the tower sets the new filament's temperature
-        // without waiting, on the first layer and wherever it differs
-        // from what it last set (WipeTower2.cpp and WipeTower.cpp
-        // `toolchange_Unload`).
-        // Bambu's tower sets none (its `toolchange_Unload` is left out).
-        if s.single_nozzle && s.prime_tower && !s.bambu_tower {
-            let wanted = self.temperature(to, layer == 0);
-            if wanted > 0.0 && (layer == 0 || self.state.tower_temperature != Some(wanted)) {
-                writeln!(self.out, "M104 S{wanted:.0}")?;
-                self.state.tower_temperature = Some(wanted);
+                self.tower_temperature(to, layer)?;
+                if unloads {
+                    self.sync_planner()?;
+                }
             }
         }
         // Pull the filament well back, wiping first as for any retraction.
@@ -2655,6 +2645,50 @@ impl Writer<'_> {
             )?;
         }
         Ok(in_place)
+    }
+
+    /// On one nozzle the reference's own tower sets the new filament's
+    /// temperature without waiting, on the first layer and wherever it
+    /// differs from what it last set, the planner's queue let run empty
+    /// first so the change comes with the moves (WipeTower2.cpp
+    /// `toolchange_Unload`, `set_extruder_temp`). Bambu's tower sets none
+    /// (its `toolchange_Unload` is left out).
+    fn tower_temperature(&mut self, to: usize, layer: usize) -> io::Result<()> {
+        let s = self.settings;
+        if s.single_nozzle && s.prime_tower && !s.bambu_tower {
+            let wanted = self.temperature(to, layer == 0);
+            if wanted > 0.0 && (layer == 0 || self.state.tower_temperature != Some(wanted)) {
+                self.sync_planner()?;
+                writeln!(self.out, "M104 S{wanted:.0}")?;
+                self.state.tower_temperature = Some(wanted);
+            }
+        }
+        Ok(())
+    }
+
+    /// Lets the printer's planner queue run empty: `M400` on Klipper,
+    /// `G4 S0` elsewhere (WipeTower.cpp `flush_planner_queue_command`).
+    fn sync_planner(&mut self) -> io::Result<()> {
+        let command = if self.settings.klipper {
+            "M400"
+        } else {
+            "G4 S0"
+        };
+        writeln!(self.out, "{command}")
+    }
+
+    /// Sets the pressure advance of `tool`'s filament, as the reference's
+    /// own tower does around a ram, to four places
+    /// (WipeTower2.cpp `disable_linear_advance_value`).
+    fn pressure_advance(&mut self, tool: usize, value: f64) -> io::Result<()> {
+        let s = self.settings;
+        if s.klipper {
+            writeln!(self.out, "SET_PRESSURE_ADVANCE ADVANCE={value:.4}")
+        } else if s.reprap {
+            writeln!(self.out, "M572 D{tool} S{value:.4}")
+        } else {
+            writeln!(self.out, "M900 K{value:.4}")
+        }
     }
 
     /// From one copy, finished, to the next, printing object by object

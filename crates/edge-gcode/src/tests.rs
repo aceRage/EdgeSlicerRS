@@ -2861,7 +2861,10 @@ fn a_tool_changed_where_it_is_goes_round_the_tower_to_its_gap() {
 #[test]
 fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
     let [a, b] = two_tools(Some(CHANGE));
-    let settings = [a, b];
+    let settings = [a, b].map(|tool| PrintSettings {
+        prime_tower: true,
+        ..tool
+    });
     let loops = [wall(0.0, 0.0, 10.0, 0)];
     // A ramming line 1 mm wide and 2.6 mm long on the tower, at 104 mm/s.
     let mut rammed = line((40.75, 40.85), (43.35, 40.85), Role::PrimeTower);
@@ -2912,6 +2915,11 @@ fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
     let parked = at("G1 X43.350 Y41.850");
     assert!(laid < parked && parked < change);
     assert_eq!(word(text.lines().nth(parked).unwrap(), 'F'), Some(2400.0));
+    // And the planner's queue is let run empty before the change, as the
+    // reference's unload ends (`G4 S0`; `M400` on Klipper, since
+    // aceRage/EdgeSlicer#875).
+    let synced = at("G4 S0");
+    assert!(parked < synced && synced < change);
     // Changed over the tower, the new tool starts where the ram stopped,
     // without going out of the tower to come in again through the gap
     // in its wall: the reference's block goes on from there (GCode.cpp
@@ -2937,9 +2945,9 @@ fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
     assert!(!text.contains("G1 X43.350 Y40.850 E") && !text.contains(";WIDTH:1.000"));
 
     // Asked to, the ram is pushed out at the ramming pressure advance, set
-    // once the nozzle is at its start, in the firmware's own words, and
-    // the filament's own is set back once the ram is done (the reference
-    // never sets it back: WipeTower2.cpp `toolchange_Unload`).
+    // once the nozzle is at its start, in the firmware's own words to four
+    // places, and the filament's own is set back once the ram is done
+    // (WipeTower2.cpp `toolchange_Unload`, `disable_linear_advance_value`).
     for (klipper, reprap, wanted, back) in [
         (
             true,
@@ -2947,8 +2955,8 @@ fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
             "SET_PRESSURE_ADVANCE ADVANCE=0.0200",
             "SET_PRESSURE_ADVANCE ADVANCE=0.0450",
         ),
-        (false, true, "M572 D0 S0.020000", "M572 D0 S0.045000"),
-        (false, false, "M900 K0.020000", "M900 K0.045000"),
+        (false, true, "M572 D0 S0.0200", "M572 D0 S0.0450"),
+        (false, false, "M900 K0.0200", "M900 K0.0450"),
     ] {
         let advanced = settings.clone().map(|tool| PrintSettings {
             ram_advance: Some(0.02),

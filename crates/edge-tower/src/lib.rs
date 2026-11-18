@@ -1803,13 +1803,17 @@ pub fn plan_changes(
         if !finish_slow {
             // The brim does not go on up a tower that has got shallower.
             let as_deep = (blocks - deep[0]).abs() < 1e-9;
-            // A loop fewer for each layer of the tower laid above its
-            // first, as the reference counts them with layers left out
-            // since aceRage/EdgeSlicer#1019 (WipeTower2.cpp `finish_layer`,
-            // `wipe_tower_printed_layer_distance`). Before it the print's
-            // layers between were counted, laid or not, so the brim was
-            // mostly gone by the tower's second layer.
-            let climbed = (first_laid + 1..=layer).filter(|at| laid[*at]).count();
+            // A loop fewer for each layer of the tower laid above the
+            // print's first, as the reference counts them with layers left
+            // out (WipeTower2.cpp `finish_layer`,
+            // `wipe_tower_printed_layer_distance` from `m_first_layer_idx`,
+            // which is the plan's first layer: `plan_toolchange` sets it
+            // while the plan has one layer). So with layers left out the
+            // tower's first laid layer above the print's first counts as
+            // a step, though it was laid with the whole brim, and the next
+            // has two loops fewer. Before the pin the print's layers
+            // between were counted too, laid or not.
+            let climbed = (1..=layer).filter(|at| laid[*at]).count();
             loops = if settings.brim_chamfer && as_deep {
                 loops
                     .min((settings.brim_chamfer_max / spacing) as usize)
