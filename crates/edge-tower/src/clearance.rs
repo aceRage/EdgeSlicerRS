@@ -322,6 +322,46 @@ pub fn tower_clears(
     Ok(true)
 }
 
+/// Whether the nozzle may go down onto the tower for its final purge, on
+/// a layer whose top is `purge_z`: whether every object clears the
+/// ground the tower's layers with a tool change take (their lines' hull)
+/// standing as far above it as the object's top is above that layer
+/// (Print.cpp `final_purge_drop_clearance_ok`,
+/// `compacted_tower_zone_from_tool_changes`). Checked whichever way the
+/// plate is printed, as there.
+pub fn purge_drop_clears(
+    clearance: &Clearance,
+    tower: &Tower,
+    purge_z: f64,
+    objects: &[Object],
+) -> Result<bool, ClipError> {
+    let points = (tower.layers.iter())
+        .filter(|layer| !layer.changes.is_empty())
+        .flat_map(|layer| {
+            let rams = (layer.changes.iter())
+                .flat_map(|block| block.ram.iter().flat_map(|ram| &ram.lines));
+            (layer.finish.iter())
+                .chain(layer.changes.iter().flat_map(|block| &block.lines))
+                .chain(rams)
+                .flat_map(|line| line.points.iter().copied())
+        });
+    let ground = convex_hull(points);
+    if ground.points.len() < 3 {
+        return Ok(true);
+    }
+    let zone = Zone::new(clearance, &ground)?;
+    for object in objects
+        .iter()
+        .filter(|object| object.hull.points.len() >= 3)
+    {
+        let rise = object.top - purge_z;
+        if rise > zone.allowed(clearance, &object.hull, rise)? + EPSILON {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2861,7 +2861,10 @@ fn a_tool_changed_where_it_is_goes_round_the_tower_to_its_gap() {
 #[test]
 fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
     let [a, b] = two_tools(Some(CHANGE));
-    let settings = [a, b];
+    let settings = [a, b].map(|tool| PrintSettings {
+        prime_tower: true,
+        ..tool
+    });
     let loops = [wall(0.0, 0.0, 10.0, 0)];
     // A ramming line 1 mm wide and 2.6 mm long on the tower, at 104 mm/s.
     let mut rammed = line((40.75, 40.85), (43.35, 40.85), Role::PrimeTower);
@@ -2870,7 +2873,8 @@ fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
     let mut slow = line((43.35, 41.1), (60.0, 41.1), Role::PrimeLine);
     slow.flow = Flow::new(0.5, 0.2, 0.4).unwrap();
     let tower = [slow];
-    let enter = [Point2::from_mm(38.5, 41.45), Point2::from_mm(40.25, 41.45)];
+    // In through the gap to a point inside, then to the block's corner.
+    let enter = [Point2::from_mm(40.25, 41.45), Point2::from_mm(39.75, 40.25)];
     let plan = [
         one_layer(&loops, &[0..1], &[])[0],
         Layer {
@@ -2899,6 +2903,14 @@ fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
     // own width and speed, and with as much plastic as the line holds.
     let laid = at("G1 X43.350 Y40.850 E");
     assert!(laid < change);
+    // It comes in through the gap and by the block's corner to the ram's
+    // start (WipeTower2.cpp `toolchange_Unload`).
+    let (gap, corner, start) = (
+        at("G1 X40.250 Y41.450"),
+        at("G1 X39.750 Y40.250"),
+        at("G1 X40.750 Y40.850"),
+    );
+    assert!(gap < corner && corner < start && start < laid);
     let rammed = text.lines().nth(laid).unwrap();
     assert_eq!(word(rammed, 'F'), Some(104.0 * 60.0));
     let volume = 2.6 * 0.2 * (1.0 - 0.2 * (1.0 - std::f64::consts::FRAC_PI_4));
@@ -2912,13 +2924,18 @@ fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
     let parked = at("G1 X43.350 Y41.850");
     assert!(laid < parked && parked < change);
     assert_eq!(word(text.lines().nth(parked).unwrap(), 'F'), Some(2400.0));
+    // And the planner's queue is let run empty before the change, as the
+    // reference's unload ends (`G4 S0`; `M400` on Klipper, since
+    // aceRage/EdgeSlicer#875).
+    let synced = at("G4 S0");
+    assert!(parked < synced && synced < change);
     // Changed over the tower, the new tool starts where the ram stopped,
     // without going out of the tower to come in again through the gap
     // in its wall: the reference's block goes on from there (GCode.cpp
     // `append_tcr2` routes only a tool changed where it was).
     let first = at("G1 X60.000 Y41.100 E");
     assert!(change < first);
-    assert!(!text.contains("G1 X38.500 Y41.450") && !text.contains("G1 X40.250 Y41.450"));
+    assert_eq!(text.matches("G1 X40.250 Y41.450").count(), 1);
     // The old tool's count has the ram in it.
     let (_, summary) = (0, write_tools(&mut Vec::new(), &plan, &settings).unwrap());
     assert!(summary.filament_mm3 > volume);
@@ -2937,9 +2954,9 @@ fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
     assert!(!text.contains("G1 X43.350 Y40.850 E") && !text.contains(";WIDTH:1.000"));
 
     // Asked to, the ram is pushed out at the ramming pressure advance, set
-    // once the nozzle is at its start, in the firmware's own words, and
-    // the filament's own is set back once the ram is done (the reference
-    // never sets it back: WipeTower2.cpp `toolchange_Unload`).
+    // once the nozzle is at its start, in the firmware's own words to four
+    // places, and the filament's own is set back once the ram is done
+    // (WipeTower2.cpp `toolchange_Unload`, `disable_linear_advance_value`).
     for (klipper, reprap, wanted, back) in [
         (
             true,
@@ -2947,8 +2964,8 @@ fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
             "SET_PRESSURE_ADVANCE ADVANCE=0.0200",
             "SET_PRESSURE_ADVANCE ADVANCE=0.0450",
         ),
-        (false, true, "M572 D0 S0.020000", "M572 D0 S0.045000"),
-        (false, false, "M900 K0.020000", "M900 K0.045000"),
+        (false, true, "M572 D0 S0.0200", "M572 D0 S0.0450"),
+        (false, false, "M900 K0.0200", "M900 K0.0450"),
     ] {
         let advanced = settings.clone().map(|tool| PrintSettings {
             ram_advance: Some(0.02),
@@ -5468,5 +5485,75 @@ fn a_layer_too_short_even_slowed_is_paused_off_the_print() {
                 ..settings
             }
         )
+    );
+}
+
+#[test]
+fn the_last_filament_is_unloaded_over_the_tower_once_the_print_is_done() {
+    let loops = [wall(0.0, 0.0, 10.0, 0)];
+    let plan = one_layer(&loops, &[0..1], &[]);
+    let mut ram = line((40.75, 40.85), (43.35, 40.85), Role::PrimeTower);
+    ram.flow = Flow::new(1.0, 0.2, 0.4).unwrap();
+    let dropped = FinalPurge {
+        start: Point2::from_mm(40.25, 40.25),
+        drop: Some(PurgeDrop {
+            z: 0.4,
+            lines: vec![ram],
+            speed: 104.0,
+            park: Point2::from_mm(43.35, 41.6),
+        }),
+    };
+    let settings = PrintSettings {
+        final_purge: Some(dropped.clone()),
+        klipper: true,
+        ..PrintSettings::default()
+    };
+    let mut out = Vec::new();
+    write(&mut out, &plan, &settings).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    let at = |wanted: &str| {
+        lines
+            .iter()
+            .position(|line| line.starts_with(wanted))
+            .unwrap()
+    };
+    // To the tower, down to the purge's layer, the ram, the wait clear of
+    // it, the planner's queue run empty, and only then the end G-code.
+    let (start, ram, park, sync) = (
+        at("G1 X40.250 Y40.250"),
+        at("G1 X43.350 Y40.850 E"),
+        at("G1 X43.350 Y41.600"),
+        at("M400"),
+    );
+    assert!(start < ram && ram < park && park < sync, "{text}");
+    assert!(
+        lines[start..ram]
+            .iter()
+            .any(|line| line.starts_with("G1 Z0.400"))
+    );
+    assert!(sync < at("M104 S0"));
+    // Not dropped: unloaded over the tower's corner at the print's height.
+    let stay = PrintSettings {
+        final_purge: Some(FinalPurge {
+            drop: None,
+            ..dropped
+        }),
+        ..settings
+    };
+    let mut out = Vec::new();
+    write(&mut out, &plan, &stay).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(!text.contains("G1 X43.350 Y40.850 E"));
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines
+        .iter()
+        .position(|line| line.starts_with("G1 X40.250 Y40.250"))
+        .unwrap();
+    assert!(lines[start..].contains(&"M400"));
+    assert!(
+        lines[start..]
+            .iter()
+            .all(|line| !line.starts_with("G1 Z0.400"))
     );
 }
