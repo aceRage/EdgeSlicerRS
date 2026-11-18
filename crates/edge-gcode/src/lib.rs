@@ -2239,6 +2239,16 @@ impl Writer<'_> {
             }
             _ => 0.0,
         };
+        // A change on Bambu's tower flushes at least 100 mm³, or nothing
+        // where nothing is to be flushed (GCode.cpp `append_tcr`,
+        // `g_min_purge_volume`). Only there: a change with no tower, or on
+        // the other tower, gives the volume as it is (`set_extruder`,
+        // `append_tcr2`).
+        let flushed = if self.state.framing && flushed as f32 >= f32::EPSILON {
+            flushed.max(100.0)
+        } else {
+            flushed
+        };
         let length = (flushed as f32 / area(new_settings) as f32) as f64;
         v.set("flush_length", Value::Float(length));
         v.set("first_flush_volume", Value::Float(length / 2.0));
