@@ -207,6 +207,31 @@ pub fn offset(
         .map_err(ClipError::from)
 }
 
+/// [`offset`], keeping points that lie in line with their neighbours
+/// (Clipper2's `preserve_collinear`). ClipperLib, which the reference
+/// offsets with, keeps such a point where rounding leaves it the least bit
+/// off the line, as an offset outline's points mostly are.
+pub fn offset_keeping_points(
+    regions: &[ExPolygon],
+    delta: Coord,
+    join: Join,
+) -> Result<Vec<ExPolygon>, ClipError> {
+    if delta == 0 {
+        return union_ex(regions);
+    }
+    let (join_type, miter_limit, arc_tolerance) = match join {
+        Join::Miter { limit } => (JoinType::Miter, limit, 0.0),
+        Join::Round { tolerance } => (JoinType::Round, 2.0, tolerance as f64),
+        Join::Square => (JoinType::Square, 2.0, 0.0),
+    };
+    let mut offsetter = ClipperOffset::new(miter_limit, arc_tolerance, true, false);
+    offsetter.add_paths(&paths(rings(regions)), join_type, EndType::Polygon);
+    offsetter
+        .execute_tree(delta as f64)
+        .map(|tree| regions_of(&tree))
+        .map_err(ClipError::from)
+}
+
 /// Two offsets in a row. Shrinking then growing by less removes whatever
 /// is too narrow to survive the first step; growing then shrinking fills
 /// what is too narrow to stay open.
