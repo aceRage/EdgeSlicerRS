@@ -689,7 +689,6 @@ mod tests {
             "first_layer_sequence_choice",
             "flashforge_serial_number",
             "gcode_add_line_number",
-            "grab_length",
             "has_filament_switcher",
             "host_type",
             "image_fill_detail",

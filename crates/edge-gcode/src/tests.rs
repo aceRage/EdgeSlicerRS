@@ -4443,12 +4443,13 @@ fn bambus_tower_flushes_at_least_100_cubic_millimetres() {
         TowerStroke::Glide(at(40.0, 40.0)),
         TowerStroke::LayAs(at(60.0, 40.0), 30.0, flow),
     ];
-    let tool = |tower: bool| PrintSettings {
+    let tool = |tower: bool, flush: f64, grab: f64| PrintSettings {
         bambu_tower: true,
         prime_tower: tower,
         single_nozzle: true,
         tools: 1,
-        flush_volumes: vec![0.0, 30.0, 0.0, 0.0],
+        flush_volumes: vec![0.0, flush, 0.0, 0.0],
+        grab_length: grab,
         change_filament_gcode: Some(
             "; flush [flush_length] {flush_length_1} {flush_length_2}\nT[next_extruder]".into(),
         ),
@@ -4456,7 +4457,7 @@ fn bambus_tower_flushes_at_least_100_cubic_millimetres() {
     };
     let part = [wall(0.0, 0.0, 10.0, 0)];
     let first = one_layer(&part, &[0..1], &[])[0];
-    let flushes = |filaments: [usize; 3], tower: bool| -> Vec<String> {
+    let flushes_of = |filaments: [usize; 3], tower: bool, flush: f64, grab: f64| -> Vec<String> {
         let layers: Vec<Layer<'_>> = filaments
             .iter()
             .map(|&filament| Layer {
@@ -4471,7 +4472,12 @@ fn bambus_tower_flushes_at_least_100_cubic_millimetres() {
             })
             .collect();
         let mut out = Vec::new();
-        write_tools(&mut out, &layers, &[tool(tower), tool(tower)]).unwrap();
+        write_tools(
+            &mut out,
+            &layers,
+            &[tool(tower, flush, grab), tool(tower, flush, grab)],
+        )
+        .unwrap();
         String::from_utf8(out)
             .unwrap()
             .lines()
@@ -4479,9 +4485,23 @@ fn bambus_tower_flushes_at_least_100_cubic_millimetres() {
             .map(str::to_owned)
             .collect()
     };
+    let flushes = |filaments: [usize; 3], tower: bool| flushes_of(filaments, tower, 30.0, 0.0);
     let area = std::f32::consts::PI * 0.875 * 0.875;
     let length = |volume: f32| format!("{:.4}", (volume / area) as f64);
     let floored = length(100.0).trim_end_matches('0').to_owned();
+    // A Bambu Lab printer pushing 17.4 mm out to grab the new filament (the
+    // A2L) flushes 41.76 mm³ less (Print.cpp `_make_wipe_tower`): 200 mm³
+    // is 158.24, still over the floor; 120 is 78.24, floored at 100.
+    let grabbed = flushes_of([0, 1, 0], true, 200.0, 17.4);
+    assert!(
+        grabbed[1].starts_with(&format!("; flush {}", &length(158.24)[..6])),
+        "{grabbed:?}"
+    );
+    let grabbed = flushes_of([0, 1, 0], true, 120.0, 17.4);
+    assert!(
+        grabbed[1].starts_with(&format!("; flush {}", &length(100.0)[..6])),
+        "{grabbed:?}"
+    );
     // (The first is the print's taking up of filament 0.)
     let tower = flushes([0, 1, 0], true);
     assert_eq!(tower.len(), 3, "{tower:?}");
