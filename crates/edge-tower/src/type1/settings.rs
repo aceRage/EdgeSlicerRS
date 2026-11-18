@@ -146,6 +146,16 @@ pub struct Settings {
     /// `enable_tower_interface_features`, where the reference acts on it
     /// ([`interface_features_supported`]).
     pub interface_features: bool,
+    /// Any of Edge's own tower interface options is on
+    /// (`wipe_tower_interface_temp`, `wipe_tower_interface_run_in` with the
+    /// wall gap, `wipe_tower_interface_extra_prime`;
+    /// WipeTowerInterface.cpp `Settings::from_config`). Bambu's switch
+    /// turns them off where it acts.
+    pub edge_interface: bool,
+    /// A Bambu Lab printer (`printer_model`, or failing that the preset's
+    /// name; Print.cpp `is_BBL_printer`). Another printer set to this tower
+    /// (`wipe_tower_type` `type1`) primes `prime_volume` on every change.
+    pub bambu: bool,
     /// How many nozzles the printer has (`nozzle_diameter`), and whether
     /// each rack hotend counts as an extruder (`handle_hotend_as_extruder`).
     pub nozzles: usize,
@@ -455,6 +465,10 @@ impl Settings {
 
         let interface_features = flag("enable_tower_interface_features", false)?
             && interface_features_supported(config)?;
+        let edge_interface = !interface_features
+            && (flag("wipe_tower_interface_temp", false)?
+                || (flag("wipe_tower_interface_run_in", false)? && wall_gap)
+                || flag("wipe_tower_interface_extra_prime", false)?);
         Ok(Self {
             x: placed("wipe_tower_x", 15.0)? as f32,
             y: placed("wipe_tower_y", 220.0)? as f32,
@@ -502,6 +516,12 @@ impl Settings {
                 .map(|height| height.unwrap_or(0.0))
                 .collect(),
             interface_features,
+            edge_interface,
+            bambu: config
+                .text("printer_model")
+                .filter(|model| !model.is_empty())
+                .or(config.text("printer_settings_id"))
+                .is_some_and(|name| name.starts_with("Bambu Lab")),
             nozzles: nozzles.len().max(1),
             hotend_as_extruder: flag("handle_hotend_as_extruder", false)?,
             filaments,
@@ -512,8 +532,12 @@ impl Settings {
     /// What the tower primes after a change to `filament`
     /// (WipeTower.cpp `bambu_prime_volume`): 15 mm³ when saving, else the
     /// filament's `filament_prime_volume`, or `filament_prime_volume_nc`
-    /// after a hotend change on one extruder.
+    /// after a hotend change on one extruder. On a printer that is not a
+    /// Bambu Lab one, `prime_volume` (Print.cpp `_make_wipe_tower`).
     pub fn prime_volume(&self, filament: usize, hotend_change: bool) -> f32 {
+        if !self.bambu {
+            return self.prime_volume;
+        }
         if self.prime_volume_mode == PrimeVolumeMode::Saving {
             return 15.0;
         }
@@ -553,6 +577,7 @@ mod tests {
         assert_eq!(s.first_layer_flow_ratio, 1.0);
         assert_eq!(s.prime_volume_mode, PrimeVolumeMode::Default);
         assert!(!s.skip_sparse && !s.combine_sparse && !s.interface_features);
+        assert!(!s.edge_interface);
         assert_eq!(s.filaments.len(), 1);
         let pla = &s.filaments[0];
         assert_eq!(pla.category, 100);
@@ -566,7 +591,8 @@ mod tests {
     #[test]
     fn each_filament_gets_its_own_values() {
         let s = read(
-            r#"{"filament_type": ["PLA", "PETG", "PLA"],
+            r#"{"printer_model": "Bambu Lab P1S", "prime_volume": "20",
+                "filament_type": ["PLA", "PETG", "PLA"],
                 "filament_is_support": ["0", "0", "1"],
                 "filament_diameter": ["1.75", "1.75", "1.75"],
                 "filament_adhesiveness_category": ["0", "0", "0"],
@@ -588,6 +614,12 @@ mod tests {
         assert_eq!(categories, [100, 300, 702]);
         assert_eq!(s.prime_volume(1, false), 40.0);
         assert_eq!(s.prime_volume(2, true), 80.0);
+        // Not a Bambu Lab printer: every change primes prime_volume.
+        let other = Settings {
+            bambu: false,
+            ..s.clone()
+        };
+        assert_eq!(other.prime_volume(1, false), 20.0);
         assert_eq!(s.filaments[2].iron_area, 8.0);
         assert_eq!(s.filaments[0].cooling_before_tower, 10.0);
         assert_eq!(s.filaments[1].cooling_before_tower, 0.0);
@@ -635,7 +667,7 @@ mod tests {
     #[test]
     fn saving_primes_15_and_a_bad_curve_is_said() {
         let s = read(
-            r#"{"prime_volume_mode": "Saving",
+            r#"{"prime_volume_mode": "Saving", "printer_model": "Bambu Lab A1",
                 "filament_prime_tower_speed_factor_curve": ["fast"]}"#,
         );
         assert_eq!(s.prime_volume(0, false), 15.0);

@@ -4,13 +4,20 @@
 //! stage at a time beside the older port in `bambu.rs`, which stays the
 //! tower that is laid until this one is complete.
 //!
-//! Done so far: what the tower reads ([`Settings`]).
+//! Done so far: what the tower reads ([`Settings`]), and its planner
+//! ([`plan()`]): blocks, depths, where it stands.
 //!
 //! Nothing here reaches the G-code yet: the settings it reads stay on the
 //! unfollowed list (edge-engine `unfollowed.rs`, `TOWER`) until it does.
 
+mod plan;
 mod settings;
 
+pub use plan::{
+    Block, Box2, Change, ChangeIn, Layer, LayerIn, LayerType, Plan, PlanError, PurgeEstimate, Ribs,
+    auto_brim, estimate_brim_real_width, estimate_rib_tower_bbox_side, estimate_tower_blocks_depth,
+    limit_depth, plan, rib_footprint_side,
+};
 pub use settings::{
     Filament, PrimeVolumeMode, Settings, Wall, adhesiveness_category, interface_features_supported,
 };
