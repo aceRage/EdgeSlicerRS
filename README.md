@@ -1805,6 +1805,24 @@ tower is now moved from 15 x 220 to 15 x 192.194, as there, and is the
 reference's length (73.77 m). Still not done: the tower turned end for
 end on alternate layers.
 
+**The prime tower turned end for end** (2026-11-18, Snapmaker U1 and
+Elegoo Centauri Carbon, WipeTower2's tower). The tower is turned end for
+end about its middle on every other layer, the first layer turned, as
+the reference turns it (WipeTower2.cpp `generate`,
+`m_internal_rotation`): blocks, rams, gaps and the way in through them,
+fill, wall and brim. The nozzle comes in through a gap to a point a line
+and a half inside it, and a ram starts from its block's corner, as
+there (`gap_entry`, `toolchange_Unload`). The tower's points are worked
+out as the reference writes them, in single precision and to the
+micrometre in the tower's own frame before it is moved to its place
+(`WipeTowerWriter2::rotate`, GCode.cpp `post_process_wipe_tower_moves`).
+Against the pinned reference (`work/tower/tower_cmp.py`): every purge
+starts within 0.01 mm on all thirteen U1 and Centauri Carbon inputs
+(was the even layers only); the tower lines the same to 5 µm are
+99.0-100% of the reference's (60-96% before), and every line of the
+reference's is laid here to 3 µm, whole or as part of a longer line of
+ours where the reference's rib wall carries a vertex more.
+
 **Objects labelled for cancelling** (2026-11-13). Each copy on the plate
 is labelled in the file so a printer can cancel it while printing, as the
 reference labels them (GCode.cpp `process_layer`, `set_object_info`;
@@ -2240,8 +2258,8 @@ same to a millionth count as the same, and the lower number goes first;
 the reference compares exactly, so where it has identical parts in
 several filaments its order among them can differ (plate 3 of
 `mcbrim_test.3mf` starts 1, 5, 4, 3, 2 there and 1, 3, 4, 5, 2 here). The tower has no
-cone wall, which is noted when the profile asks for it. The tower is not
-turned end for end on alternate layers. A filament with no tool of its own (the fifth on a
+cone wall, which is noted when the profile asks for it. The tower is
+turned end for end on alternate layers, as the reference's is. A filament with no tool of its own (the fifth on a
 four-tool printer) is written as the reference writes it, with a warning.
 Filaments mixed from others are not read.
 

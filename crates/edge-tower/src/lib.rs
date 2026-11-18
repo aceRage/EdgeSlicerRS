@@ -54,8 +54,12 @@
 //! there. A plate where the toolhead would then meet what is printed is
 //! refused, as the reference refuses it (`clearance.rs`).
 //!
-//! Not done: the cone wall, and turning the tower end for end on
-//! alternate layers.
+//! The tower is turned end for end about its middle on every other
+//! layer, the first layer turned, as the reference turns it
+//! (WipeTower2.cpp `generate`, `m_internal_rotation`), and its points are
+//! written to the micrometre as the reference writes them ([`Frame`]).
+//!
+//! Not done: the cone wall.
 
 mod bambu;
 mod clearance;
@@ -850,8 +854,9 @@ pub struct Rammed {
 pub struct Block {
     /// The ram, when the filament put away is rammed.
     pub ram: Option<Rammed>,
-    /// The way in for the new nozzle: from outside the wall, through the
-    /// gap left for it. Empty when the wall has no gap.
+    /// The way in, before the block's own moves: through the gap left in
+    /// the wall to a point a line inside it, where the wall has gaps; and
+    /// for a ram, then to the block's corner, where the change starts.
     pub enter: Vec<Point2>,
     /// What the new nozzle lays down: the lines of `wipe`.
     pub lines: Vec<ExtrusionPath>,
@@ -1278,6 +1283,55 @@ impl Shape {
     }
 }
 
+/// Where a point of the tower's goes on the bed, worked as the reference
+/// works it out, in single precision: turned with its layer about the
+/// tower's middle (`WipeTowerWriter2::rotate`, with the layer's
+/// `m_y_shift` and `m_internal_rotation`), moved by the ribs' offset,
+/// written to three places in the tower's own frame, read back and moved
+/// to the tower's place (GCode.cpp `post_process_wipe_tower_moves`), and
+/// written to three places again. So a point the reference writes a
+/// micrometre one way, where its value falls about half way between two,
+/// is written here the same way.
+struct Frame {
+    /// `m_wipe_tower_width`, `m_wipe_tower_depth`.
+    span: f32,
+    depth: f32,
+    /// `m_rib_offset`.
+    offset: (f32, f32),
+    /// `m_wipe_tower_pos`.
+    at: (f32, f32),
+}
+
+impl Frame {
+    /// The point `x`, `y` of layer `layer`, planned in a frame `lift` mm
+    /// up (the layer's y shift), as the G-code gives it.
+    fn place(&self, layer: usize, lift: f64, x: f64, y: f64) -> Point2 {
+        // The reference turns by 180° before each layer, from 0
+        // (WipeTower2.cpp `generate`); its sum is exact in single
+        // precision, its angle in radians is not.
+        let degrees = 180.0 * (layer + 1) as f32;
+        let angle = f64::from(degrees * (std::f64::consts::PI / 180.0) as f32);
+        let (sin, cos) = angle.sin_cos();
+        let (half_span, half_depth) = (self.span / 2.0, self.depth / 2.0);
+        let px = x as f32 - half_span;
+        let py = (y - lift) as f32 + (lift as f32 - half_depth);
+        let (px, py) = (f64::from(px), f64::from(py));
+        let rx = ((px * cos - py * sin) as f32 + half_span) + self.offset.0;
+        let ry = ((px * sin + py * cos) as f32 + half_depth) + self.offset.1;
+        // To the micrometre, exactly: a single's value times 1000 is
+        // exact in double precision.
+        let thousandths = |value: f32| (f64::from(value) * 1000.0).round_ties_even();
+        let again = |value: f32, at: f32| {
+            let local = (thousandths(value) / 1000.0) as f32;
+            thousandths(local + at) as i64 * 1000
+        };
+        Point2 {
+            x: again(rx, self.at.0),
+            y: again(ry, self.at.1),
+        }
+    }
+}
+
 /// Plans the tower for a print whose layers are `heights` mm thick.
 /// `changes` has, for each layer, its tool changes in order: for each,
 /// how the filament put away is rammed, or none when it is not. Every
@@ -1377,14 +1431,39 @@ pub fn plan_changes(
         most = most.max(used_at(span, layer));
         deep[layer] = most;
     }
+    // The tower is turned end for end on every other layer, about its
+    // middle (WipeTower2.cpp `generate`: `m_internal_rotation += 180`
+    // before each layer, starting from 0, so the first layer is turned;
+    // `WipeTowerWriter2::rotate`). Everything a layer lays is planned
+    // unturned, as there, and turned as it is placed: its blocks, rams,
+    // gaps and the nozzle's way in, its fill, wall and brim. The
+    // reference turns by a sum of 180s in single precision, a few
+    // micrometres off on a tall tower; here the turn is exact.
+    let depth = shape.blocks + line;
+    let turned = |layer: usize| layer.is_multiple_of(2);
+    let turn = |turned: bool, (x, y): (f64, f64)| {
+        if turned {
+            (span - x, depth - y)
+        } else {
+            (x, y)
+        }
+    };
     // The tower stands where the wall of its first layer, ribs and all,
-    // has its corner on the place set (`set_rib_offset`).
+    // turned as it is laid, has its corner on the place set
+    // (`set_rib_offset`).
     let first_wall = shape.wall(heights[0], deep[0])?;
     let corner = first_wall
         .iter()
+        .map(|p| turn(turned(0), *p))
         .fold((f64::MAX, f64::MAX), |(x, y), p| (x.min(p.0), y.min(p.1)));
-    let place =
-        |x: f64, y: f64| Point2::from_mm(settings.x - corner.0 + x, settings.y - corner.1 + y);
+    let frame = Frame {
+        span: span as f32,
+        depth: depth as f32,
+        offset: (-corner.0 as f32, -corner.1 as f32),
+        at: (settings.x as f32, settings.y as f32),
+    };
+    // A point of layer `layer`'s, planned in its frame `lift` mm up.
+    let place_turned = |layer: usize, lift: f64, x: f64, y: f64| frame.place(layer, lift, x, y);
 
     // The layers the tower is laid on: every one up to the last tool
     // change, or with the layers that have none left out, only those that
@@ -1428,9 +1507,11 @@ pub fn plan_changes(
             part: 0,
         };
         let per_mm = |width: f64| height * (width - height * (1.0 - PI / 4.0));
-        // What the layer lays is measured from its own front.
+        // What the layer lays is measured from its own front, and turned
+        // with the layer.
         let blocks = deep[layer];
         let lift = shape.lift(blocks);
+        let place = |x: f64, y: f64| place_turned(layer, lift, x, y);
         let at = |x: f64, y: f64| place(x, y + lift);
 
         // Tool changes take their blocks from the front
@@ -1445,7 +1526,7 @@ pub fn plan_changes(
         // `m_use_gap_wall`; not in WipeTower.cpp's).
         let iron = settings.wall_gap && !settings.bambu_tower;
         // Where each new nozzle comes in: which side, and how far back.
-        let mut ways_in: Vec<(bool, f64)> = Vec::with_capacity(changes[layer].len());
+        let mut ways_in: Vec<(bool, f64, Point2)> = Vec::with_capacity(changes[layer].len());
         for (index, change) in changes[layer].iter().enumerate() {
             let ram = &change.ram;
             let wide = line * settings.ram_ratio(change.old);
@@ -1553,7 +1634,11 @@ pub fn plan_changes(
                 };
                 end < span / 2.0
             };
-            ways_in.push((from_left, used + planned.ramming + line / 2.0 + staggered));
+            ways_in.push((
+                from_left,
+                used + planned.ramming + line / 2.0 + staggered,
+                at(line / 2.0, line / 2.0 + used),
+            ));
 
             // The new nozzle's rows, from side to side: until the block
             // is full where nothing was rammed, and otherwise until the
@@ -1576,8 +1661,16 @@ pub fn plan_changes(
             // `emit_planned_tool_change`: `cleaning_box.ld` and the depth
             // used before it), and the new nozzle moves to its first row
             // from there; a nozzle changed over the tower is changed there.
+            // On the way it goes where the unload leaves it, a line further
+            // back than the first row's start, and from there to that
+            // start (`toolchange_Unload` with `m_whole_row_wipe`, the move
+            // to the current position in `toolchange_Change`, and
+            // `emit_planned_tool_change`'s travel a line down).
             let mut wipe = if whole {
                 let mut wipe = Wipe::new(at(line / 2.0, line / 2.0 + used), wipe_flow);
+                let first_row = used + step - row / 2.0;
+                wipe.go(at(1.5 * line, first_row + line), None);
+                wipe.go(at(1.5 * line, first_row), None);
                 wipe.go(at(x, y), None);
                 wipe
             } else {
@@ -1764,18 +1857,27 @@ pub fn plan_changes(
                 .collect()
         };
         let mut gaps = Vec::new();
-        if settings.wall_gap {
-            for (block, (from_left, y)) in tower.layers[layer].changes.iter_mut().zip(&ways_in) {
+        for (block, (from_left, y, corner)) in tower.layers[layer].changes.iter_mut().zip(&ways_in)
+        {
+            // The nozzle comes in through the gap to a point level with
+            // it, a line in from the block's side on the gap's side, the
+            // column the block's first moves take (WipeTower2.cpp
+            // `emit_planned_tool_change`, `gap_entry`; GCode.cpp
+            // `travel_to_tower_gap`).
+            if settings.wall_gap {
                 let side = if *from_left { 0.0 } else { span };
-                let Some((along, (x, y))) = crossing(&wall, *from_left, side, *y + lift) else {
-                    continue;
-                };
-                gaps.push(along);
-                let out = if *from_left { -1.0 } else { 1.0 };
-                block.enter = vec![
-                    place(x + out * 3.0 * line, y),
-                    place(x - out * line / 2.0, y),
-                ];
+                if let Some((along, _)) = crossing(&wall, *from_left, side, *y + lift) {
+                    gaps.push(along);
+                    let inward = 1.5 * line;
+                    let x = if *from_left { inward } else { span - inward };
+                    block.enter = vec![place(x, *y + lift)];
+                }
+            }
+            // A ram starts from the block's corner, where the change
+            // starts (`toolchange_Unload`: the travel to
+            // `ramming_start_pos` from the change's start position).
+            if block.ram.is_some() {
+                block.enter.push(*corner);
             }
         }
         // The wall, whole or in pieces, known as the wall by its part
@@ -1956,15 +2058,21 @@ mod tests {
         let first = plan(&counts(&[1]), &[0.2], &settings).unwrap();
         let wipe = first.layers[0].changes[0].wipe.as_ref().unwrap();
         // The block starts in the corner of the space it cleans, half a
-        // line in (WipeTower2.cpp `cleaning_box.ld`), and goes to its
-        // first row from there.
-        let TowerStroke::Move(row, None) = wipe.strokes[0] else {
-            panic!("{:?}", wipe.strokes[0]);
+        // line in (WipeTower2.cpp `cleaning_box.ld`), goes where the
+        // unload leaves it, a line further in and a line back from its
+        // first row, and to that row (the first layer is turned end for
+        // end, so in from the other corner).
+        let (TowerStroke::Move(unload, None), TowerStroke::Move(row, None)) =
+            (wipe.strokes[0], wipe.strokes[1])
+        else {
+            panic!("{:?}", &wipe.strokes[..2]);
         };
-        let ahead = unscaled(row.x) - unscaled(wipe.start.x);
-        assert!(ahead > 0.0 && ahead < 2.0 * settings.width, "{ahead}");
-        let TowerStroke::Lay(_, speed) = wipe.strokes[1] else {
-            panic!("{:?}", wipe.strokes[1]);
+        let ahead = (unscaled(row.x) - unscaled(wipe.start.x)).abs();
+        assert!((ahead - 0.5).abs() < 1e-6, "{ahead}");
+        assert_eq!(unload.x, row.x);
+        assert!((unscaled(unload.y - row.y).abs() - 0.5).abs() < 1e-6);
+        let TowerStroke::Lay(_, speed) = wipe.strokes[2] else {
+            panic!("{:?}", wipe.strokes[2]);
         };
         assert_eq!((speed * 60.0).round(), (0.33f32 * 1800.0).round() as f64);
     }
@@ -2013,7 +2121,8 @@ mod tests {
         for (layer, change) in [(1, 0), (1, 1), (2, 0), (2, 1)] {
             let slot = (layer * 7 + change * 5) % 17;
             let hop = (slot as f64 * step).min(depth - 4.0 * 0.5);
-            let moved = unscaled(first_row(&b, layer, change) - first_row(&a, layer, change));
+            // Layer 2 is turned end for end: in from the back.
+            let moved = unscaled(first_row(&b, layer, change) - first_row(&a, layer, change)).abs();
             assert!(
                 (moved - hop).abs() < 1e-6,
                 "{layer} {change}: {moved} for {hop}"
@@ -2032,16 +2141,17 @@ mod tests {
         let change = &tower.layers[1].changes[0];
         let wipe = change.wipe.as_ref().unwrap();
         let x = |point: &Point2| unscaled(point.x);
-        // From the block's corner to its first row, and from there:
-        let TowerStroke::Move(row, None) = wipe.strokes[0] else {
-            panic!("{:?}", wipe.strokes[0]);
+        // From the block's corner, by where the unload leaves the nozzle,
+        // to its first row, and from there:
+        let TowerStroke::Move(row, None) = wipe.strokes[1] else {
+            panic!("{:?}", wipe.strokes[1]);
         };
         let start = x(&row);
         // 3 mm laid towards the far side, the filament pulled back, back
         // 4.5 mm at 600 mm/min and on 1.5 mm at 240, a square spiral of
         // two turns a line apart round where it is at 600 mm/min, then on
         // to 3 mm past it, the filament pushed on and the row laid.
-        let moves: Vec<(String, f64, f64)> = (wipe.strokes.iter().skip(1))
+        let moves: Vec<(String, f64, f64)> = (wipe.strokes.iter().skip(2))
             .map(|stroke| match stroke {
                 TowerStroke::Lay(to, speed) => ("lay".into(), x(to) - start, *speed * 60.0),
                 TowerStroke::Move(to, speed) => {
@@ -2093,17 +2203,74 @@ mod tests {
         let tower = plan(&counts(&[0, 1]), &[0.2; 2], &shut).unwrap();
         let strokes = &tower.layers[1].changes[0].wipe.as_ref().unwrap().strokes;
         assert!(matches!(strokes[0], TowerStroke::Move(_, None)));
+        assert!(matches!(strokes[1], TowerStroke::Move(_, None)));
         assert!(
-            strokes[1..]
+            strokes[2..]
                 .iter()
                 .all(|stroke| matches!(stroke, TowerStroke::Lay(..)))
         );
+    }
+
+    #[test]
+    fn the_tower_is_turned_end_for_end_on_alternate_layers() {
+        let settings = TowerSettings {
+            brim_width: 0.0,
+            wall_gap: false,
+            ..on()
+        };
+        let tower = plan(&counts(&[1, 1, 1]), &[0.2; 3], &settings).unwrap();
+        let start = |layer: usize| {
+            let at = tower.layers[layer].changes[0].wipe.as_ref().unwrap().start;
+            (unscaled(at.x), unscaled(at.y))
+        };
+        // The wall stands in the same place on every layer.
+        let walls: Vec<[f64; 4]> = (0..3).map(|layer| wall_extent(&tower, layer)).collect();
+        assert!(walls.windows(2).all(|pair| pair[0] == pair[1]), "{walls:?}");
+        let [min_x, min_y, max_x, max_y] = walls[0];
+        let middle = ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0);
+        // The first layer is turned (the reference adds 180° before each
+        // layer, from 0), the second is not, the third is again: the
+        // block starts in the corner across the tower from the last one.
+        let (a, b, c) = (start(0), start(1), start(2));
+        assert!(b.0 < middle.0 && b.1 < middle.1, "{b:?}");
+        for turned in [a, c] {
+            assert!(
+                (turned.0 + b.0 - 2.0 * middle.0).abs() < 2e-3,
+                "{turned:?} {b:?}"
+            );
+            assert!(
+                (turned.1 + b.1 - 2.0 * middle.1).abs() < 2e-3,
+                "{turned:?} {b:?}"
+            );
+        }
+        // Written to the micrometre in the tower's own frame, as there.
+        for layer in &tower.layers {
+            for path in layer
+                .finish
+                .iter()
+                .chain(layer.changes.iter().flat_map(|b| &b.lines))
+            {
+                assert!(
+                    path.points
+                        .iter()
+                        .all(|p| p.x % 1000 == 0 && p.y % 1000 == 0)
+                );
+            }
+        }
     }
 
     /// The wall on a layer of a tower with no brim above the bed: the
     /// last thing laid.
     fn wall_of(tower: &Tower, layer: usize) -> &ExtrusionPath {
         tower.layers[layer].finish.last().unwrap()
+    }
+
+    /// The box round the wall on a layer, all its pieces.
+    fn wall_extent(tower: &Tower, layer: usize) -> [f64; 4] {
+        extent(
+            (tower.layers[layer].finish.iter())
+                .filter(|path| path.part == ExtrusionPath::TOWER_WALL),
+        )
     }
 
     #[test]
@@ -2132,14 +2299,15 @@ mod tests {
         );
         // The wall is the same on every layer: as deep as the busiest
         // needs, its line's middle from the place set.
-        let wall = |layer: usize| extent([wall_of(&tower, layer)]);
+        let wall = |layer: usize| wall_extent(&tower, layer);
         assert_eq!(wall(1), wall(3));
         let [min_x, min_y, max_x, max_y] = wall(3);
         assert!((min_x - 100.0).abs() < 1e-6 && (min_y - 50.0).abs() < 1e-6);
         assert!((max_x - 130.0).abs() < 1e-6);
         let two_blocks = 2.0 * settings.block_depth(settings.width, 0.2, false) + 0.5;
+        // To the micrometre the tower's points are written to.
         assert!(
-            (max_y - min_y - two_blocks).abs() < 1e-6,
+            (max_y - min_y - two_blocks).abs() < 2e-3,
             "{} for {two_blocks}",
             max_y - min_y
         );
@@ -2162,10 +2330,12 @@ mod tests {
                 unscaled(line.points[0].x)
             })
             .collect();
+        // Right to left: layer 2 is turned end for end.
         assert!(
             columns
                 .windows(2)
-                .all(|pair| pair[1] > pair[0] && pair[1] - pair[0] <= 10.0)
+                .all(|pair| pair[1] < pair[0] && pair[0] - pair[1] <= 10.0),
+            "{columns:?}"
         );
         assert_eq!(columns.len(), 4);
         // Each starts at the end the last stopped at, so the nozzle
@@ -2191,9 +2361,10 @@ mod tests {
             .map(|p| unscaled(p.y))
             .collect();
         assert!(rows.len() > 10);
+        // Back to front: the first layer is turned end for end.
         assert!(
             rows.windows(2)
-                .all(|pair| (0.5..0.56).contains(&(pair[1] - pair[0]))),
+                .all(|pair| (0.5..0.56).contains(&(pair[0] - pair[1]))),
             "{rows:?}"
         );
         let [min_x, min_y, max_x, max_y] = extent(first);
@@ -2277,7 +2448,7 @@ mod tests {
         let [left, front, right, _] = extent(&tower.layers[1].changes[0].lines);
         let (box_left, box_right) = (left - 0.5, right + 0.5);
         // The first layer's wall has its corner on the place set.
-        let [min_x, min_y, max_x, _] = extent([wall_of(&tower, 0)]);
+        let [min_x, min_y, max_x, _] = wall_extent(&tower, 0);
         assert!((min_x - 100.0).abs() < 1e-3 && (min_y - 50.0).abs() < 1e-3);
         // Each rib reaches past the box by a share of its 4 mm and of
         // half its width, both along the diagonal.
@@ -2289,7 +2460,7 @@ mod tests {
         // the box.
         let mut last = past;
         for layer in 1..5 {
-            let [min_x, ..] = extent([wall_of(&tower, layer)]);
+            let [min_x, ..] = wall_extent(&tower, layer);
             let past = box_left - min_x;
             assert!(past < last && past >= 0.0, "layer {layer}: {past}");
             last = past;
@@ -2347,24 +2518,25 @@ mod tests {
             .collect();
         let laid: f64 = pieces.iter().map(|piece| piece.length_mm()).sum();
         assert!((wall.length_mm() - laid - 2.0 * 2.5).abs() < 1e-3, "{laid}");
-        // Each way in starts outside the wall, level with the block's
-        // first row and a quarter of a line below it, and ends inside.
+        // Each way in is to a point a line and a half in from the wall,
+        // level with the block's first row and a quarter of a line below
+        // it (WipeTower2.cpp `gap_entry`).
         let depth = settings.block_depth(settings.width, 0.2, false);
         for (index, block) in open.layers[1].changes.iter().enumerate() {
-            let [out, into] = block.enter[..] else {
-                panic!("two points on the way in")
+            let [into] = block.enter[..] else {
+                panic!("one point on the way in")
             };
-            assert!(unscaled(out.x) < 100.0 && unscaled(into.x) > 100.0);
+            assert!((unscaled(into.x) - 100.75).abs() < 1e-6);
             let level = 50.0 + index as f64 * depth + 0.25;
-            assert!((unscaled(out.y) - level).abs() < 1e-6 && out.y == into.y);
+            assert!((unscaled(into.y) - level).abs() < 1e-3);
             let first = block.lines[0].points[0];
-            assert!((unscaled(first.y) - level - 0.1).abs() < 1e-6);
+            assert!((unscaled(first.y) - level - 0.1).abs() < 1e-3);
             // No piece of wall lies across it.
             for piece in &pieces {
                 for pair in piece.points.windows(2) {
                     let on_left = unscaled(pair[0].x) < 100.001 && unscaled(pair[1].x) < 100.001;
                     let (low, high) = (pair[0].y.min(pair[1].y), pair[0].y.max(pair[1].y));
-                    assert!(!(on_left && low < out.y && out.y < high));
+                    assert!(!(on_left && low < into.y && into.y < high));
                 }
             }
         }
@@ -2429,7 +2601,7 @@ mod tests {
         assert_eq!(laid.lines.len(), 1);
         let line = &laid.lines[0];
         assert_eq!(line.flow.width, 1.0);
-        assert!((line.volume_mm3() - 0.5).abs() < 1e-6);
+        assert!((line.volume_mm3() - 0.5).abs() < 1e-3);
         assert!((line.length_mm() - 2.612).abs() < 1e-3);
         assert!((laid.speed - 104.48).abs() < 0.01, "{}", laid.speed);
         // It starts a line and a half in from the wall and its row is
@@ -2462,7 +2634,7 @@ mod tests {
         );
         assert!((without.depth() - 18.0 * 0.6).abs() < 1e-9);
         // The wall is as deep as that.
-        let [_, min_y, _, max_y] = extent([wall_of(&rammed, 1)]);
+        let [_, min_y, _, max_y] = wall_extent(&rammed, 1);
         assert!((max_y - min_y - with.depth() - 0.5).abs() < 1e-6);
     }
 
@@ -2482,7 +2654,7 @@ mod tests {
         let laid = block.ram.as_ref().unwrap();
         assert_eq!(laid.lines.len(), 3);
         let length: f64 = laid.lines.iter().map(ExtrusionPath::length_mm).sum();
-        assert!((length - 12.0 / (0.2 * (1.0 - 0.2 * (1.0 - PI / 4.0)))).abs() < 1e-6);
+        assert!((length - 12.0 / (0.2 * (1.0 - 0.2 * (1.0 - PI / 4.0)))).abs() < 5e-3);
         let rows: Vec<f64> = laid.lines.iter().map(|l| unscaled(l.points[0].y)).collect();
         assert!((rows[1] - rows[0] - 1.2).abs() < 1e-6 && (rows[2] - rows[1] - 1.2).abs() < 1e-6);
         // Out, back, and part of the way out again.
@@ -2598,7 +2770,7 @@ mod tests {
         let [left, _, right, _] = extent(&tower.layers[1].changes[0].lines);
         let span = right - left + 1.0;
         assert!(span < 20.0, "{span}");
-        let [min_x, _, max_x, _] = extent([wall_of(&tower, 0)]);
+        let [min_x, _, max_x, _] = wall_extent(&tower, 0);
         let shape = Shape {
             span,
             blocks: settings.block_depth(span, 0.2, false),
@@ -2907,7 +3079,7 @@ mod tests {
         assert!((135.0..135.0 * 1.1).contains(&laid(1)), "{}", laid(1));
         // The layer is as deep as the two blocks, each planned from its own.
         let depth = |volume: f64| settings.planned(30.0, 0.2, false, None, volume).depth();
-        let [_, front, _, back] = extent([wall_of(&tower, 1)]);
+        let [_, front, _, back] = wall_extent(&tower, 1);
         assert!((back - front - depth(45.0) - depth(135.0) - 0.5).abs() < 1e-6);
         assert!(depth(135.0) > 2.5 * depth(45.0));
         // Given prime_volume each, it is the tower plan() makes.

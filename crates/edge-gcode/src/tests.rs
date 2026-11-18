@@ -2873,7 +2873,8 @@ fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
     let mut slow = line((43.35, 41.1), (60.0, 41.1), Role::PrimeLine);
     slow.flow = Flow::new(0.5, 0.2, 0.4).unwrap();
     let tower = [slow];
-    let enter = [Point2::from_mm(38.5, 41.45), Point2::from_mm(40.25, 41.45)];
+    // In through the gap to a point inside, then to the block's corner.
+    let enter = [Point2::from_mm(40.25, 41.45), Point2::from_mm(39.75, 40.25)];
     let plan = [
         one_layer(&loops, &[0..1], &[])[0],
         Layer {
@@ -2902,6 +2903,14 @@ fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
     // own width and speed, and with as much plastic as the line holds.
     let laid = at("G1 X43.350 Y40.850 E");
     assert!(laid < change);
+    // It comes in through the gap and by the block's corner to the ram's
+    // start (WipeTower2.cpp `toolchange_Unload`).
+    let (gap, corner, start) = (
+        at("G1 X40.250 Y41.450"),
+        at("G1 X39.750 Y40.250"),
+        at("G1 X40.750 Y40.850"),
+    );
+    assert!(gap < corner && corner < start && start < laid);
     let rammed = text.lines().nth(laid).unwrap();
     assert_eq!(word(rammed, 'F'), Some(104.0 * 60.0));
     let volume = 2.6 * 0.2 * (1.0 - 0.2 * (1.0 - std::f64::consts::FRAC_PI_4));
@@ -2926,7 +2935,7 @@ fn a_rammed_filament_is_laid_by_the_tool_being_put_away() {
     // `append_tcr2` routes only a tool changed where it was).
     let first = at("G1 X60.000 Y41.100 E");
     assert!(change < first);
-    assert!(!text.contains("G1 X38.500 Y41.450") && !text.contains("G1 X40.250 Y41.450"));
+    assert_eq!(text.matches("G1 X40.250 Y41.450").count(), 1);
     // The old tool's count has the ram in it.
     let (_, summary) = (0, write_tools(&mut Vec::new(), &plan, &settings).unwrap());
     assert!(summary.filament_mm3 > volume);

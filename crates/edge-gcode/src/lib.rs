@@ -2463,8 +2463,16 @@ impl Writer<'_> {
                         speed: ram.speed,
                         ..self.motion(line.role, &line.flow, self.state.first_layer)
                     };
+                    // In through the gap in the wall and to the block's
+                    // corner, then to where the ram starts (GCode.cpp
+                    // `append_tcr2`, `travel_to_tower_gap`;
+                    // WipeTower2.cpp `toolchange_Unload`).
                     if index == 0 {
-                        self.tower_route(line.points[0], self.state.position)?;
+                        let first = enter.first().copied().unwrap_or(line.points[0]);
+                        self.tower_route(first, self.state.position)?;
+                        for point in enter {
+                            self.travel(*point, false, None)?;
+                        }
                     }
                     self.travel(line.points[0], false, None)?;
                     if index == 0
