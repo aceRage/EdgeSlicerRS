@@ -141,7 +141,7 @@ pub struct Box2 {
 }
 
 impl Box2 {
-    fn new(left: f32, bottom: f32, width: f32, height: f32) -> Self {
+    pub(crate) fn new(left: f32, bottom: f32, width: f32, height: f32) -> Self {
         Self {
             left,
             bottom,
@@ -1076,7 +1076,7 @@ impl Plan {
     }
 
     /// `align_perimeter`: the wall's front and back on the row grid.
-    fn align_perimeter(&self, area: Box2, y_shift: f32) -> Box2 {
+    pub(crate) fn align_perimeter(&self, area: Box2, y_shift: f32) -> Box2 {
         let pw = self.line_width;
         let spacing = self.extra_spacing * pw;
         let up = (align_ceil(area.top - pw, spacing) + pw).min(self.depth);
@@ -1091,44 +1091,24 @@ impl Plan {
     /// The ribbed wall round `area` on a layer whose top is `z`, in the
     /// tower's frame before the layer's y shift (`generate_rib_polygon`,
     /// `rib_wall_polygon`).
-    fn rib_wall(
+    pub(crate) fn rib_wall(
         &self,
         ribs: &Ribs,
         area: &Box2,
         y_shift: f32,
         z: f32,
     ) -> Result<Vec<(f64, f64)>, ClipError> {
-        let (a, b) = (f64::from(self.width), f64::from(self.depth));
-        let diagonal = a.hypot(b);
-        let over = (ribs.length - diagonal as f32).max(0.0) / 2.0;
-        let over = f64::from((self.height - z).abs() / self.height * over);
-        let half = f64::from(ribs.width) / 2.0;
-        let shift = f64::from(y_shift);
-        let mut shapes = Vec::with_capacity(3);
-        for (from, to) in [((0.0, 0.0), (a, b)), ((a, 0.0), (0.0, b))] {
-            let along = ((to.0 - from.0) / diagonal, (to.1 - from.1) / diagonal);
-            let start = (from.0 - along.0 * over, from.1 - along.1 * over - shift);
-            let end = (to.0 + along.0 * over, to.1 + along.1 * over - shift);
-            let across = (-along.1 * half, along.0 * half);
-            shapes.push(region(&[
-                (start.0 + across.0, start.1 + across.1),
-                (start.0 - across.0, start.1 - across.1),
-                (end.0 - across.0, end.1 - across.1),
-                (end.0 + across.0, end.1 + across.1),
-            ]));
-        }
-        let plain = [
-            (f64::from(area.left), f64::from(area.bottom)),
-            (f64::from(area.right), f64::from(area.bottom)),
-            (f64::from(area.right), f64::from(area.top)),
-            (f64::from(area.left), f64::from(area.top)),
-        ];
-        shapes.push(region(&plain));
-        let ribbed = crate::outline_of(&shapes)?;
-        if !ribs.fillet {
-            return Ok(ribbed);
-        }
-        crate::outline_of(&[region(&crate::rounded(&ribbed)), region(&plain)])
+        let ring = rib_polygon(
+            ribs,
+            area,
+            (self.width, self.depth, self.height),
+            y_shift,
+            z,
+        )?;
+        Ok(ring
+            .iter()
+            .map(|p| (unscaled(p.x), unscaled(p.y)))
+            .collect())
     }
 
     /// `set_rib_offset`: the box round the first deep enough layer's wall,
@@ -1259,6 +1239,198 @@ impl Plan {
         }
         (count, top)
     }
+}
+
+/// `coord_t(v / SCALING_FACTOR)` in single precision (`scaled<coord_t>`
+/// of a float).
+fn scaled_f32(v: f32) -> i64 {
+    (v / 1e-6f32) as i64
+}
+
+/// `coord_t(scale_(v))`: in double precision, cut towards zero
+/// (`Point::new_scale`).
+fn new_scale(v: f32) -> i64 {
+    (f64::from(v) / 1e-6) as i64
+}
+
+fn pt(x: i64, y: i64) -> edge_geom::Point2 {
+    edge_geom::Point2 { x, y }
+}
+
+fn area_of(points: Vec<edge_geom::Point2>) -> ExPolygon {
+    ExPolygon {
+        contour: edge_geom::Polygon { points },
+        holes: Vec::new(),
+    }
+}
+
+/// The ribbed wall of a layer whose top is `z`, round `area` (WipeTower.cpp
+/// `generate_rib_polygon` and `rib_wall_polygon`), worked in the reference's
+/// coordinate units and with its roundings, so that the outline has the
+/// reference's corners.
+fn rib_polygon(
+    ribs: &Ribs,
+    area: &Box2,
+    (width, depth, height): (f32, f32, f32),
+    y_shift: f32,
+    z: f32,
+) -> Result<Vec<edge_geom::Point2>, ClipError> {
+    let half = scaled_f32(ribs.width) / 2;
+    let lines = [
+        (
+            pt(new_scale(0.0), new_scale(0.0)),
+            pt(new_scale(width), new_scale(depth)),
+        ),
+        (
+            pt(new_scale(width), new_scale(0.0)),
+            pt(new_scale(0.0), new_scale(depth)),
+        ),
+    ];
+    let length = {
+        let (a, b) = lines[0];
+        ((b.x - a.x) as f64).hypot((b.y - a.y) as f64)
+    };
+    let over = (ribs.length - (length * 1e-6) as f32).max(0.0) / 2.0;
+    let over = (height - z).abs() / height * over;
+    let over = scaled_f32(over) as f32;
+    let shift = scaled_f32(y_shift);
+    let mut shapes = Vec::with_capacity(3);
+    for (mut a, mut b) in lines {
+        // `Line::extend`, then `translate(-y_shift)`.
+        let (vx, vy) = ((b.x - a.x) as f64, (b.y - a.y) as f64);
+        let norm = vx.hypot(vy);
+        let ov = (
+            (f64::from(over) * vx / norm) as i64,
+            (f64::from(over) * vy / norm) as i64,
+        );
+        a = pt(a.x - ov.0, a.y - ov.1 - shift);
+        b = pt(b.x + ov.0, b.y + ov.1 - shift);
+        // `generate_rectange`.
+        let (dx, dy) = ((b.x - a.x) as f64, (b.y - a.y) as f64);
+        let l = (dx * dx + dy * dy).sqrt();
+        let (ux, uy) = (dx / l, dy / l);
+        let (ox, oy) = (-uy * half as f64, ux * half as f64);
+        let round = |x: f64| x.round() as i64;
+        shapes.push(area_of(vec![
+            pt(round(a.x as f64 + ox), round(a.y as f64 + oy)),
+            pt(round(a.x as f64 - ox), round(a.y as f64 - oy)),
+            pt(round(b.x as f64 - ox), round(b.y as f64 - oy)),
+            pt(round(b.x as f64 + ox), round(b.y as f64 + oy)),
+        ]));
+    }
+    shapes.push(area_of(vec![
+        pt(new_scale(area.left), new_scale(area.bottom)),
+        pt(new_scale(area.right), new_scale(area.bottom)),
+        pt(new_scale(area.right), new_scale(area.top)),
+        pt(new_scale(area.left), new_scale(area.top)),
+    ]));
+    let first = |regions: Vec<ExPolygon>| {
+        regions
+            .into_iter()
+            .next()
+            .map(|r| r.contour.points)
+            .unwrap_or_default()
+    };
+    let ribbed = first(edge_clip::union_ex(&shapes)?);
+    if !ribs.fillet {
+        return Ok(ribbed);
+    }
+    // `generate_rectange_polygon`: the box again, scaled in single
+    // precision.
+    let plain = area_of(vec![
+        pt(scaled_f32(area.left), scaled_f32(area.bottom)),
+        pt(scaled_f32(area.right), scaled_f32(area.bottom)),
+        pt(scaled_f32(area.right), scaled_f32(area.top)),
+        pt(scaled_f32(area.left), scaled_f32(area.top)),
+    ]);
+    Ok(first(edge_clip::union_ex(&[
+        area_of(rounding_polygon(&ribbed)),
+        plain,
+    ])?))
+}
+
+/// WipeTower.cpp `rounding_polygon`: every corner turning between 30 and
+/// 150 degrees replaced by an arc of 20 points tangent to both sides 2 mm
+/// from it, or less on a short side.
+fn rounding_polygon(points: &[edge_geom::Point2]) -> Vec<edge_geom::Point2> {
+    const ROUNDING: f64 = 2.0;
+    const PIECES: i32 = 20;
+    let n = points.len();
+    if n < 3 {
+        return points.to_vec();
+    }
+    let tolerance = (30.0f64 / 180.0 * std::f64::consts::PI).cos().abs();
+    let mm = |p: edge_geom::Point2| (p.x as f64 * 1e-6, p.y as f64 * 1e-6);
+    let to_units = |v: (f64, f64)| pt((v.0 / 1e-6) as i64, (v.1 / 1e-6) as i64);
+    let mut out: Vec<edge_geom::Point2> = Vec::with_capacity(n * 2);
+    for i in 0..n {
+        let (a, b, c) = (
+            mm(points[(i + n - 1) % n]),
+            mm(points[i]),
+            mm(points[(i + 1) % n]),
+        );
+        let ab_len = (a.0 - b.0).hypot(a.1 - b.1);
+        let bc_len = (b.0 - c.0).hypot(b.1 - c.1);
+        let ab = ((b.0 - a.0) / ab_len, (b.1 - a.1) / ab_len);
+        let bc = ((c.0 - b.0) / bc_len, (c.1 - b.1) / bc_len);
+        let cos = ((ab.0 * bc.0 + ab.1 * bc.1) as f32).clamp(-1.0, 1.0);
+        let ccw = ab.0 * bc.1 - ab.1 * bc.0 > 0.0;
+        if f64::from(cos.abs()) < tolerance {
+            let reach = ROUNDING.min(ab_len / 2.1).min(bc_len / 2.1) as f32;
+            let reach_d = f64::from(reach);
+            let left = (b.0 - ab.0 * reach_d, b.1 - ab.1 * reach_d);
+            let right = (b.0 + bc.0 * reach_d, b.1 + bc.1 * reach_d);
+            let half_angle = cos.acos() / 2.0;
+            let (dx, dy) = (right.0 - left.0, right.1 - left.1);
+            let l = dx.hypot(dy);
+            let mut dir = (-dy / l, dx / l);
+            if !ccw {
+                dir = (-dir.0, -dir.1);
+            }
+            let away = f64::from(reach) / f64::from(half_angle.sin());
+            let center = (b.0 + dir.0 * away, b.1 + dir.1 * away);
+            let radius = (left.0 - center.0).hypot(left.1 - center.1);
+            // `ArcSegment` on the scaled centre, radius and ends.
+            let c_u = to_units(center);
+            let r_u = (radius / 1e-6) as i64 as f64;
+            let (l_u, r_end) = (to_units(left), to_units(right));
+            let polar = |p: edge_geom::Point2| {
+                let t = ((p.y - c_u.y) as f64).atan2((p.x - c_u.x) as f64);
+                if t < 0.0 {
+                    2.0 * std::f64::consts::PI + t
+                } else {
+                    t
+                }
+            };
+            let (start, end) = (polar(l_u), polar(r_end));
+            let mut angle = end - start;
+            if angle < 0.0 && ccw {
+                angle += 2.0 * std::f64::consts::PI;
+            } else if angle > 0.0 && !ccw {
+                angle -= 2.0 * std::f64::consts::PI;
+            }
+            for j in 0..PIECES {
+                let mut cur = (start + f64::from(j as f32 / PIECES as f32) * angle) as f32;
+                if cur > 2.0 * std::f32::consts::PI {
+                    cur -= 2.0 * std::f32::consts::PI;
+                } else if cur < 0.0 {
+                    cur += 2.0 * std::f32::consts::PI;
+                }
+                out.push(pt(
+                    c_u.x + (r_u * f64::from(cur.cos())).round() as i64,
+                    c_u.y + (r_u * f64::from(cur.sin())).round() as i64,
+                ));
+            }
+            out.push(r_end);
+        } else {
+            out.push(points[i]);
+        }
+    }
+    out.dedup();
+    if out.len() > 1 && out.first() == out.last() {
+        out.pop();
+    }
+    out
 }
 
 fn bounds(points: impl Iterator<Item = (f64, f64)>) -> [f64; 4] {

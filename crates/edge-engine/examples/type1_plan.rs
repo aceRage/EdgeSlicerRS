@@ -81,14 +81,83 @@ fn layers_of(text: &str) -> (Vec<type1::LayerIn>, Option<usize>) {
     (layers, first_tool)
 }
 
+/// The laid tower as a G-code file holds it, for a G-code reader: each
+/// layer's visits moved to the tower's place (GCode.cpp
+/// `post_process_wipe_tower_moves`), the change G-code as a bare `T`, a
+/// travel to where each visit and each purge starts (`append_tcr`), and a
+/// line of something else before each visit, as the objects' lines are in
+/// a whole file.
+fn pseudo_gcode(plan: &type1::Plan, visits: &[Vec<type1::Visit>]) -> String {
+    let (ox, oy) = plan.origin;
+    let mut out = format!("M83\nT{}\n", plan.start_tool);
+    let moved = |line: &str| -> String {
+        let mut words: Vec<String> = Vec::new();
+        for word in line.split_whitespace() {
+            let value = |w: &str| w[1..].parse::<f32>().unwrap_or(0.0);
+            match word.as_bytes()[0] {
+                b'X' => words.push(format!("X{:.3}", value(word) + ox)),
+                b'Y' => words.push(format!("Y{:.3}", value(word) + oy)),
+                _ => words.push(word.to_owned()),
+            }
+        }
+        words.join(" ")
+    };
+    for (index, layer) in visits.iter().enumerate() {
+        if layer.is_empty() {
+            continue;
+        }
+        if plan.skip_sparse && plan.layers[index].changes.is_empty() {
+            continue;
+        }
+        let planned = &plan.layers[index];
+        out += &format!(
+            "; CHANGE_LAYER\n; Z_HEIGHT: {}\n; LAYER_HEIGHT: {}\n",
+            planned.z, planned.height
+        );
+        for visit in layer {
+            out += "; FEATURE: Outer wall\nG1 X1 Y1 F6000\nG1 X1.5 Y1 E0.01\n";
+            out += &format!(
+                "G1 X{:.3} Y{:.3}\n",
+                visit.start_pos.0 + ox,
+                visit.start_pos.1 + oy
+            );
+            for line in visit.gcode.lines() {
+                if line == "[change_filament_gcode]" {
+                    out += &format!("T{}\n", visit.new_tool);
+                    out += &format!(
+                        "G1 X{:.3} Y{:.3}\n",
+                        visit.tool_change_start_pos.0 + ox,
+                        visit.tool_change_start_pos.1 + oy
+                    );
+                } else if line.starts_with("G1 ")
+                    || line.starts_with("G2 ")
+                    || line.starts_with("G3 ")
+                {
+                    out += &moved(line);
+                    out += "\n";
+                } else if !line.starts_with('[') {
+                    out += line;
+                    out += "\n";
+                }
+            }
+        }
+    }
+    out
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut args = std::env::args().skip(1);
     let project = PathBuf::from(args.next().ok_or("PROJECT.3mf GCODE [--plate N]")?);
     let gcode = PathBuf::from(args.next().ok_or("PROJECT.3mf GCODE [--plate N]")?);
     let mut plate = None;
+    let mut lines_out: Option<PathBuf> = None;
+    let mut reference_ramp = false;
     while let Some(arg) = args.next() {
-        if arg == "--plate" {
-            plate = Some(args.next().ok_or("--plate N")?.parse::<u32>()?);
+        match arg.as_str() {
+            "--plate" => plate = Some(args.next().ok_or("--plate N")?.parse::<u32>()?),
+            "--lines" => lines_out = Some(PathBuf::from(args.next().ok_or("--lines OUT")?)),
+            "--reference-ramp" => reference_ramp = true,
+            _ => return Err(format!("unknown argument {arg}").into()),
         }
     }
     let overrides = Overrides::default();
@@ -122,6 +191,16 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let text = std::fs::read_to_string(&gcode)?;
     let (layers, first_tool) = layers_of(&text);
     let plan = type1::plan(&settings, &layers, first_tool.unwrap_or(0))?;
+    if let Some(out) = &lines_out {
+        let visits = type1::lay(
+            &plan,
+            &settings,
+            type1::LayOptions {
+                reference_speed_ramp: reference_ramp,
+            },
+        )?;
+        std::fs::write(out, pseudo_gcode(&plan, &visits))?;
+    }
 
     let (count, top) = plan.laid_layers();
     let mut all = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
