@@ -14,6 +14,7 @@
 /// walls with as well.
 pub mod arc;
 mod avoid;
+mod bambu_tower;
 mod bambu_vars;
 pub mod calib;
 mod calib_draw;
@@ -55,6 +56,7 @@ use edge_geom::{ExPolygon, Point2, scaled, unscaled};
 use edge_template::{TemplateError, Value, Variables, stream_double};
 use rayon::prelude::*;
 
+pub use bambu_tower::TowerVisit;
 pub use calib::{
     AdvanceFirmware, Calibration, CalibrationKind, Corner, JerkForm, ShaperFirmware, StringingGrid,
 };
@@ -166,6 +168,10 @@ pub struct Layer<'a> {
     /// layer: the tower's first layer, with the layers below it left out
     /// (WipeTower2.cpp `finish_layer`).
     pub tower_first: bool,
+    /// On Bambu's tower (edge-tower `type1`): the tower's visits this part
+    /// starts with, as its writer wrote them, in place of `ram`, `wipe` and
+    /// `tower` (GCode.cpp `append_tcr`, once for each).
+    pub visits: &'a [TowerVisit],
     /// Loops laid before the part on this layer, in order: skirt and brim.
     pub around: &'a [ExtrusionLoop],
     /// Support lines, printed before the part so it has them to rest on.
@@ -1560,6 +1566,9 @@ struct State {
     /// writer's comments (WipeTower.cpp `tool_change`), which its block
     /// closes.
     framing: bool,
+    /// Where a change on Bambu's tower leaves the head for its template:
+    /// where the purge starts (`tool_change_start_pos`).
+    after_change: Option<Point2>,
     /// Whether the layer being written has had its timelapse picture.
     pictured: bool,
     /// With a farthest-point timelapse, where the layer reaches farthest
@@ -2148,9 +2157,12 @@ impl Writer<'_> {
         let area = |s: &PrintSettings| PI * (s.filament_diameter / 2.0).powi(2);
         // How fast a filament can be fed, in mm/min, as the reference
         // offers it to templates.
+        // Both through the new filament's cross-section, the old one's
+        // too, as there (and in Bambu Studio's own `append_tcr` and
+        // `set_extruder`): the same where the filaments are alike.
         let feedrate = |s: Option<&PrintSettings>, missing: i64| match s {
             Some(s) if s.filament_max_volumetric_speed > 0.0 => {
-                (60.0 * s.filament_max_volumetric_speed / area(s)) as i64
+                (60.0 * s.filament_max_volumetric_speed / area(new_settings)) as i64
             }
             Some(_) => 100,
             None => missing,
@@ -2158,7 +2170,8 @@ impl Writer<'_> {
         let whole = |value: f64| Value::Int(value.round() as i64);
         let position = self
             .state
-            .position
+            .after_change
+            .or(self.state.position)
             .map_or((0.0, 0.0), |at| (self.gcode_x(at), self.gcode_y(at)));
         let height = self.state.height.unwrap_or(z + self.z_offset);
         // Every change so far and this one, the print's first taking up
@@ -2304,13 +2317,17 @@ impl Writer<'_> {
             (new_settings.change_filament_gcode.as_ref()).filter(|_| !(manual && count == 1));
         let swapped = match template {
             Some(template) => {
-                let text =
-                    edge_template::expand_mut(template, &mut self.variables).map_err(|source| {
-                        GcodeError::Template {
-                            name: "change_filament_gcode",
-                            source,
-                        }
-                    })?;
+                // A list named without an index is the new filament's
+                // entry, as the reference fills the change G-code in for
+                // it (GCode.cpp `append_tcr`, `set_extruder`:
+                // `placeholder_parser_process(..., new_extruder_id)`).
+                self.variables.set_extruder(Some(to as i64));
+                let expanded = edge_template::expand_mut(template, &mut self.variables);
+                self.variables.set_extruder(None);
+                let text = expanded.map_err(|source| GcodeError::Template {
+                    name: "change_filament_gcode",
+                    source,
+                })?;
                 writeln!(self.out, "; custom gcode start")?;
                 self.state.flushed.read(&text, self.all);
                 self.out.write_all(text.as_bytes())?;
@@ -3340,7 +3357,7 @@ impl Writer<'_> {
         // has its timelapse picture before the first tool's.
         let towered_layer = parts
             .iter()
-            .any(|part| !part.tower.is_empty() || part.wipe.is_some());
+            .any(|part| !part.tower.is_empty() || part.wipe.is_some() || !part.visits.is_empty());
         let traditional = matches!(&self.settings.time_lapse, Some((_, Timelapse::Traditional)));
         // A farthest-point picture is taken the moment the nozzle gets
         // there ([`Self::lay`]); on a layer with nothing to measure from,
@@ -3356,7 +3373,7 @@ impl Writer<'_> {
         for (offset, layer) in parts.iter().enumerate() {
             if traditional
                 && !self.state.pictured
-                && (!layer.tower.is_empty() || layer.wipe.is_some())
+                && (!layer.tower.is_empty() || layer.wipe.is_some() || !layer.visits.is_empty())
             {
                 self.timelapse(layer.z)?;
             }
@@ -3375,14 +3392,24 @@ impl Writer<'_> {
             // before the move to the tower and after the tower). The
             // first move with a tool just taken up starts from nowhere
             // known and goes straight, here as there.
-            let towered = layer.filament != self.state.tool || !layer.tower.is_empty();
+            let towered = layer.filament != self.state.tool
+                || !layer.tower.is_empty()
+                || !layer.visits.is_empty();
             if towered {
                 self.state.routing.kind = Kind::Outside;
             }
             // Where the tower stands lower than the layer, what is laid
             // on it is laid down there.
             let low = layer.tower_z.filter(|tower| *tower < layer.z - 1e-6);
-            if layer.filament != self.state.tool {
+            if !layer.visits.is_empty() {
+                for visit in layer.visits {
+                    if visit.tool_change && layer.filament != self.state.tool {
+                        self.interface_fan(None)?;
+                    }
+                    self.bambu_visit(layer, visit, index, cursor + offset, low)?;
+                    self.state.framing = false;
+                }
+            } else if layer.filament != self.state.tool {
                 let over = (layer.wipe.map(|wipe| wipe.start)).or_else(|| {
                     layer
                         .tower

@@ -89,6 +89,7 @@ fn layer<'a>(
         tower: &[],
         tower_z: None,
         tower_first: false,
+        visits: &[],
         around: &[],
         support: &[],
         loops,

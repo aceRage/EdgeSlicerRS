@@ -573,7 +573,7 @@ fn the_nozzle_is_below_the_layer_only_over_the_tower() {
         "0.20mm SPEED @MK4 MMU3 0.4",
         "Generic PLA @Prusa MK4 MMU3",
     );
-    let cases: [(&str, &Chosen, &str); 8] = [
+    let cases: [(&str, &Chosen, &str); 7] = [
         // A multi-tool printer that rams the filament put away on the
         // tower, as the U1 is shipped.
         ("rammed", &u1, r#""tool_change_on_wipe_tower": "0""#),
@@ -614,8 +614,8 @@ fn the_nozzle_is_below_the_layer_only_over_the_tower() {
                 "before_layer_change_gcode": "; before the layer change",
                 "layer_change_gcode": "; layer change""#,
         ),
-        // Bambu's tower on a multi-tool printer and on a Bambu Lab one.
-        ("Bambu tower", &u1, r#""wipe_tower_type": "type1""#),
+        // Bambu's tower on a Bambu Lab printer (on a multi-tool one it is
+        // refused until nozzle grouping is planned).
         ("Bambu Lab X1 Carbon", &x1c, ""),
     ];
     let models = [("bands", bands(dir.path())), ("halves", halves(dir.path()))];
@@ -728,8 +728,12 @@ fn tool_change_on_wipe_tower_says_where_an_unrammed_tool_is_changed() {
     for (_, over, low) in at_tower {
         assert!(!over && !low, "changed over the tower");
     }
-    // Where the tool is rammed, on one nozzle and on Bambu's tower the
-    // setting changes nothing but its own line in the file.
+    // Bambu's tower is not planned for printers of more than one nozzle
+    // yet, and says so.
+    let refused = slice(&model, &set(r#", "wipe_tower_type": "type1""#, true)).unwrap_err();
+    assert!(refused.contains("more than one nozzle"), "{refused}");
+    // Where the tool is rammed, and on one nozzle, the setting changes
+    // nothing but its own line in the file.
     let without = |gcode: &str| {
         gcode
             .lines()
@@ -740,7 +744,6 @@ fn tool_change_on_wipe_tower_says_where_an_unrammed_tool_is_changed() {
     for extra in [
         "",
         r#", "single_extruder_multi_material": "1", "enable_filament_ramming": "0""#,
-        r#", "filament_multitool_ramming": ["0", "0"], "wipe_tower_type": "type1""#,
     ] {
         let off = slice(&model, &set(extra, false)).unwrap();
         let on = slice(&model, &set(extra, true)).unwrap();

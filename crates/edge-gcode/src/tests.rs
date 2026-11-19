@@ -78,6 +78,7 @@ fn one_layer<'a>(
         tower: &[],
         tower_z: None,
         tower_first: false,
+        visits: &[],
         around: &[],
         support: &[],
         loops,
@@ -650,6 +651,7 @@ fn speeds_follow_role_layer_and_the_melt_limit() {
             tower: &[],
             tower_z: None,
             tower_first: false,
+            visits: &[],
             around: &[],
             support: &[],
             loops: &loops,
@@ -669,6 +671,7 @@ fn speeds_follow_role_layer_and_the_melt_limit() {
             tower: &[],
             tower_z: None,
             tower_first: false,
+            visits: &[],
             around: &[],
             support: &[],
             loops: &loops,
@@ -738,6 +741,7 @@ fn temperatures_change_after_the_first_layer() {
         tower: &[],
         tower_z: None,
         tower_first: false,
+        visits: &[],
         around: &[],
         support: &[],
         loops: &loops,
@@ -852,6 +856,7 @@ fn moves_inside_the_shelter_can_skip_retraction() {
         tower: &[],
         tower_z: None,
         tower_first: false,
+        visits: &[],
         around: &[],
         support: &[],
         loops: &[],
@@ -1315,6 +1320,7 @@ fn printed_with_summary(count: usize, settings: &PrintSettings) -> (String, Summ
             tower: &[],
             tower_z: None,
             tower_first: false,
+            visits: &[],
             around: &[],
             support: &[],
             loops: &loops,
@@ -3057,6 +3063,7 @@ fn wall_over_a_smaller_plate(settings: &PrintSettings, measured: bool) -> String
         tower: &[],
         tower_z: None,
         tower_first: false,
+        visits: &[],
         around: &[],
         support: &[],
         loops,
@@ -3804,6 +3811,7 @@ fn round_wall_over_a_round_plate(settings: &PrintSettings, out: f64) -> (usize, 
         tower: &[],
         tower_z: None,
         tower_first: false,
+        visits: &[],
         around: &[],
         support: &[],
         loops,
@@ -3890,6 +3898,7 @@ fn a_speed_within_one_mm_a_second_of_the_last_is_not_written() {
         tower: &[],
         tower_z: None,
         tower_first: false,
+        visits: &[],
         around: &[],
         support: &[],
         loops,
@@ -4373,6 +4382,82 @@ fn the_way_to_the_cutter_goes_round_the_objects() {
         change_path(&basic()),
         [[54.0, 0.0], [54.0, 0.0], [54.0, 245.0]]
     );
+}
+
+#[test]
+fn bambus_tower_visit_is_written_where_the_tower_stands_with_the_change_in_its_place() {
+    // A visit as edge-tower's `type1` writes it: the old filament's wall,
+    // then the change at its placeholders, then the purge (GCode.cpp
+    // `append_tcr`, `post_process_wipe_tower_moves`).
+    let at = |x: f64, y: f64| Point2::from_mm(x, y);
+    let tool = |filament: &str| {
+        let mut tool = PrintSettings {
+            bambu_tower: true,
+            prime_tower: true,
+            single_nozzle: true,
+            tools: 1,
+            filament_end_gcode: Some("; filament end gcode".into()),
+            filament_start_gcode: Some("; filament start gcode".into()),
+            change_filament_gcode: Some(
+                "M620 S[next_extruder]A\nT[next_extruder]\n; after X[x_after_toolchange] Y[y_after_toolchange]".into(),
+            ),
+            ..bambu(&[("start", "PRINT_START")])
+        };
+        tool.variables.set_list(
+            "filament_type",
+            vec![Value::text("PLA"), Value::text(filament)],
+        );
+        tool
+    };
+    let visit = TowerVisit {
+        gcode: "; FEATURE: Prime tower\n; WIPE_TOWER_START\nG1 X1.000 Y1.000\nG1 X5.000 Y1.000 E0.2000 F3000\n\
+                ; WIPE_TOWER_END\n; CP TOOLCHANGE START\n[filament_end_gcode]\n\
+                [restore_layer_z_before_toolchange]\n[change_filament_gcode]\n\
+                [deretraction_from_wipe_tower_generator]\n[filament_start_gcode]\nG4 S0\n\
+                ; CP TOOLCHANGE WIPE\nG1 X9.000 Y2.000 E0.3000 F2000\n; CP TOOLCHANGE END\n"
+            .into(),
+        origin: [100.0, 50.0],
+        start: at(101.0, 51.0),
+        change_start: at(108.0, 52.0),
+        end: at(109.0, 52.0),
+        wipe_path: vec![at(109.0, 52.0), at(100.0, 52.0)],
+        finish_first: true,
+        tool_change: true,
+        reheats_after_cooling: true,
+    };
+    let part = [wall(0.0, 0.0, 10.0, 0)];
+    let first = one_layer(&part, &[0..1], &[])[0];
+    let visits = [visit];
+    let second = Layer {
+        filament: 1,
+        visits: &visits,
+        loops: &[],
+        islands: &[],
+        ..first
+    };
+    let mut out = Vec::new();
+    write_tools(&mut out, &[first, second], &[tool("PETG"), tool("PETG")]).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    // Each found after the one before it (the print's own start and end
+    // G-codes say the filament's start and end G-codes too).
+    let after = |from: usize, what: &str| {
+        from + text[from..]
+            .find(what)
+            .unwrap_or_else(|| panic!("{what} after {from}: {text}"))
+    };
+    // Moved to the tower's place.
+    assert!(text.contains("G1 X105.000 Y51.000 E0.2000 F3000"), "{text}");
+    assert!(text.contains("G1 X109.000 Y52.000 E0.3000 F2000"), "{text}");
+    // The old filament's lines, its end G-code, the change, the new one's
+    // start G-code, then the purge.
+    let wall = after(0, "X105.000 Y51.000");
+    let end = after(wall, "; filament end gcode");
+    let change = after(end, "M620 S1A");
+    let start = after(change, "; filament start gcode");
+    after(start, "X109.000 Y52.000");
+    // The template is told where the purge starts.
+    assert!(text.contains("; after X108 Y52"), "{text}");
+    assert!(!text.contains("[change_filament_gcode]"));
 }
 
 #[test]
