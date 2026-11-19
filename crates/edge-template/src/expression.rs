@@ -255,8 +255,8 @@ impl Parser<'_> {
     /// A variable's value, as the template last set it or as it was given.
     fn lookup(&self, name: &str, index: Option<i64>) -> Result<Value, String> {
         match self.overlay.values.get(name) {
-            Some(variable) => variable.read(name, index),
-            None => self.variables.get(name, index),
+            Some(variable) => variable.read_as(name, index, self.variables.extruder),
+            None => self.variables.get_as(name, index),
         }
     }
 

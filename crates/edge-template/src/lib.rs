@@ -34,6 +34,11 @@ pub struct TemplateError {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Variables {
     values: HashMap<String, Variable>,
+    /// The extruder a list named without an index gives the entry of
+    /// (PlaceholderParser.cpp `process`'s `current_extruder_id`, read by
+    /// `legacy_variable_expansion` and `vector_element_to_expr`); none for
+    /// the first entry.
+    extruder: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -44,6 +49,20 @@ pub(crate) enum Variable {
 }
 
 impl Variable {
+    /// [`Self::read`], a list named without an index giving `extruder`'s
+    /// entry where one is set.
+    pub(crate) fn read_as(
+        &self,
+        name: &str,
+        index: Option<i64>,
+        extruder: Option<i64>,
+    ) -> Result<Value, String> {
+        match self {
+            Variable::Many(_) => self.read(name, index.or(extruder)),
+            Variable::One(_) => self.read(name, index),
+        }
+    }
+
     /// The value; `index` picks an entry of a list. A list read without an
     /// index gives its first entry, as the reference does for the older
     /// `[variable]` form, and so does one read past its end or before its
@@ -72,6 +91,12 @@ impl Variable {
 }
 
 impl Variables {
+    /// Makes a list named without an index give `extruder`'s entry, or
+    /// with none its first.
+    pub fn set_extruder(&mut self, extruder: Option<i64>) {
+        self.extruder = extruder;
+    }
+
     pub fn set(&mut self, name: impl Into<String>, value: Value) {
         self.values.insert(name.into(), Variable::One(value));
     }
@@ -104,6 +129,14 @@ impl Variables {
             Variable::Many(values) => Some(values),
             Variable::One(_) => None,
         }
+    }
+
+    /// [`Self::get`] with the extruder set by [`Self::set_extruder`].
+    pub(crate) fn get_as(&self, name: &str, index: Option<i64>) -> Result<Value, String> {
+        self.values
+            .get(name)
+            .ok_or_else(|| format!("unknown variable \"{name}\""))?
+            .read_as(name, index, self.extruder)
     }
 
     fn get(&self, name: &str, index: Option<i64>) -> Result<Value, String> {
@@ -143,8 +176,8 @@ fn expand_over(
 ) -> Result<String, TemplateError> {
     let mut out = String::with_capacity(template.len());
     let read = |overlay: &expression::Overlay, name: &str| match overlay.values.get(name) {
-        Some(variable) => variable.read(name, None),
-        None => variables.get(name, None),
+        Some(variable) => variable.read_as(name, None, variables.extruder),
+        None => variables.get_as(name, None),
     };
     // One entry per open `{if}`: whether its text is being emitted, whether
     // any branch has been taken yet, and whether the enclosing text is live.
