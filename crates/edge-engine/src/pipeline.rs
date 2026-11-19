@@ -2437,6 +2437,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // `reorder_extruders_for_minimum_flush_volume`): worked out from the
     // lists the solver was handed, before it put them in order. Not for
     // copies printed one after another, as there.
+    let mut nozzles: Option<edge_gcode::NozzleMap> = None;
     if let Some(lists) = grouping_lists
         && sequence.is_none()
         && settings.texts("nozzle_diameter").map_or(0, <[String]>::len) == 2
@@ -2486,6 +2487,10 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             tower,
         )?;
         watch.grouped(&grouped);
+        nozzles = grouped
+            .grouping
+            .as_ref()
+            .map(|grouping| crate::grouping::nozzle_map(&settings, grouping));
     }
     // What the profile asks of the order and is not followed.
     // What the walls were asked for and do not do goes with these.
@@ -2864,6 +2869,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     };
     plate_facts.labels = object_labels(&meshes, &instance_labels, &settings)?;
     plate_facts.tower_at = Some(Point2::from_mm(tower_settings.x, tower_settings.y));
+    plate_facts.nozzles = nozzles;
     let mut around: Vec<Vec<ExtrusionLoop>> = vec![Vec::new(); layers.len()];
     for (index, lines) in around.iter_mut().enumerate() {
         if adhesion.has_skirt(index) {
@@ -3244,6 +3250,7 @@ fn plate_facts(
         labels: Vec::new(),
         tower_at: None,
         by_object: Vec::new(),
+        nozzles: None,
         first_layer_box,
         first_layer_centre,
         in_head_wrap_detect_zone,

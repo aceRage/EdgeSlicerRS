@@ -37,6 +37,7 @@ mod settings;
 mod simplify;
 mod small_area;
 mod spiral_vase;
+mod two_nozzles;
 mod unsupported;
 mod wipe;
 
@@ -69,8 +70,8 @@ pub use scarf::{Scarf, ScarfSeam};
 pub use seam::Seam;
 pub use seam_plan::{SeamMeasures, SeamMesh, SeamObject, SeamPart, SeamScene, measure_seams};
 pub use settings::{
-    AccelerationForm, FinalPurge, Labelling, Lift, ObjectLabel, ObjectRun, OverhangFan, Plate,
-    PrintSettings, PurgeDrop, Timelapse, WallDirection, WallOrder, gcode_template,
+    AccelerationForm, FinalPurge, Labelling, Lift, NozzleMap, ObjectLabel, ObjectRun, OverhangFan,
+    Plate, PrintSettings, PurgeDrop, Timelapse, WallDirection, WallOrder, gcode_template,
 };
 pub use spiral_vase::Spiral;
 
@@ -455,18 +456,12 @@ pub fn write_timed(
     let first = layers.first().map_or(0, |layer| layer.filament);
     // A Bambu Lab printer of two nozzles is told by the file which nozzle
     // each filament goes to, and its templates are written for that
-    // (GCode.cpp: `filament_map`, the nozzle grouping). The grouping is
-    // worked out (edge-engine `grouping`), but nothing here writes a file
-    // for two nozzles yet.
+    // (GCode.cpp: `filament_map`, the nozzle grouping).
     if let Some(s) = settings.get(first)
         && s.bambu
         && s.tools >= 2
     {
-        return Err(GcodeError::Unsupported(
-            "a Bambu Lab printer of two nozzles (H2D, H2C): writing G-code that changes \
-             between its nozzles (filament_map, the nozzle change templates) is not done yet"
-                .into(),
-        ));
+        two_nozzles::check(s)?;
     }
     if let Some(layer) = layers.iter().find(|layer| layer.filament >= settings.len()) {
         return Err(GcodeError::NoSettings {
@@ -628,6 +623,14 @@ pub fn write_timed(
         .value("print_sequence")
         .is_none_or(|sequence| sequence.to_string() != "by object");
     bambu_vars::single_nozzle(&mut variables, settings.len(), first, &used, by_layer);
+    // Two nozzles: which each filament prints from (GCode.cpp `_do_export`).
+    if let Some(map) = &plate.nozzles {
+        two_nozzles::start(&mut variables, map, layers);
+    }
+    // The first filament's extruder-change retraction (GCode.cpp
+    // `_do_export`, `set_ec_retraction_placeholders`).
+    two_nozzles::set_ec_retraction(&mut variables, first);
+    two_nozzles::set_cut_retraction(&mut variables, first);
     for (index, [x, y]) in change_path(&settings[first]).into_iter().enumerate() {
         variables.set(format!("travel_point_{}_x", index + 1), Value::Float(x));
         variables.set(format!("travel_point_{}_y", index + 1), Value::Float(y));
@@ -647,6 +650,7 @@ pub fn write_timed(
             z: settings[first].z_offset,
             tool: first,
             parked: vec![(false, 0.0); settings.len()],
+            held: two_nozzles::Held::new(),
             used: vec![(0.0, 0.0); settings.len()],
             flushed: flush::Flushed::new(settings.len()),
             ..State::default()
@@ -1606,6 +1610,9 @@ struct State {
     /// The tool in use, and what was left retracted in each tool put away.
     tool: usize,
     parked: Vec<(bool, f64)>,
+    /// On a printer of two nozzles, what each nozzle holds and how far
+    /// each extruder's filament was left retracted (`two_nozzles`).
+    held: two_nozzles::Held,
     tool_changes: usize,
     /// The top of the highest layer begun so far, which a printer's
     /// change G-code is given as `max_layer_z` (GCode.cpp
@@ -1924,6 +1931,9 @@ impl Writer<'_> {
         if s.bambu && !s.config.is_empty() {
             writeln!(self.out, "; CONFIG_BLOCK_START")?;
             for (key, value) in &s.config {
+                // Two nozzles: the grouping's maps, not the project's.
+                let grouped = two_nozzles::listed(&s.plate, key);
+                let value = grouped.as_deref().unwrap_or(value);
                 writeln!(self.out, "; {key} = {value}")?;
             }
             if let Some(bed) = self.file.first_layer_bed {
@@ -2028,10 +2038,41 @@ impl Writer<'_> {
             // Only a filament counts: Bambu Lab's own tool commands
             // (`T1000`, `T255`) do not (GCodeProcessor.cpp
             // `get_gcode_last_filament`, from 0 to 254).
+            let two = s.bambu && s.plate.nozzles.is_some();
             let from = started.lines().rev().find_map(|line| {
-                let tool = line.trim().strip_prefix('T')?.parse::<i64>().ok()?;
+                let rest = line.trim().strip_prefix('T')?;
+                // On a Bambu Lab printer of two nozzles the start G-code
+                // loads the first filament with `T<n> H<hotend>`, which is
+                // read too (GCode.cpp `_do_export`).
+                let number = if two {
+                    let end = rest
+                        .find(|c: char| !c.is_ascii_digit())
+                        .unwrap_or(rest.len());
+                    let after = rest[end..].chars().next();
+                    if after.is_some_and(|c| !c.is_whitespace() && c != ';') {
+                        return None;
+                    }
+                    &rest[..end]
+                } else {
+                    rest
+                };
+                let tool = number.parse::<i64>().ok()?;
                 (0..255).contains(&tool).then_some(tool)
             });
+            // There, the filament the start G-code loaded is taken up as
+            // it is, without the change G-code (GCode.cpp `set_extruder`,
+            // Bambu Studio's `init_extruder`).
+            if two && from == Some(self.state.tool as i64) {
+                let tool = self.state.tool;
+                if let Some(map) = &s.plate.nozzles {
+                    self.state.held.loaded(map, tool);
+                }
+                if let Some(template) = &s.filament_start_gcode {
+                    self.custom("filament_start_gcode", template)?;
+                }
+                self.advance()?;
+                return Ok(());
+            }
             let swapped = self.swap(from, self.state.tool, None, 0.0, 0.0, false)?;
             // The reference leaves this marker of its own here, where the
             // change G-code ran.
@@ -2154,6 +2195,8 @@ impl Writer<'_> {
         let old = from.and_then(|tool| usize::try_from(tool).ok());
         let settings_of = |tool: Option<usize>| tool.and_then(|tool| self.all.get(tool));
         let (old_settings, new_settings) = (settings_of(old), &self.all[to]);
+        // On a printer of two nozzles, which each filament prints from.
+        let nozzles = new_settings.plate.nozzles.as_ref();
         let area = |s: &PrintSettings| PI * (s.filament_diameter / 2.0).powi(2);
         // How fast a filament can be fed, in mm/min, as the reference
         // offers it to templates.
@@ -2186,7 +2229,38 @@ impl Writer<'_> {
             (Some(_), Some(_)) => self.state.layer as i64,
             (_, layer) => layer.map_or(-1, |layer| layer as i64),
         };
+        // How far the incoming extruder's filament is retracted, as the
+        // change G-code tells the printer (`M620.10 R`, `M983.3 R`).
+        let incoming = match nozzles {
+            Some(map) => {
+                let outgoing = self.state.retracted_length;
+                self.state.held.swap_retraction(map, old, to, outgoing)
+            }
+            None => 0.0,
+        };
         let v = &mut self.variables;
+        v.set("new_extruder_retracted_length", Value::Float(incoming));
+        // The nozzle each filament prints from (Bambu Studio's
+        // `set_extruder`: the grouping's `get_nozzle_id`). The reference
+        // leaves both at 0, the first nozzle, on the H2D (GCode.cpp
+        // `_do_export`, its "single-mapped shim"), which reads the first
+        // nozzle's diameter for a filament on the second; not followed.
+        // The two agree where both nozzles are alike.
+        if let Some(map) = nozzles {
+            let nozzle = |filament: usize| {
+                Value::Int(i64::from(
+                    map.nozzles.get(filament).copied().unwrap_or(0).max(0),
+                ))
+            };
+            v.set("current_nozzle_id", nozzle(old.unwrap_or(0)));
+            v.set("next_nozzle_id", nozzle(to));
+        }
+        // The outgoing filament's extruder-change retraction, on the
+        // template's `M620.11 K.. I[current_filament_id]` line (GCode.cpp
+        // `set_extruder`, `set_ec_retraction_placeholders`).
+        if let Some(old) = old {
+            two_nozzles::set_ec_retraction(v, old);
+        }
         v.set("previous_extruder", Value::Int(from.unwrap_or(-1)));
         v.set("next_extruder", Value::Int(to as i64));
         v.set("current_filament_id", Value::Int(from.unwrap_or(-1)));
@@ -2253,6 +2327,18 @@ impl Writer<'_> {
                     .unwrap_or(0.0)
             }
             _ => 0.0,
+        };
+        // Two nozzles (the H2D): a change within one nozzle flushes as on
+        // a printer of one; onto the other, what that nozzle still holds
+        // is flushed into it (GCode.cpp `set_extruder`,
+        // `cross_extruder_flush_volume`).
+        let flushed = match (nozzles, old) {
+            (Some(map), Some(old)) => self
+                .state
+                .held
+                .cross_flush(map, old, to, new_settings)
+                .unwrap_or_else(|| two_nozzles::flush_volume(new_settings, map, old, to)),
+            _ => flushed,
         };
         // On Bambu's tower a Bambu Lab printer's change counts the
         // filament it pushes out to detect the new one, `grab_length` mm
@@ -2322,7 +2408,25 @@ impl Writer<'_> {
                 // it (GCode.cpp `append_tcr`, `set_extruder`:
                 // `placeholder_parser_process(..., new_extruder_id)`).
                 self.variables.set_extruder(Some(to as i64));
+                // No cooling before the tower on a change that does not go
+                // through Bambu's tower (GCode.cpp `set_extruder`: its
+                // `filament_cooling_before_tower` all 0); the tower's own
+                // visit sets it for its changes (`bambu_visit`).
+                let cooling = (!on_tower)
+                    .then(|| self.variables.list("filament_cooling_before_tower"))
+                    .flatten()
+                    .map(<[Value]>::to_vec);
+                if let Some(list) = &cooling {
+                    self.variables.set_list(
+                        "filament_cooling_before_tower",
+                        vec![Value::Float(0.0); list.len()],
+                    );
+                }
                 let expanded = edge_template::expand_mut(template, &mut self.variables);
+                if let Some(list) = cooling {
+                    self.variables
+                        .set_list("filament_cooling_before_tower", list);
+                }
                 self.variables.set_extruder(None);
                 let text = expanded.map_err(|source| GcodeError::Template {
                     name: "change_filament_gcode",
@@ -2360,6 +2464,12 @@ impl Writer<'_> {
         self.variables.set("max_layer_z", top);
         self.variables
             .set("current_extruder", Value::Int(to as i64));
+        // The incoming filament's from here on, and its nozzle holds it.
+        two_nozzles::set_ec_retraction(&mut self.variables, to);
+        two_nozzles::set_cut_retraction(&mut self.variables, to);
+        if let Some(map) = nozzles {
+            self.state.held.loaded(map, to);
+        }
         // The template moves the head as it likes: nothing is assumed
         // about where it left it, and every setting is sent again.
         self.state.position = None;
@@ -2379,6 +2489,9 @@ impl Writer<'_> {
         self.filament_area = PI * (self.settings.filament_diameter / 2.0).powi(2);
         let s = self.settings;
         if let Some(template) = &s.filament_start_gcode {
+            // Told which filament it starts (GCode.cpp `set_extruder`).
+            self.variables
+                .set("filament_extruder_id", Value::Int(tool as i64));
             self.custom("filament_start_gcode", template)?;
         }
         let temperature = self.temperature(tool, first_layer);
@@ -2389,6 +2502,12 @@ impl Writer<'_> {
             if !s.prime_tower {
                 writeln!(self.out, "M104 S{temperature:.0} ; set nozzle temperature")?;
             }
+        } else if s.standby_temperature_delta.is_none() {
+            // A nozzle to each filament, with idle nozzles not kept
+            // cooler (`ooze_prevention` off): its temperature is not set
+            // after the change (GCode.cpp `set_extruder`, which sets it in
+            // `OozePrevention::post_toolchange` alone). The H2D's own
+            // change G-code heats it.
         } else if s.tool_change_temperature_wait {
             writeln!(
                 self.out,
@@ -2581,6 +2700,9 @@ impl Writer<'_> {
             }
         }
         if let Some(template) = &s.filament_end_gcode {
+            // Told which filament it ends (GCode.cpp `set_extruder`).
+            self.variables
+                .set("filament_extruder_id", Value::Int(from as i64));
             self.custom("filament_end_gcode", template)?;
         }
         // A tool waiting its turn is kept cooler so it does not ooze, at
@@ -6592,7 +6714,32 @@ impl Writer<'_> {
         if s.filament_end_gcode.is_some() || s.machine_end_gcode.is_some() {
             writeln!(self.out, "{}Custom", self.tags().feature)?;
         }
-        if let Some(template) = &s.filament_end_gcode {
+        if s.bambu && s.plate.nozzles.is_some() && !s.single_nozzle {
+            // Two nozzles: every filament's end G-code in turn, each told
+            // which it is, the loaded one's for the end G-code after
+            // (GCode.cpp `_do_export`, a printer that is not
+            // `single_extruder_multi_material`). The reference does the
+            // same for every such printer (the U1 too); only here so far.
+            let active = self.state.tool;
+            for filament in 0..s.filaments.max(1) {
+                let own = self
+                    .all
+                    .get(filament)
+                    .unwrap_or(&self.all[self.all.len() - 1]);
+                if let Some(template) = &own.filament_end_gcode {
+                    let template = template.clone();
+                    for name in ["filament_extruder_id", "current_filament_id"] {
+                        self.variables.set(name, Value::Int(filament as i64));
+                    }
+                    self.variables.set_extruder(Some(filament as i64));
+                    let written = self.custom("filament_end_gcode", &template);
+                    self.variables.set_extruder(None);
+                    written?;
+                }
+            }
+            self.variables
+                .set("current_filament_id", Value::Int(active as i64));
+        } else if let Some(template) = &s.filament_end_gcode {
             self.custom("filament_end_gcode", template)?;
         }
         match &s.machine_end_gcode {

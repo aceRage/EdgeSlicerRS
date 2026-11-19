@@ -18,6 +18,8 @@ use edge_group::{
     other_layers_sequences, prepare_flush_matrices,
 };
 
+use edge_gcode::NozzleMap;
+
 use crate::Failure;
 
 /// What the grouping worked out for a plate, and what it went by.
@@ -364,6 +366,44 @@ pub(crate) fn group(
     })
 }
 
+/// What the G-code writer is told of a grouping: each of the project's
+/// filaments' extruder from 1 (GCode.cpp `_do_export`: the grouping's
+/// `get_extruder_map(false)`, 1 where it names none), nozzle (`get_nozzle_map`)
+/// and, for the file's settings, the kind of nozzle each filament the plate
+/// uses landed on over the project's `filament_volume_map`
+/// (`grouping_header_maps`).
+pub(crate) fn nozzle_map(settings: &Settings, grouping: &edge_group::Grouping) -> NozzleMap {
+    let count = (settings.texts("filament_colour").map_or(0, <[String]>::len))
+        .max(grouping.filament_map.len())
+        .max(1);
+    let extruders = (0..count)
+        .map(|filament| match grouping.filament_map.get(filament) {
+            Some(extruder) if *extruder >= 1 => *extruder as u32,
+            _ => 1,
+        })
+        .collect();
+    let mut volumes: Vec<i32> = (settings.texts("filament_volume_map").unwrap_or_default())
+        .iter()
+        .map(|value| value.trim().parse::<i32>().unwrap_or(0))
+        .collect();
+    let filaments = settings.texts("filament_colour").map_or(0, <[String]>::len);
+    volumes.resize(filaments.max(1), VolumeType::STANDARD.0);
+    let result = &grouping.result;
+    for filament in &result.used {
+        if let (Some(slot), Some(nozzle)) = (
+            volumes.get_mut(*filament as usize),
+            result.nozzle_for(i64::from(*filament)),
+        ) {
+            *slot = nozzle.volume_type.0;
+        }
+    }
+    NozzleMap {
+        extruders,
+        nozzles: result.nozzle_map(),
+        volumes,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,6 +471,51 @@ mod tests {
             edge_config::Value::Many(vec!["0.4".into()]),
         );
         assert_eq!(edge_tower::placement_box(&one, bed).unwrap(), bed);
+    }
+
+    /// What the writer is told: every filament of the project, an unused
+    /// one on the first extruder; the nozzles from 0; the kind of nozzle a
+    /// used filament landed on, the project's own for the rest.
+    #[test]
+    fn the_writer_is_told_each_filaments_extruder_and_nozzle() {
+        let mut settings = h2d();
+        settings.insert(
+            "filament_colour",
+            edge_config::Value::Many(vec!["#FFFFFF".into(), "#202020".into(), "#C12E1F".into()]),
+        );
+        settings.insert(
+            "flush_volumes_matrix",
+            edge_config::Value::Many(
+                ["0", "1", "2", "3", "0", "4", "5", "6", "0"]
+                    .map(str::to_owned)
+                    .to_vec(),
+            ),
+        );
+        settings.insert(
+            "filament_map_mode",
+            edge_config::Value::One("Manual".into()),
+        );
+        settings.insert(
+            "filament_map",
+            edge_config::Value::Many(vec!["2".into(), "1".into(), "2".into()]),
+        );
+        settings.insert(
+            "nozzle_volume_type",
+            edge_config::Value::Many(vec!["Standard".into(), "High Flow".into()]),
+        );
+        settings.insert(
+            "filament_volume_map",
+            edge_config::Value::Many(vec!["0".into(), "0".into(), "5".into()]),
+        );
+        let grouped = group(&settings, vec![vec![0, 1]; 2], Vec::new(), &[], None).unwrap();
+        let map = nozzle_map(&settings, grouped.grouping.as_ref().unwrap());
+        assert_eq!(map.extruders, [2, 1, 2]);
+        assert_eq!(map.nozzles, [1, 0, 1]);
+        // Filament 0 on the High Flow nozzle, 1 on the Standard one, 2
+        // unused keeps its own.
+        assert_eq!(map.volumes, [1, 0, 5]);
+        assert_eq!(map.extruder(2), 1);
+        assert_eq!(map.extruder(7), 0);
     }
 
     #[test]

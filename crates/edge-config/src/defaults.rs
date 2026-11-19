@@ -48,7 +48,8 @@ pub fn reference_knows(key: &str) -> bool {
 /// Lists of names from a fixed set, which the reference joins by commas
 /// as it does numbers. Nothing in their text tells them from a list of
 /// free texts, which it joins by semicolons, so they are named here.
-const CHOICES: [&str; 6] = [
+const CHOICES: [&str; 7] = [
+    "default_nozzle_volume_type",
     "extruder_type",
     "retract_lift_enforce",
     "z_hop_types",
@@ -118,6 +119,11 @@ pub fn serialized(key: &str, value: &Value) -> String {
     match value {
         Value::One(text) => escaped(text),
         Value::Many(items) => {
+            // A list of point lists, each of points joined by commas, the
+            // lists by `#` (Config.hpp `ConfigOptionPointsGroups`).
+            if key == "extruder_printable_area" {
+                return items.join("#");
+            }
             if CHOICES.contains(&key) || items.iter().all(|item| plain(item)) {
                 return items.join(",");
             }
@@ -281,6 +287,28 @@ mod tests {
                 .text("machine_start_gcode")
                 .unwrap()
                 .starts_with("G28 ; home all axes")
+        );
+    }
+
+    /// Two of the H2D's lists as the reference writes them: each
+    /// extruder's printable area joined by `#` (`ConfigOptionPointsGroups`),
+    /// the nozzle kinds by commas (an enum list).
+    #[test]
+    fn two_nozzle_lists_are_written_as_the_reference_writes_them() {
+        let many = |items: &[&str]| Value::Many(items.iter().map(|s| (*s).to_owned()).collect());
+        assert_eq!(
+            serialized(
+                "extruder_printable_area",
+                &many(&["0x0,325x0,325x320,0x320", "25x0,350x0,350x320,25x320"])
+            ),
+            "0x0,325x0,325x320,0x320#25x0,350x0,350x320,25x320"
+        );
+        assert_eq!(
+            serialized(
+                "default_nozzle_volume_type",
+                &many(&["Standard", "High Flow"])
+            ),
+            "Standard,High Flow"
         );
     }
 

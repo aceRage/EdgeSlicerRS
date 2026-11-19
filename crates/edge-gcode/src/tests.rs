@@ -5437,3 +5437,215 @@ fn the_last_filament_is_unloaded_over_the_tower_once_the_print_is_done() {
             .all(|line| !line.starts_with("G1 Z0.400"))
     );
 }
+
+/// Three filaments on a Bambu Lab printer of two nozzles (the H2D), 0 and
+/// 2 on the first nozzle and 1 on the second, with a change G-code that
+/// shows what it is told.
+fn two_nozzles() -> [PrintSettings; 3] {
+    let change = "; change [current_filament_id]>[next_filament_id] on {filament_map[next_filament_id]} \
+                  L[flush_length] R[new_extruder_retracted_length] nozzles [current_nozzle_id]>[next_nozzle_id] \
+                  ec {long_retraction_when_ec} [retraction_distance_when_ec] cut {long_retraction_when_cut} \
+                  C{new_filament_temp - filament_cooling_before_tower[next_filament_id]}\n\
+                  T[next_filament_id] H[next_hotend]";
+    let mut variables = Variables::default();
+    let texts =
+        |values: &[&str]| -> Vec<Value> { values.iter().map(|v| Value::text(*v)).collect() };
+    variables.set_list("filament_colour", texts(&["#FFFFFF", "#202020", "#C12E1F"]));
+    variables.set_list("physical_extruder_map", texts(&["1", "0"]));
+    variables.set_list("filament_cooling_before_tower", texts(&["10", "10", "10"]));
+    variables.set_list("long_retractions_when_ec", texts(&["1", "nil", "0"]));
+    variables.set_list("retraction_distances_when_ec", texts(&["8", "8", "8"]));
+    variables.set_list("long_retractions_when_cut", texts(&["1", "1", "1"]));
+    variables.set_list("retraction_distances_when_cut", texts(&["18", "0", "18"]));
+    let plate = Plate {
+        nozzles: Some(NozzleMap {
+            extruders: vec![1, 2, 1],
+            nozzles: vec![0, 1, 0],
+            volumes: vec![0, 0, 0],
+        }),
+        ..Plate::default()
+    };
+    let filament = |temperature: f64| PrintSettings {
+        bambu: true,
+        machine_start_gcode: Some("M620 S0A\nT0 H-1\nM621 S0A".into()),
+        change_filament_gcode: Some(change.into()),
+        filament_end_gcode: Some("; filament end [filament_extruder_id]".into()),
+        nozzle_temperature: temperature,
+        nozzle_temperature_initial_layer: temperature,
+        tools: 2,
+        filaments: 3,
+        single_nozzle: false,
+        // 0 > 2 is 200 mm³ and 2 > 0 is 300.
+        flush_volumes: vec![0.0, 100.0, 200.0, 150.0, 0.0, 250.0, 300.0, 350.0, 0.0],
+        variables: variables.clone(),
+        plate: plate.clone(),
+        config: vec![
+            ("filament_map".into(), "1,1,1".into()),
+            ("filament_nozzle_map".into(), "0,0,0".into()),
+        ],
+        ..basic()
+    };
+    [filament(220.0), filament(230.0), filament(240.0)]
+}
+
+/// A Bambu Lab printer of two nozzles: the filament the start G-code
+/// loaded is taken up without the change G-code; a change onto the other
+/// nozzle flushes what that nozzle still holds (nothing the first time),
+/// one within a nozzle flushes from the filament before it; the change
+/// G-code is told the outgoing filament's retractions, the nozzles and the
+/// incoming nozzle's retraction, with no cooling before a tower there is
+/// none of; each filament's end G-code comes at the end; and the file's
+/// settings list the grouping's map (GCode.cpp `set_extruder`,
+/// `cross_extruder_flush_volume`, `incoming_extruder_retracted_length`,
+/// `_do_export`, `append_full_config`).
+#[test]
+fn two_nozzles_change_between_and_within_them() {
+    let settings = two_nozzles();
+    let (text, summary) = in_filaments(&[&[0, 1], &[1, 2], &[2, 0], &[0, 1]], &settings);
+    assert_eq!(summary.tool_changes, 4);
+    let changes: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("; change "))
+        .collect();
+    let area = PI * (1.75_f64 / 2.0).powi(2);
+    let length = |volume: f64| (volume as f32 / area as f32) as f64;
+    assert_eq!(changes.len(), 4, "{changes:?}");
+    // Nothing before the first layer: the start G-code loaded filament 0.
+    assert!(text.find("; change ").unwrap() > text.find("; CHANGE_LAYER").unwrap());
+    assert_eq!(
+        changes[0],
+        "; change 0>1 on 2 L0 R0 nozzles 0>1 ec true 8 cut true C230"
+    );
+    assert!(
+        changes[1].starts_with("; change 1>2 on 1 L"),
+        "{}",
+        changes[1]
+    );
+    assert!(
+        changes[1].ends_with("nozzles 1>0 ec false 0 cut false C240"),
+        "{}",
+        changes[1]
+    );
+    let flush = |line: &str| -> f64 {
+        line.split(" L")
+            .nth(1)
+            .unwrap()
+            .split(' ')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    assert!(
+        (flush(changes[1]) - length(200.0)).abs() < 1e-3,
+        "{}",
+        changes[1]
+    );
+    // Within the first nozzle, 2 > 0.
+    assert!(
+        changes[2].starts_with("; change 2>0 on 1 "),
+        "{}",
+        changes[2]
+    );
+    assert!(
+        (flush(changes[2]) - length(300.0)).abs() < 1e-3,
+        "{}",
+        changes[2]
+    );
+    // Onto the second nozzle again, which still holds 1: nothing.
+    assert!(
+        changes[3].starts_with("; change 0>1 on 2 L0 "),
+        "{}",
+        changes[3]
+    );
+    // The incoming extruder's retraction is what was left when it was put
+    // away: the second nozzle's, at its first use, nothing.
+    let retracted = |line: &str| -> f64 {
+        line.split(" R")
+            .nth(1)
+            .unwrap()
+            .split(' ')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    assert_eq!(retracted(changes[0]), 0.0);
+    assert!(retracted(changes[3]) >= 0.0);
+    // The tool is named by the change G-code (`T1 H-1`), so not again.
+    assert!(!text.lines().any(|l| l == "T1"));
+    // Every filament's end G-code at the end, in turn.
+    let end: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("; filament end"))
+        .collect();
+    assert_eq!(
+        end[end.len() - 3..],
+        ["; filament end 0", "; filament end 1", "; filament end 2"]
+    );
+    // The settings block lists the grouping's map, not the project's.
+    assert!(text.contains("; filament_map = 1,2,1\n"), "{text}");
+    assert!(text.contains("; filament_nozzle_map = 0,1,0\n"));
+}
+
+/// The start G-code of a printer of two nozzles is given the map and, by
+/// physical extruder, the first filament each prints (GCode.cpp
+/// `_do_export`: `first_filaments`, `first_non_support_filaments`).
+#[test]
+fn two_nozzles_start_names_each_extruders_first_filament() {
+    let mut settings = two_nozzles();
+    for s in &mut settings {
+        s.machine_start_gcode = Some(
+            "; map {filament_map[0]}{filament_map[1]}{filament_map[2]} first {first_filaments[0]},{first_filaments[1]} \
+             model {first_non_support_filaments[0]},{first_non_support_filaments[1]}\nT0 H-1"
+                .into(),
+        );
+        s.variables.set_list(
+            "filament_is_support",
+            vec![Value::text("1"), Value::text("0"), Value::text("0")],
+        );
+    }
+    let (text, _) = in_filaments(&[&[0, 1], &[1, 2]], &settings);
+    // Filament 0 (support) and 2 print from logical extruder 0, which is
+    // physical extruder 1; filament 1 from logical 1, physical 0.
+    assert!(text.contains("; map 121 first 1,0 model 1,2"), "{text}");
+}
+
+/// Notes for what is not done on two nozzles: the idle nozzle's
+/// pre-cooling and pre-heating, and the timelapse picture.
+#[test]
+fn two_nozzles_say_what_is_not_done() {
+    let settings = edge_config::Settings::from_json(
+        r#"{"printer_model": "Bambu Lab H2D", "nozzle_diameter": ["0.4", "0.4"],
+            "enable_pre_heating": "1", "time_lapse_gcode": "M971 S11"}"#,
+    )
+    .unwrap();
+    let print = PrintSettings::for_filament(&settings, 0).unwrap();
+    let said = print.unsupported.join("\n");
+    assert!(said.contains("enable_pre_heating"), "{said}");
+    assert!(said.contains("time_lapse_gcode"), "{said}");
+    // And no second nozzle, no note.
+    let one = edge_config::Settings::from_json(
+        r#"{"printer_model": "Bambu Lab A1", "nozzle_diameter": ["0.4"],
+            "enable_pre_heating": "1", "time_lapse_gcode": "M971 S11"}"#,
+    )
+    .unwrap();
+    let print = PrintSettings::for_filament(&one, 0).unwrap();
+    assert!(!print.unsupported.join("\n").contains("enable_pre_heating"));
+}
+
+/// Without the grouping's answer a printer of two nozzles is refused.
+#[test]
+fn two_nozzles_without_a_grouping_are_refused() {
+    let mut settings = two_nozzles();
+    for s in &mut settings {
+        s.plate.nozzles = None;
+    }
+    let loops = [wall(0.0, 0.0, 10.0, 0)];
+    let plan = one_layer(&loops, &[0..1], &[]);
+    let error = write_tools(&mut Vec::new(), &plan, &settings).unwrap_err();
+    assert!(
+        error.to_string().contains("which nozzle each filament"),
+        "{error}"
+    );
+}

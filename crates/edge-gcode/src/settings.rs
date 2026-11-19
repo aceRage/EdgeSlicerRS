@@ -958,6 +958,9 @@ impl PrintSettings {
             .filter(|model| !model.is_empty())
             .or(settings.text("printer_settings_id"))
             .is_some_and(|name| name.starts_with("Bambu Lab"));
+        if bambu && settings.texts("nozzle_diameter").map_or(1, <[String]>::len) == 2 {
+            unsupported.extend(crate::two_nozzles::notes(settings)?);
+        }
         Ok(Self {
             outer_wall_speed: number("outer_wall_speed", defaults.outer_wall_speed)?,
             inner_wall_speed: number("inner_wall_speed", defaults.inner_wall_speed)?,
@@ -1478,6 +1481,7 @@ impl PrintSettings {
                     .filter(|(key, _)| {
                         edge_config::reference_knows(key)
                             || crate::bambu_vars::listed_mass_model(settings, key)
+                            || crate::two_nozzles::listed_pre_heating(settings, key)
                     })
                     .map(|(key, value)| (key.to_owned(), edge_config::serialized(key, value)))
                     .collect();
@@ -2011,6 +2015,42 @@ pub struct Plate {
     /// handed to the writer that are its own. Empty for a print laid
     /// layer by layer.
     pub by_object: Vec<ObjectRun>,
+    /// On a Bambu Lab printer of two nozzles (the H2D), which nozzle each
+    /// filament prints from, as the filament grouping worked it out
+    /// (edge-engine `grouping`). None on a printer of one nozzle, and
+    /// where nothing was grouped.
+    pub nozzles: Option<NozzleMap>,
+}
+
+/// Which nozzle each of the project's filaments prints from on a printer
+/// of two nozzles of one each extruder (the H2D), as the reference keeps
+/// it (MultiNozzleUtils.hpp `LayeredNozzleGroupResult`) and writes it in
+/// the file's settings (GCode.cpp `append_full_config`,
+/// `grouping_header_maps`). One entry for each filament of the project,
+/// used or not.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NozzleMap {
+    /// Each filament's extruder, from 1 (`filament_map`).
+    pub extruders: Vec<u32>,
+    /// Each filament's nozzle, by its number among the printer's, -1 for
+    /// one on no nozzle (`filament_nozzle_map`). On the H2D, one nozzle to
+    /// each extruder, the extruder from 0.
+    pub nozzles: Vec<i32>,
+    /// The kind of nozzle (`NozzleVolumeType` by number) each filament the
+    /// plate uses landed on; the project's own value for the others
+    /// (`filament_volume_map`).
+    pub volumes: Vec<i32>,
+}
+
+impl NozzleMap {
+    /// The extruder a filament prints from, from 0: the first for one the
+    /// map does not name (as the reference's `filament_map` placeholder
+    /// keeps 1 there).
+    pub fn extruder(&self, filament: usize) -> usize {
+        self.extruders
+            .get(filament)
+            .map_or(0, |extruder| extruder.saturating_sub(1) as usize)
+    }
 }
 
 /// One copy printed whole before the next starts (GCode.cpp `_do_export`,
