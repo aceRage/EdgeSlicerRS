@@ -23,6 +23,7 @@ pub mod export;
 pub mod flexi;
 pub mod flush;
 mod followed;
+mod grouping;
 mod holes;
 mod job;
 pub mod lay_on_face;
@@ -70,6 +71,7 @@ pub use edge_mesh::boolean::Op as BooleanOp;
 pub use edge_mesh::{Mesh, raycast, remesh, selector, simplify};
 pub use edge_slice::layering::EditAction;
 pub use followed::{Followed, followed, followed_in, settled};
+pub use grouping::Grouped;
 pub use job::{BedType, Chosen, Job, Overrides, Sourced, prepare, prepare_noted};
 pub use layering::{ObjectLayers, ProfileEdit};
 pub use load::{InstanceLabel, Loaded, Opened, OwnObject, OwnVolume, PlateInfo, open};
@@ -136,6 +138,10 @@ pub trait Watcher: Sync {
     fn cancelled(&self) -> bool {
         false
     }
+    /// On a printer of two nozzles of different kinds (the H2D), which
+    /// nozzle each filament prints from and what that was worked out by,
+    /// once the layers' tool order is known.
+    fn grouped(&self, _grouped: &Grouped) {}
 }
 
 /// A watcher that neither listens nor stops anything.

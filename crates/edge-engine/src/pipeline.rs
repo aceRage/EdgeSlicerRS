@@ -2372,6 +2372,17 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // What a change costs: on a printer with a nozzle for each filament
     // every change costs the tower the same; on one of one nozzle that
     // flushes in the tower, and on a Bambu Lab printer, what it flushes.
+    // What the solver will be handed, kept for the filament grouping.
+    let grouping_lists = groups_onto_nozzles(&settings).then(|| {
+        let mut lists = vec![on_bed.clone()];
+        if settings.text("toolchange_ordering") == Some("cyclic") {
+            // Cyclic tool changes turn no list (`reorder_extruders`).
+            lists.extend(later.iter().cloned());
+        } else {
+            lists.extend(crate::order::handed(&on_bed, &later));
+        }
+        lists
+    });
     let mut orders = crate::order::layers(on_bed, &later, |from, to| {
         tower_settings.change_cost(tools[from] - 1, tools[to] - 1)
     });
@@ -2420,6 +2431,61 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             order.push(in_hand.unwrap_or(0));
         }
         in_hand = order.last().copied();
+    }
+    // On a printer of two nozzles of different kinds (the H2D), which
+    // nozzle each filament prints from (ToolOrdering.cpp
+    // `reorder_extruders_for_minimum_flush_volume`): worked out from the
+    // lists the solver was handed, before it put them in order. Not for
+    // copies printed one after another, as there.
+    if let Some(lists) = grouping_lists
+        && sequence.is_none()
+        && settings.texts("nozzle_diameter").map_or(0, <[String]>::len) == 2
+    {
+        let filaments = |tools_of: &[usize]| -> Vec<u32> {
+            tools_of
+                .iter()
+                .map(|tool| (tools[*tool] - 1) as u32)
+                .collect()
+        };
+        let meshes: Vec<&Mesh> = if objects.is_empty() {
+            bodies.iter().map(|body| &body.solid).collect()
+        } else {
+            objects.iter().collect()
+        };
+        let outlines: Vec<(Vec<[f64; 2]>, f64)> = (meshes.iter())
+            .filter_map(|mesh| {
+                let (low, high) = mesh.bounds()?;
+                let points = (mesh.vertices.iter())
+                    .map(|v| [f64::from(v[0]), f64::from(v[1])])
+                    .collect();
+                Some((points, f64::from(high[2] - low[2])))
+            })
+            .collect();
+        let tower = if tower_settings.enabled && used.len() > 1 {
+            let ground = edge_tower::Ground {
+                bed: print.bed.unwrap_or_default(),
+                filaments: used.iter().map(|filament| filament - 1).collect(),
+                layer_height,
+                first_layer_height,
+                height: f64::from(max[2] - min[2]),
+            };
+            edge_tower::estimated_size(&settings, &tower_settings, &ground)?.map(
+                |(width, depth, brim)| {
+                    let (x, y) = (tower_settings.x, tower_settings.y);
+                    [x - brim, y - brim, x + width + brim, y + depth + brim]
+                },
+            )
+        } else {
+            None
+        };
+        let grouped = crate::grouping::group(
+            &settings,
+            lists.iter().map(|list| filaments(list)).collect(),
+            orders.iter().map(|order| filaments(order)).collect(),
+            &outlines,
+            tower,
+        )?;
+        watch.grouped(&grouped);
     }
     // What the profile asks of the order and is not followed.
     // What the walls were asked for and do not do goes with these.

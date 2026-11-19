@@ -76,7 +76,7 @@ use edge_geom::{ExPolygon, Point2, Polygon, scaled, unscaled};
 pub use clearance::{
     CLEARANCE_ERROR, Clearance, Object, estimate_clears, purge_drop_clears, tower_clears,
 };
-pub use place::{Ground, Moved, PlaceError, estimated_size, relocate};
+pub use place::{Ground, Moved, PlaceError, estimated_size, placement_box, relocate};
 
 /// The tower's lines are this many nozzle diameters wide
 /// (WipeTower2.hpp `Width_To_Nozzle_Ratio`).

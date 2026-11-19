@@ -56,93 +56,21 @@ pub(crate) fn first_layer(
 /// The shortest way through all of `tools` starting from `start`, when
 /// going from tool `a` to tool `b` costs `cost(a, b)`: the reference's
 /// `solve_extruder_order`, kept step for step so that ties fall as its
-/// do. `start` need not be among the tools; it is then where the way
-/// begins and is left out of the answer.
+/// do (`edge_group::solve_order`, which the filament grouping shares).
+/// `start` need not be among the tools; it is then where the way begins
+/// and is left out of the answer.
 pub(crate) fn solve(
     cost: impl Fn(usize, usize) -> f32,
     tools: &[usize],
     start: Option<usize>,
 ) -> Vec<usize> {
-    let mut all = tools.to_vec();
-    let mut added = false;
-    let start = match start {
-        Some(start) => {
-            match all.iter().position(|tool| *tool == start) {
-                Some(at) => all.swap(0, at),
-                None => {
-                    all.insert(0, start);
-                    added = true;
-                }
-            }
-            start
-        }
-        None => match all.first() {
-            Some(first) => *first,
-            None => return Vec::new(),
-        },
-    };
-    let count = all.len();
-    let states = 1usize << count;
-    // The least cost of having been to every tool in `state` and standing
-    // at `target`, and which tool that way came from.
-    let mut least = vec![vec![0x7fff_ffff as f32; count]; states];
-    let mut from = vec![vec![usize::MAX; count]; states];
-    least[1][0] = 0.0;
-    for state in 0..states {
-        if state & 1 == 0 {
-            continue;
-        }
-        for target in 0..count {
-            if state >> target & 1 == 0 {
-                continue;
-            }
-            for middle in 0..count {
-                if state >> middle & 1 == 0 {
-                    continue;
-                }
-                let so_far = least[state - (1 << target)][middle] + cost(all[middle], all[target]);
-                if least[state][target] > so_far {
-                    least[state][target] = so_far;
-                    from[state][target] = middle;
-                }
-            }
-        }
-    }
-    // The first tool, other than the start, that the cheapest way ends at.
-    let whole = states - 1;
-    let (mut best, mut end) = (f32::MAX, 0);
-    for last in 0..count {
-        if all[last] != start && best > least[whole][last] {
-            best = least[whole][last];
-            end = last;
-        }
-    }
-    let mut path = Vec::with_capacity(count);
-    let (mut state, mut at) = (whole, end);
-    while at != usize::MAX {
-        path.push(all[at]);
-        let before = from[state][at];
-        state -= 1 << at;
-        at = before;
-    }
-    if added {
-        path.pop();
-    }
-    path.reverse();
-    path
+    edge_group::solve_order(cost, tools, start).0
 }
 
-/// Every layer's order. `first` is the first layer's, already settled;
-/// `later[i]` is the tools on layer `i + 1` in ascending order, empty for
-/// a layer with nothing on it, which keeps the tool in hand.
-pub(crate) fn layers(
-    first: Vec<usize>,
-    later: &[Vec<usize>],
-    cost: impl Fn(usize, usize) -> f32,
-) -> Vec<Vec<usize>> {
-    // The reference first brings to the front of each layer's list the
-    // tool the list before it ended with (`reorder_extruders`), and it is
-    // those lists the solver is handed.
+/// The lists the solver is handed for the layers above the first: the
+/// reference first brings to the front of each layer's list the tool the
+/// list before it ended with (`reorder_extruders`).
+pub(crate) fn handed(first: &[usize], later: &[Vec<usize>]) -> Vec<Vec<usize>> {
     let mut handed: Vec<Vec<usize>> = Vec::with_capacity(later.len());
     let mut ended = first.last().copied();
     for tools in later {
@@ -155,6 +83,18 @@ pub(crate) fn layers(
         ended = list.last().copied().or(ended);
         handed.push(list);
     }
+    handed
+}
+
+/// Every layer's order. `first` is the first layer's, already settled;
+/// `later[i]` is the tools on layer `i + 1` in ascending order, empty for
+/// a layer with nothing on it, which keeps the tool in hand.
+pub(crate) fn layers(
+    first: Vec<usize>,
+    later: &[Vec<usize>],
+    cost: impl Fn(usize, usize) -> f32,
+) -> Vec<Vec<usize>> {
+    let handed = handed(&first, later);
     // Then the solver, layer by layer from the tool in hand; a set of
     // tools met again from the same tool gets the answer it got before
     // (`reorder_extruders_for_minimum_flush_volume`).

@@ -404,6 +404,7 @@ dependencies = [
  "edge-extrusion",
  "edge-gcode",
  "edge-geom",
+ "edge-group",
  "edge-infill",
  "edge-mesh",
  "edge-paint",

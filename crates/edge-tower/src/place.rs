@@ -306,12 +306,119 @@ fn semm_flush_volume(tower: &TowerSettings, count: usize) -> f32 {
     most * count as f32 / n as f32 * 0.6
 }
 
+/// The box the tower may stand in: the bed, or on a printer of two
+/// nozzles that each reach a strip of it the other does not (H2D, H2C,
+/// X2D: `extruder_printable_area`), the part both reach, as every nozzle
+/// purges into the tower (PartPlate.cpp `prime_tower_placement_box`, with
+/// ExtruderAreas.cpp `compute_extruder_areas`). `bed` is min x, min y, max
+/// x, max y in mm.
+pub fn placement_box(settings: &Settings, bed: [f64; 4]) -> Result<[f64; 4], ClipError> {
+    if settings.texts("nozzle_diameter").map_or(0, <[String]>::len) < 2 {
+        return Ok(bed);
+    }
+    let point = |text: &str| -> Option<Point2> {
+        let (x, y) = text.trim().split_once('x')?;
+        Some(Point2::from_mm(
+            x.trim().parse().ok()?,
+            y.trim().parse().ok()?,
+        ))
+    };
+    // Counter-clockwise, as the reference makes them.
+    let region = |points: Vec<Point2>| {
+        let mut contour = Polygon { points };
+        if contour.signed_area_mm2() < 0.0 {
+            contour.points.reverse();
+        }
+        ExPolygon {
+            contour,
+            holes: Vec::new(),
+        }
+    };
+    let mut areas: Vec<Vec<Point2>> = (settings
+        .texts("extruder_printable_area")
+        .unwrap_or_default()
+        .iter())
+    .flat_map(|text| text.split('#'))
+    .map(|text| text.split(',').filter_map(point).collect::<Vec<_>>())
+    .filter(|area| !area.is_empty())
+    .collect();
+    // One entry of two rectangles is the two nozzles' areas
+    // (`split_merged_extruder_areas`).
+    if areas.len() == 1 && areas[0].len() == 8 {
+        let second = areas[0].split_off(4);
+        areas.push(second);
+    }
+    let printable_bed: Vec<Point2> = (settings.texts("printable_area").unwrap_or_default().iter())
+        .filter_map(|text| point(text))
+        .collect();
+    if areas.len() < 2 || printable_bed.len() < 3 {
+        return Ok(bed);
+    }
+    // A missing or degenerate area is the whole bed.
+    let printable: Vec<ExPolygon> = (areas.into_iter())
+        .map(|area| {
+            region(if area.len() >= 3 {
+                area
+            } else {
+                printable_bed.clone()
+            })
+        })
+        .collect();
+    let mut shared = vec![printable[0].clone()];
+    for area in &printable[1..] {
+        shared = edge_clip::intersection(&shared, std::slice::from_ref(area))?;
+    }
+    // A strip only one nozzle reaches, slivers of rounding left out.
+    let mut exclusive = false;
+    for (e, area) in printable.iter().enumerate() {
+        let others: Vec<ExPolygon> = (printable.iter().enumerate())
+            .filter(|(o, _)| *o != e)
+            .map(|(_, area)| area.clone())
+            .collect();
+        let strip =
+            edge_clip::difference(std::slice::from_ref(area), &edge_clip::union_ex(&others)?)?;
+        let size: f64 = (strip.iter())
+            .map(|region| {
+                region.contour.signed_area_mm2().abs()
+                    - region
+                        .holes
+                        .iter()
+                        .map(|h| h.signed_area_mm2().abs())
+                        .sum::<f64>()
+            })
+            .sum();
+        exclusive |= size >= 1e-4;
+    }
+    let points = || {
+        shared
+            .iter()
+            .flat_map(|region| region.contour.points.iter())
+    };
+    if !exclusive || points().next().is_none() {
+        return Ok(bed);
+    }
+    let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+    for p in points() {
+        let (x, y) = (unscaled(p.x), unscaled(p.y));
+        lo = [lo[0].min(x), lo[1].min(y)];
+        hi = [hi[0].max(x), hi[1].max(y)];
+    }
+    let lo = [bed[0].max(lo[0]), bed[1].max(lo[1])];
+    let hi = [bed[2].min(hi[0]), bed[3].min(hi[1])];
+    Ok(if lo[0] < hi[0] && lo[1] < hi[1] {
+        [lo[0], lo[1], hi[0], hi[1]]
+    } else {
+        bed
+    })
+}
+
 /// The place for the tower, when the one saved does not fit; none where
 /// it does (`PartPlate::estimate_wipe_tower_polygon`, on a rectangular
 /// bed and a tower square to it). `obstacles` gives each object's outline
 /// on the bed, with its brim and a millimetre round it
 /// (`PartPlate::wipe_tower_obstacles`), asked for only when the tower
-/// is to be moved.
+/// is to be moved. On a printer of two nozzles the bed is the part both
+/// reach ([`placement_box`]).
 pub fn relocate(
     settings: &Settings,
     tower: &TowerSettings,
@@ -324,7 +431,7 @@ pub fn relocate(
     let Some((w, depth, brim)) = footprint(settings, tower, ground)? else {
         return Ok(None);
     };
-    let [bx0, by0, bx1, by1] = ground.bed.map(|value| value as f32);
+    let [bx0, by0, bx1, by1] = placement_box(settings, ground.bed)?.map(|value| value as f32);
     let margin = MARGIN + brim;
     let (x_lo, y_lo) = (bx0 + margin, by0 + margin);
     let (x_hi, y_hi) = (

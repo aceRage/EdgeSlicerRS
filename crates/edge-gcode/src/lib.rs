@@ -455,14 +455,16 @@ pub fn write_timed(
     let first = layers.first().map_or(0, |layer| layer.filament);
     // A Bambu Lab printer of two nozzles is told by the file which nozzle
     // each filament goes to, and its templates are written for that
-    // (GCode.cpp: `filament_map`, the nozzle grouping); not done here.
+    // (GCode.cpp: `filament_map`, the nozzle grouping). The grouping is
+    // worked out (edge-engine `grouping`), but nothing here writes a file
+    // for two nozzles yet.
     if let Some(s) = settings.get(first)
         && s.bambu
         && s.tools >= 2
     {
         return Err(GcodeError::Unsupported(
-            "a Bambu Lab printer of two nozzles (H2D, H2C): which nozzle each filament \
-             prints with is Bambu Studio's filament grouping (filament_map), not done yet"
+            "a Bambu Lab printer of two nozzles (H2D, H2C): writing G-code that changes \
+             between its nozzles (filament_map, the nozzle change templates) is not done yet"
                 .into(),
         ));
     }
