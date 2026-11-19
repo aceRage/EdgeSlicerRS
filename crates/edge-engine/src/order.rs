@@ -21,7 +21,12 @@ use std::collections::HashMap;
 /// copies come out a hair different (on mcbrim_test's first layer, by up
 /// to 2e-4 mm² in 609 after elephant foot compensation), which would
 /// leave the order to chance. Parts that are not copies but differ by
-/// less than this are taken in the reference's order only by chance.
+/// less than this are taken in the reference's order only by chance:
+/// threetone's two end blocks (13.3 mm wide each, walls the same to the
+/// micron in both files) come out 1, 0, 2 here and on the reference's X1
+/// Carbon, but 1, 2, 0 on its H2D, whatever the filament map; with the
+/// end blocks' filaments swapped the H2D gives 1, 0, 2. That is which
+/// side rounds larger, not a rule to follow.
 const SAME_AREA: f64 = 1e-6;
 
 /// The first layer's order: `pieces` gives, for each tool on it in
@@ -56,93 +61,21 @@ pub(crate) fn first_layer(
 /// The shortest way through all of `tools` starting from `start`, when
 /// going from tool `a` to tool `b` costs `cost(a, b)`: the reference's
 /// `solve_extruder_order`, kept step for step so that ties fall as its
-/// do. `start` need not be among the tools; it is then where the way
-/// begins and is left out of the answer.
+/// do (`edge_group::solve_order`, which the filament grouping shares).
+/// `start` need not be among the tools; it is then where the way begins
+/// and is left out of the answer.
 pub(crate) fn solve(
     cost: impl Fn(usize, usize) -> f32,
     tools: &[usize],
     start: Option<usize>,
 ) -> Vec<usize> {
-    let mut all = tools.to_vec();
-    let mut added = false;
-    let start = match start {
-        Some(start) => {
-            match all.iter().position(|tool| *tool == start) {
-                Some(at) => all.swap(0, at),
-                None => {
-                    all.insert(0, start);
-                    added = true;
-                }
-            }
-            start
-        }
-        None => match all.first() {
-            Some(first) => *first,
-            None => return Vec::new(),
-        },
-    };
-    let count = all.len();
-    let states = 1usize << count;
-    // The least cost of having been to every tool in `state` and standing
-    // at `target`, and which tool that way came from.
-    let mut least = vec![vec![0x7fff_ffff as f32; count]; states];
-    let mut from = vec![vec![usize::MAX; count]; states];
-    least[1][0] = 0.0;
-    for state in 0..states {
-        if state & 1 == 0 {
-            continue;
-        }
-        for target in 0..count {
-            if state >> target & 1 == 0 {
-                continue;
-            }
-            for middle in 0..count {
-                if state >> middle & 1 == 0 {
-                    continue;
-                }
-                let so_far = least[state - (1 << target)][middle] + cost(all[middle], all[target]);
-                if least[state][target] > so_far {
-                    least[state][target] = so_far;
-                    from[state][target] = middle;
-                }
-            }
-        }
-    }
-    // The first tool, other than the start, that the cheapest way ends at.
-    let whole = states - 1;
-    let (mut best, mut end) = (f32::MAX, 0);
-    for last in 0..count {
-        if all[last] != start && best > least[whole][last] {
-            best = least[whole][last];
-            end = last;
-        }
-    }
-    let mut path = Vec::with_capacity(count);
-    let (mut state, mut at) = (whole, end);
-    while at != usize::MAX {
-        path.push(all[at]);
-        let before = from[state][at];
-        state -= 1 << at;
-        at = before;
-    }
-    if added {
-        path.pop();
-    }
-    path.reverse();
-    path
+    edge_group::solve_order(cost, tools, start).0
 }
 
-/// Every layer's order. `first` is the first layer's, already settled;
-/// `later[i]` is the tools on layer `i + 1` in ascending order, empty for
-/// a layer with nothing on it, which keeps the tool in hand.
-pub(crate) fn layers(
-    first: Vec<usize>,
-    later: &[Vec<usize>],
-    cost: impl Fn(usize, usize) -> f32,
-) -> Vec<Vec<usize>> {
-    // The reference first brings to the front of each layer's list the
-    // tool the list before it ended with (`reorder_extruders`), and it is
-    // those lists the solver is handed.
+/// The lists the solver is handed for the layers above the first: the
+/// reference first brings to the front of each layer's list the tool the
+/// list before it ended with (`reorder_extruders`).
+pub(crate) fn handed(first: &[usize], later: &[Vec<usize>]) -> Vec<Vec<usize>> {
     let mut handed: Vec<Vec<usize>> = Vec::with_capacity(later.len());
     let mut ended = first.last().copied();
     for tools in later {
@@ -155,6 +88,18 @@ pub(crate) fn layers(
         ended = list.last().copied().or(ended);
         handed.push(list);
     }
+    handed
+}
+
+/// Every layer's order. `first` is the first layer's, already settled;
+/// `later[i]` is the tools on layer `i + 1` in ascending order, empty for
+/// a layer with nothing on it, which keeps the tool in hand.
+pub(crate) fn layers(
+    first: Vec<usize>,
+    later: &[Vec<usize>],
+    cost: impl Fn(usize, usize) -> f32,
+) -> Vec<Vec<usize>> {
+    let handed = handed(&first, later);
     // Then the solver, layer by layer from the tool in hand; a set of
     // tools met again from the same tool gets the answer it got before
     // (`reorder_extruders_for_minimum_flush_volume`).
@@ -389,5 +334,41 @@ mod tests {
         // carries on from it.
         let orders = layers(vec![0, 1], &[vec![], vec![0, 1]], same);
         assert_eq!(orders, [vec![0, 1], vec![], vec![1, 0]]);
+    }
+
+    #[test]
+    fn two_nozzles_with_a_matrix_each_are_priced_at_the_new_filament_s() {
+        // fx/m2c_four_pn_1212 (H2D, filaments 1 and 3 on the left nozzle,
+        // 2 and 4 on the right, a 4 × 4 matrix to each): layers 1 to 5.
+        let each: [f32; 32] = [
+            0., 300., 120., 510., 90., 0., 260., 180., 450., 70., 0., 330., 200., 610., 140., 0.,
+            0., 250., 410., 160., 330., 0., 95., 520., 60., 380., 0., 240., 470., 130., 210., 0.,
+        ];
+        let nozzle = [0, 1, 0, 1];
+        let per_nozzle = |from: usize, to: usize| each[nozzle[to] * 16 + from * 4 + to];
+        let later = vec![vec![0, 1, 2, 3]; 4];
+        let wanted: [&[usize]; 5] = [
+            &[1, 2, 0, 3],
+            &[3, 1, 0, 2],
+            &[2, 3, 1, 0],
+            &[0, 2, 3, 1],
+            &[1, 0, 3, 2],
+        ];
+        assert_eq!(layers(vec![1, 2, 0, 3], &later, per_nozzle), wanted);
+        // The reference reads the 32 values (as its command line leaves
+        // them) as one 5 × 5 square, and its file has these orders.
+        let theirs: [f32; 32] = [
+            0., 300., 120., 510., 90., 0., 0., 180., 450., 70., 0., 330., 0., 610., 140., 0., 0.,
+            250., 0., 160., 330., 0., 95., 520., 0., 380., 0., 240., 470., 130., 210., 0.,
+        ];
+        let square = |from: usize, to: usize| theirs[from * 5 + to];
+        let wanted: [&[usize]; 5] = [
+            &[1, 2, 0, 3],
+            &[3, 1, 0, 2],
+            &[2, 0, 3, 1],
+            &[1, 3, 0, 2],
+            &[2, 0, 3, 1],
+        ];
+        assert_eq!(layers(vec![1, 2, 0, 3], &later, square), wanted);
     }
 }

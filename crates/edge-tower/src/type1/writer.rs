@@ -103,6 +103,9 @@ pub(crate) struct Writer {
     tool: usize,
     /// Each filament's fastest feed of filament, in mm/s (`max_e_speed`).
     max_e_speed: Vec<f32>,
+    /// What a ramming holds the feed of filament to instead, in mm/s; 0
+    /// for the filament's own (`m_e_speed_limit`).
+    e_speed_limit: f32,
     pub wipe_path: Vec<V2>,
 }
 
@@ -135,6 +138,7 @@ impl Writer {
             arc_fitting,
             tool,
             max_e_speed,
+            e_speed_limit: 0.0,
             wipe_path: Vec::new(),
         };
         writer.gcode += &format!("; LAYER_HEIGHT: {}\n", fixed(f64::from(layer_height), 6));
@@ -161,6 +165,12 @@ impl Writer {
 
     pub fn set_flow(&mut self, flow: f32) -> &mut Self {
         self.flow = flow;
+        self
+    }
+
+    /// `set_e_speed_limit`.
+    pub fn set_e_speed_limit(&mut self, limit: f32) -> &mut Self {
+        self.e_speed_limit = limit;
         self
     }
 
@@ -260,7 +270,11 @@ impl Writer {
             if limit {
                 let along = if len == 0.0 { e.abs() } else { len };
                 let e_speed = e / (along / f * 60.0);
-                let most = self.max_e_speed.get(self.tool).copied().unwrap_or(f32::MAX);
+                let most = if self.e_speed_limit > 0.0 {
+                    self.e_speed_limit
+                } else {
+                    self.max_e_speed.get(self.tool).copied().unwrap_or(f32::MAX)
+                };
                 f /= 1f32.max(e_speed / most);
             }
             line += &self.format_f(f);

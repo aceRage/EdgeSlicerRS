@@ -25,6 +25,7 @@ edge-engine = { path = "crates/edge-engine" }
 edge-extrusion = { path = "crates/edge-extrusion" }
 edge-fuzzy = { path = "crates/edge-fuzzy" }
 edge-gcode = { path = "crates/edge-gcode" }
+edge-group = { path = "crates/edge-group" }
 edge-geom = { path = "crates/edge-geom" }
 edge-mesh = { path = "crates/edge-mesh" }
 edge-infill = { path = "crates/edge-infill" }

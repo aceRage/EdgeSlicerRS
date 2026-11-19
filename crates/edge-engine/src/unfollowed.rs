@@ -163,8 +163,9 @@ const SILENT: &[Silent] = &[
     // matrices the nozzle grouping weighs (`prepare_flush_matrices`, for
     // `build_filament_group_context`), on printers of two extruders or a
     // nozzle rack; not the tower's flushes nor the order of tools on a
-    // layer. That grouping is not done here (two-nozzle Bambu printers are
-    // refused), so it stays said with "Fast". Measured: on the U1
+    // layer. That grouping is worked out here (`crate::grouping`), with it,
+    // but two-nozzle Bambu printers are still refused at the tower and the
+    // writer, so it stays said with "Fast". Measured: on the U1
     // (mcbrim_test.3mf) the reference's G-code is the same with it at 3.
     gate(
         "prime_volume_mode",
@@ -734,27 +735,16 @@ mod tests {
         pub const TOWER: &[&str] = &[
             "cooling_tube_length",
             "cooling_tube_retraction",
-            "enable_tower_interface_cooldown_during_tower",
             "extra_loading_move",
-            "filament_change_length",
-            "filament_change_length_nc",
             "filament_cooling_final_speed",
             "filament_cooling_initial_speed",
             "filament_cooling_moves",
             "filament_idle_travel_cooling_enabled",
             "filament_loading_speed",
             "filament_loading_speed_start",
-            "filament_ramming_travel_time",
-            "filament_ramming_travel_time_nc",
-            "filament_ramming_volumetric_speed",
-            "filament_ramming_volumetric_speed_nc",
             "filament_stamping_distance",
             "filament_stamping_loading_speed",
             "filament_toolchange_delay",
-            "filament_tower_interface_pre_extrusion_dist",
-            "filament_tower_interface_pre_extrusion_length",
-            "filament_tower_interface_print_temp",
-            "filament_tower_interface_purge_volume",
             "filament_unloading_speed",
             "filament_unloading_speed_start",
             "high_current_on_filament_swap",
@@ -802,11 +792,16 @@ mod tests {
     /// table though a stage names them. `handle_hotend_as_extruder` is read
     /// only to say Bambu's tower interface switch where the reference acts
     /// on it (edge-tower `type1::interface_features_supported`); the rack
-    /// itself is not followed.
-    const PARTLY: [&str; 3] = [
+    /// itself is not followed. The filament grouping (`crate::grouping`)
+    /// reads the rack's nozzle diameters only to refuse a rack, and
+    /// `flush_multiplier_fast` for the grouping's flush matrices alone.
+    const PARTLY: [&str; 6] = [
         "stabilizer_supports",
         "prime_volume_mode",
         "handle_hotend_as_extruder",
+        "extruder_rack_nozzle_diameter",
+        "extruder_rack_nozzle_override",
+        "flush_multiplier_fast",
     ];
 
     /// The workspace's crates.

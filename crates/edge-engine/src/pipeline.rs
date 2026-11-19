@@ -2372,8 +2372,93 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // What a change costs: on a printer with a nozzle for each filament
     // every change costs the tower the same; on one of one nozzle that
     // flushes in the tower, and on a Bambu Lab printer, what it flushes.
+    // What the solver will be handed, kept for the filament grouping.
+    let grouping_lists = groups_onto_nozzles(&settings).then(|| {
+        let mut lists = vec![on_bed.clone()];
+        if settings.text("toolchange_ordering") == Some("cyclic") {
+            // Cyclic tool changes turn no list (`reorder_extruders`).
+            lists.extend(later.iter().cloned());
+        } else {
+            lists.extend(crate::order::handed(&on_bed, &later));
+        }
+        lists
+    });
+    // On a printer of two nozzles of different kinds (the H2D), which
+    // nozzle each filament prints from (ToolOrdering.cpp
+    // `reorder_extruders_for_minimum_flush_volume`): worked out from the
+    // lists the solver was handed, before it puts them in order (each
+    // layer's order reads it, below). Not for copies printed one after
+    // another, as there.
+    let mut nozzles: Option<edge_gcode::NozzleMap> = None;
+    let mut grouped_for_watch: Option<crate::grouping::Grouped> = None;
+    if let Some(lists) = grouping_lists
+        && sequence.is_none()
+        && settings.texts("nozzle_diameter").map_or(0, <[String]>::len) == 2
+    {
+        let filaments = |tools_of: &[usize]| -> Vec<u32> {
+            tools_of
+                .iter()
+                .map(|tool| (tools[*tool] - 1) as u32)
+                .collect()
+        };
+        let meshes: Vec<&Mesh> = if objects.is_empty() {
+            bodies.iter().map(|body| &body.solid).collect()
+        } else {
+            objects.iter().collect()
+        };
+        let outlines: Vec<(Vec<[f64; 2]>, f64)> = (meshes.iter())
+            .filter_map(|mesh| {
+                let (low, high) = mesh.bounds()?;
+                let points = (mesh.vertices.iter())
+                    .map(|v| [f64::from(v[0]), f64::from(v[1])])
+                    .collect();
+                Some((points, f64::from(high[2] - low[2])))
+            })
+            .collect();
+        let tower = if tower_settings.enabled && used.len() > 1 {
+            let ground = edge_tower::Ground {
+                bed: print.bed.unwrap_or_default(),
+                filaments: used.iter().map(|filament| filament - 1).collect(),
+                layer_height,
+                first_layer_height,
+                height: f64::from(max[2] - min[2]),
+            };
+            edge_tower::estimated_size(&settings, &tower_settings, &ground)?.map(
+                |(width, depth, brim)| {
+                    let (x, y) = (tower_settings.x, tower_settings.y);
+                    [x - brim, y - brim, x + width + brim, y + depth + brim]
+                },
+            )
+        } else {
+            None
+        };
+        let grouped = crate::grouping::group(
+            &settings,
+            lists.iter().map(|list| filaments(list)).collect(),
+            &outlines,
+            tower,
+        )?;
+        nozzles = grouped
+            .grouping
+            .as_ref()
+            .map(|grouping| crate::grouping::nozzle_map(&settings, grouping));
+        grouped_for_watch = Some(grouped);
+    }
+    // On two nozzles a project may carry a flush matrix to each (2 × n × n
+    // values, as Bambu Studio writes an H2D project): a change is priced
+    // at the matrix of the nozzle the new filament prints from. The
+    // reference reads those values as one square of floor(sqrt(2 n²))
+    // filaments (ToolOrdering.cpp `reorder_extruders_for_minimum_flush_volume`:
+    // `number_of_extruders = sqrt(flush_matrix.size())`), rows out of
+    // place; that is a flaw and is not followed. With one matrix for
+    // both the two read the same.
+    let filament_count = settings.texts("filament_colour").map_or(0, <[String]>::len);
     let mut orders = crate::order::layers(on_bed, &later, |from, to| {
-        tower_settings.change_cost(tools[from] - 1, tools[to] - 1)
+        let (old, new) = (tools[from] - 1, tools[to] - 1);
+        match &nozzles {
+            Some(map) => tower_settings.change_cost_on(old, new, map.extruder(new), filament_count),
+            None => tower_settings.change_cost(old, new),
+        }
     });
     // Cyclic tool changes: every layer above the first, and the first
     // too where asked, in one fixed order (ToolOrdering.cpp
@@ -2420,6 +2505,17 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             order.push(in_hand.unwrap_or(0));
         }
         in_hand = order.last().copied();
+    }
+    if let Some(mut grouped) = grouped_for_watch {
+        let filaments = |order: &[usize]| -> Vec<u32> {
+            order.iter().map(|tool| (tools[*tool] - 1) as u32).collect()
+        };
+        crate::grouping::set_orders(
+            &settings,
+            &mut grouped,
+            orders.iter().map(|order| filaments(order)).collect(),
+        )?;
+        watch.grouped(&grouped);
     }
     // What the profile asks of the order and is not followed.
     // What the walls were asked for and do not do goes with these.
@@ -2578,6 +2674,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             &heights.all(),
             &tops,
             start,
+            nozzles.as_ref(),
         )?;
         bambu_visits = laid.visits;
         laid.tower
@@ -2798,6 +2895,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     };
     plate_facts.labels = object_labels(&meshes, &instance_labels, &settings)?;
     plate_facts.tower_at = Some(Point2::from_mm(tower_settings.x, tower_settings.y));
+    plate_facts.nozzles = nozzles;
     let mut around: Vec<Vec<ExtrusionLoop>> = vec![Vec::new(); layers.len()];
     for (index, lines) in around.iter_mut().enumerate() {
         if adhesion.has_skirt(index) {
@@ -3178,6 +3276,7 @@ fn plate_facts(
         labels: Vec::new(),
         tower_at: None,
         by_object: Vec::new(),
+        nozzles: None,
         first_layer_box,
         first_layer_centre,
         in_head_wrap_detect_zone,

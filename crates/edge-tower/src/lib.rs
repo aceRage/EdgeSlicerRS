@@ -76,7 +76,7 @@ use edge_geom::{ExPolygon, Point2, Polygon, scaled, unscaled};
 pub use clearance::{
     CLEARANCE_ERROR, Clearance, Object, estimate_clears, purge_drop_clears, tower_clears,
 };
-pub use place::{Ground, Moved, PlaceError, estimated_size, relocate};
+pub use place::{Ground, Moved, PlaceError, estimated_size, placement_box, relocate};
 
 /// The tower's lines are this many nozzle diameters wide
 /// (WipeTower2.hpp `Width_To_Nozzle_Ratio`).
@@ -483,19 +483,15 @@ impl TowerSettings {
                         .to_owned(),
                 );
             }
+            // Bambu's own interface switch (`enable_tower_interface_features`)
+            // is followed where it acts, on printers of two nozzles
+            // (edge-tower `type1`); Edge's own options are not.
             for key in [
                 "wipe_tower_interface_temp",
                 "wipe_tower_interface_run_in",
                 "wipe_tower_interface_extra_prime",
-                "enable_tower_interface_features",
             ] {
-                // Bambu's own interface switch does nothing on a printer of
-                // one nozzle or the H2S (WipeTowerInterface.cpp
-                // `bambu_features_supported`).
-                if on(key)
-                    && (key != "enable_tower_interface_features"
-                        || type1::interface_features_supported(settings)?)
-                {
+                if on(key) {
                     unsupported.push(format!(
                         "{key} \"1\": tower interfaces are not done; a change between two kinds of \
                          filament is primed on the tower as any other"
@@ -660,6 +656,27 @@ impl TowerSettings {
             Some(volume) => volume as f32,
             None => self.prime_volume as f32,
         }
+    }
+
+    /// [`Self::change_cost`] on a printer of more than one nozzle, where
+    /// the project may carry a flush matrix to each nozzle (`filaments` ×
+    /// `filaments` values each, one after the other, as Bambu Studio
+    /// writes an H2D project): that of `nozzle` (from 0), the nozzle the
+    /// new filament prints from. A project of one matrix is read as
+    /// [`Self::change_cost`] reads it, for every nozzle.
+    pub fn change_cost_on(&self, old: usize, new: usize, nozzle: usize, filaments: usize) -> f32 {
+        let square = filaments * filaments;
+        if self.order_by_flush
+            && square > 0
+            && old < filaments
+            && new < filaments
+            && self.flush_matrix.len() > square
+            && self.flush_matrix.len().is_multiple_of(square)
+        {
+            let nozzle = nozzle.min(self.flush_matrix.len() / square - 1);
+            return self.flush_matrix[nozzle * square + old * filaments + new] as f32;
+        }
+        self.change_cost(old, new)
     }
 
     /// A tower line on a layer `height` mm thick.
@@ -3466,6 +3483,23 @@ mod tests {
         assert_eq!(bambu.wipe_volume(0, 1), 45.0);
         assert_eq!(bambu.change_cost(0, 1), 418.0);
         assert!(bambu.unsupported.is_empty(), "{:?}", bambu.unsupported);
+        // On two nozzles, one matrix serves both; a matrix to each nozzle
+        // (2 × 2 × 2 here) is read at the new filament's nozzle's, where the
+        // reference would read the eight values as one 2 × 2 square.
+        assert_eq!(bambu.change_cost_on(0, 1, 1, 2), 418.0);
+        assert_eq!(bambu.change_cost_on(1, 0, 0, 2), 228.0);
+        let each = read(
+            r#"{"enable_prime_tower": "1", "printer_model": "Bambu Lab H2D",
+                "flush_volumes_matrix": ["0", "418", "228", "0", "0", "300", "120", "0"]}"#,
+        );
+        assert_eq!(each.change_cost_on(0, 1, 0, 2), 418.0);
+        assert_eq!(each.change_cost_on(0, 1, 1, 2), 300.0);
+        assert_eq!(each.change_cost_on(1, 0, 1, 2), 120.0);
+        assert_eq!(each.change_cost(0, 1), 418.0);
+        // A filament past the count, or a nozzle past the matrices, keeps
+        // to what there is.
+        assert_eq!(each.change_cost_on(1, 0, 5, 2), 120.0);
+        assert_eq!(each.change_cost_on(2, 0, 1, 2), each.change_cost(2, 0));
         // Bambu Studio's names for its tower are read for it, and what it
         // does that is not done here is said.
         let named = read(&format!(

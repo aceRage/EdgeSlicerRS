@@ -456,6 +456,17 @@ pub struct PrintSettings {
     /// to detect it, in mm (`grab_length`, the first extruder's: one
     /// nozzle); the flush counts it (Print.cpp `_make_wipe_tower`).
     pub grab_length: f64,
+    /// `grab_length` of every extruder; on a printer of two nozzles the new
+    /// filament's extruder's counts (Print.cpp `_make_wipe_tower`).
+    pub grab_lengths: Vec<f64>,
+    /// What Bambu's tower interface features (`enable_tower_interface_features`,
+    /// on printers of more than one nozzle only) tell a change onto this
+    /// filament on a contact layer of the tower.
+    pub tower_interface: TowerInterface,
+    /// The tower's wall is left open where purges come in
+    /// (`wipe_tower_wall_gap`); a change on the tower keeps the head clear
+    /// of it on its way back (`wipe_avoid_perimeter`).
+    pub tower_wall_gap: bool,
     /// How many filaments the project is set up with, used or not.
     pub filaments: usize,
     /// Every setting, by name, for the templates to refer to.
@@ -660,6 +671,12 @@ impl Default for PrintSettings {
             tools: 1,
             flush_volumes: Vec::new(),
             grab_length: 0.0,
+            grab_lengths: Vec::new(),
+            tower_interface: TowerInterface {
+                purge_volume: 20.0,
+                ..TowerInterface::default()
+            },
+            tower_wall_gap: true,
             filaments: 1,
             variables: variables(&Settings::default(), None, None, None, None),
             config: Vec::new(),
@@ -958,6 +975,9 @@ impl PrintSettings {
             .filter(|model| !model.is_empty())
             .or(settings.text("printer_settings_id"))
             .is_some_and(|name| name.starts_with("Bambu Lab"));
+        if bambu && settings.texts("nozzle_diameter").map_or(1, <[String]>::len) == 2 {
+            unsupported.extend(crate::two_nozzles::notes(settings)?);
+        }
         Ok(Self {
             outer_wall_speed: number("outer_wall_speed", defaults.outer_wall_speed)?,
             inner_wall_speed: number("inner_wall_speed", defaults.inner_wall_speed)?,
@@ -1104,7 +1124,9 @@ impl PrintSettings {
                 defaults.retract_when_changing_layer,
             )?,
             wipe: flag("wipe", defaults.wipe)?,
-            wipe_distance: number("wipe_distance", defaults.wipe_distance)?,
+            // A filament's own wipe distance over the printer's
+            // (PrintApply.cpp `print_config_diffs`, `filament_wipe_distance`).
+            wipe_distance: overridable("wipe_distance", defaults.wipe_distance)?,
             retract_before_wipe: share("retract_before_wipe", defaults.retract_before_wipe)?
                 .clamp(0.0, 1.0),
             retract_after_wipe: share("retract_after_wipe", defaults.retract_after_wipe)?
@@ -1455,6 +1477,28 @@ impl PrintSettings {
                 .floats("grab_length")?
                 .and_then(|lengths| lengths.first().copied().flatten())
                 .unwrap_or(0.0),
+            grab_lengths: settings
+                .floats("grab_length")?
+                .unwrap_or_default()
+                .into_iter()
+                .map(|length| length.unwrap_or(0.0))
+                .collect(),
+            tower_interface: TowerInterface {
+                features: settings.flag("enable_tower_interface_features")? == Some(true)
+                    && (settings.flag("handle_hotend_as_extruder")? == Some(true)
+                        || settings.texts("nozzle_diameter").map_or(0, <[String]>::len) > 1),
+                purge_volume: number("filament_tower_interface_purge_volume", 20.0)?,
+                print_temperature: {
+                    let set = number("filament_tower_interface_print_temp", -1.0)?;
+                    if set == -1.0 {
+                        number("nozzle_temperature_range_high", 0.0)?
+                    } else {
+                        set
+                    }
+                },
+                pre_extrusion_length: number("filament_tower_interface_pre_extrusion_length", 0.0)?,
+            },
+            tower_wall_gap: settings.flag("wipe_tower_wall_gap")?.unwrap_or(true),
             tools: settings
                 .texts("nozzle_diameter")
                 .map_or(defaults.tools, |nozzles| nozzles.len().max(1)),
@@ -1478,6 +1522,7 @@ impl PrintSettings {
                     .filter(|(key, _)| {
                         edge_config::reference_knows(key)
                             || crate::bambu_vars::listed_mass_model(settings, key)
+                            || crate::two_nozzles::listed_pre_heating(settings, key)
                     })
                     .map(|(key, value)| (key.to_owned(), edge_config::serialized(key, value)))
                     .collect();
@@ -2011,6 +2056,59 @@ pub struct Plate {
     /// handed to the writer that are its own. Empty for a print laid
     /// layer by layer.
     pub by_object: Vec<ObjectRun>,
+    /// On a Bambu Lab printer of two nozzles (the H2D), which nozzle each
+    /// filament prints from, as the filament grouping worked it out
+    /// (edge-engine `grouping`). None on a printer of one nozzle, and
+    /// where nothing was grouped.
+    pub nozzles: Option<NozzleMap>,
+}
+
+/// Bambu's tower interface features as a filament's change on the tower
+/// reads them (GCode.cpp `append_tcr`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TowerInterface {
+    /// `enable_tower_interface_features` where it acts
+    /// (WipeTowerInterface.cpp `bambu_features_supported`).
+    pub features: bool,
+    /// `filament_tower_interface_purge_volume`, in mm³.
+    pub purge_volume: f64,
+    /// `filament_tower_interface_print_temp`, -1 read as
+    /// `nozzle_temperature_range_high`.
+    pub print_temperature: f64,
+    /// `filament_tower_interface_pre_extrusion_length`, pushed out more at
+    /// a contact change's start outside the tower.
+    pub pre_extrusion_length: f64,
+}
+
+/// Which nozzle each of the project's filaments prints from on a printer
+/// of two nozzles of one each extruder (the H2D), as the reference keeps
+/// it (MultiNozzleUtils.hpp `LayeredNozzleGroupResult`) and writes it in
+/// the file's settings (GCode.cpp `append_full_config`,
+/// `grouping_header_maps`). One entry for each filament of the project,
+/// used or not.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NozzleMap {
+    /// Each filament's extruder, from 1 (`filament_map`).
+    pub extruders: Vec<u32>,
+    /// Each filament's nozzle, by its number among the printer's, -1 for
+    /// one on no nozzle (`filament_nozzle_map`). On the H2D, one nozzle to
+    /// each extruder, the extruder from 0.
+    pub nozzles: Vec<i32>,
+    /// The kind of nozzle (`NozzleVolumeType` by number) each filament the
+    /// plate uses landed on; the project's own value for the others
+    /// (`filament_volume_map`).
+    pub volumes: Vec<i32>,
+}
+
+impl NozzleMap {
+    /// The extruder a filament prints from, from 0: the first for one the
+    /// map does not name (as the reference's `filament_map` placeholder
+    /// keeps 1 there).
+    pub fn extruder(&self, filament: usize) -> usize {
+        self.extruders
+            .get(filament)
+            .map_or(0, |extruder| extruder.saturating_sub(1) as usize)
+    }
 }
 
 /// One copy printed whole before the next starts (GCode.cpp `_do_export`,

@@ -147,14 +147,72 @@ fn footprint(
                 ))
             })
             .collect();
-        let blocks = |width: f32| blocks_depth(&purges, &categories, width, layer, pw, spacing);
-        match rib {
-            Some((rib_width, extra)) => {
-                let square = align_ceil((blocks(width) * width).sqrt(), pw);
-                let side = rib_side(square, blocks(square), rib_width, extra, height);
-                (side, side)
+        // On a printer of two nozzles the filament leaving a nozzle is rammed
+        // on the tower too: a layer crosses (nozzles used - 1) times, charged
+        // to the longest ramming (WipeTowerEstimate.cpp, `filament_change_length`
+        // by the project's `filament_map`).
+        let dual = settings.texts("nozzle_diameter").map_or(0, <[String]>::len) == 2;
+        let mut ramming = 0.0f32;
+        let mut longest = 0;
+        if dual {
+            let length = |filament: usize| {
+                at("filament_change_length", filament)
+                    .and_then(|text| text.trim().parse::<f32>().ok())
+                    .unwrap_or(0.0)
+            };
+            let mut nozzles = std::collections::BTreeSet::new();
+            for (i, filament) in ground.filaments.iter().enumerate() {
+                nozzles.insert(
+                    at("filament_map", *filament)
+                        .and_then(|text| text.trim().parse::<i64>().ok())
+                        .unwrap_or(1),
+                );
+                if length(*filament) > length(ground.filaments[longest]) {
+                    longest = i;
+                }
             }
-            None => (width, blocks(width).max(min_depth + pw)),
+            if nozzles.len() > 1 {
+                ramming = length(ground.filaments[longest]) * (nozzles.len() - 1) as f32;
+            }
+        }
+        if ramming > 0.0 {
+            let estimates: Vec<crate::type1::PurgeEstimate> = (purges.iter().enumerate())
+                .map(|(i, purge)| crate::type1::PurgeEstimate {
+                    prime_volume: *purge,
+                    category: categories[i] as i32,
+                    filament_change_length: if i == longest { ramming } else { 0.0 },
+                    filament_diameter: at("filament_diameter", ground.filaments[i])
+                        .and_then(|text| text.trim().parse().ok())
+                        .unwrap_or(1.75),
+                    ..crate::type1::PurgeEstimate::default()
+                })
+                .collect();
+            match rib {
+                Some((rib_width, extra)) => {
+                    let side = crate::type1::estimate_rib_tower_bbox_side(
+                        &estimates, width, layer, nozzle, spacing, rib_width, extra, height,
+                        line_width,
+                    );
+                    (side, side)
+                }
+                None => (
+                    width,
+                    crate::type1::estimate_tower_blocks_depth(
+                        &estimates, width, layer, nozzle, spacing, line_width, height,
+                    )
+                    .max(min_depth + pw),
+                ),
+            }
+        } else {
+            let blocks = |width: f32| blocks_depth(&purges, &categories, width, layer, pw, spacing);
+            match rib {
+                Some((rib_width, extra)) => {
+                    let square = align_ceil((blocks(width) * width).sqrt(), pw);
+                    let side = rib_side(square, blocks(square), rib_width, extra, height);
+                    (side, side)
+                }
+                None => (width, blocks(width).max(min_depth + pw)),
+            }
         }
     } else {
         match rib {
@@ -238,8 +296,8 @@ fn rib_side(width: f32, depth: f32, rib_width: f32, extra: f32, height: f32) -> 
 }
 
 /// How deep a Bambu Lab tower's blocks are for one purge of each filament
-/// (WipeTower.cpp `estimate_tower_blocks_depth`, without the second
-/// nozzle of a two-nozzle printer).
+/// (WipeTower.cpp `estimate_tower_blocks_depth`, with no ramming: a
+/// two-nozzle printer's goes through `type1`'s).
 fn blocks_depth(
     purges: &[f32],
     categories: &[i64],
@@ -306,12 +364,119 @@ fn semm_flush_volume(tower: &TowerSettings, count: usize) -> f32 {
     most * count as f32 / n as f32 * 0.6
 }
 
+/// The box the tower may stand in: the bed, or on a printer of two
+/// nozzles that each reach a strip of it the other does not (H2D, H2C,
+/// X2D: `extruder_printable_area`), the part both reach, as every nozzle
+/// purges into the tower (PartPlate.cpp `prime_tower_placement_box`, with
+/// ExtruderAreas.cpp `compute_extruder_areas`). `bed` is min x, min y, max
+/// x, max y in mm.
+pub fn placement_box(settings: &Settings, bed: [f64; 4]) -> Result<[f64; 4], ClipError> {
+    if settings.texts("nozzle_diameter").map_or(0, <[String]>::len) < 2 {
+        return Ok(bed);
+    }
+    let point = |text: &str| -> Option<Point2> {
+        let (x, y) = text.trim().split_once('x')?;
+        Some(Point2::from_mm(
+            x.trim().parse().ok()?,
+            y.trim().parse().ok()?,
+        ))
+    };
+    // Counter-clockwise, as the reference makes them.
+    let region = |points: Vec<Point2>| {
+        let mut contour = Polygon { points };
+        if contour.signed_area_mm2() < 0.0 {
+            contour.points.reverse();
+        }
+        ExPolygon {
+            contour,
+            holes: Vec::new(),
+        }
+    };
+    let mut areas: Vec<Vec<Point2>> = (settings
+        .texts("extruder_printable_area")
+        .unwrap_or_default()
+        .iter())
+    .flat_map(|text| text.split('#'))
+    .map(|text| text.split(',').filter_map(point).collect::<Vec<_>>())
+    .filter(|area| !area.is_empty())
+    .collect();
+    // One entry of two rectangles is the two nozzles' areas
+    // (`split_merged_extruder_areas`).
+    if areas.len() == 1 && areas[0].len() == 8 {
+        let second = areas[0].split_off(4);
+        areas.push(second);
+    }
+    let printable_bed: Vec<Point2> = (settings.texts("printable_area").unwrap_or_default().iter())
+        .filter_map(|text| point(text))
+        .collect();
+    if areas.len() < 2 || printable_bed.len() < 3 {
+        return Ok(bed);
+    }
+    // A missing or degenerate area is the whole bed.
+    let printable: Vec<ExPolygon> = (areas.into_iter())
+        .map(|area| {
+            region(if area.len() >= 3 {
+                area
+            } else {
+                printable_bed.clone()
+            })
+        })
+        .collect();
+    let mut shared = vec![printable[0].clone()];
+    for area in &printable[1..] {
+        shared = edge_clip::intersection(&shared, std::slice::from_ref(area))?;
+    }
+    // A strip only one nozzle reaches, slivers of rounding left out.
+    let mut exclusive = false;
+    for (e, area) in printable.iter().enumerate() {
+        let others: Vec<ExPolygon> = (printable.iter().enumerate())
+            .filter(|(o, _)| *o != e)
+            .map(|(_, area)| area.clone())
+            .collect();
+        let strip =
+            edge_clip::difference(std::slice::from_ref(area), &edge_clip::union_ex(&others)?)?;
+        let size: f64 = (strip.iter())
+            .map(|region| {
+                region.contour.signed_area_mm2().abs()
+                    - region
+                        .holes
+                        .iter()
+                        .map(|h| h.signed_area_mm2().abs())
+                        .sum::<f64>()
+            })
+            .sum();
+        exclusive |= size >= 1e-4;
+    }
+    let points = || {
+        shared
+            .iter()
+            .flat_map(|region| region.contour.points.iter())
+    };
+    if !exclusive || points().next().is_none() {
+        return Ok(bed);
+    }
+    let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+    for p in points() {
+        let (x, y) = (unscaled(p.x), unscaled(p.y));
+        lo = [lo[0].min(x), lo[1].min(y)];
+        hi = [hi[0].max(x), hi[1].max(y)];
+    }
+    let lo = [bed[0].max(lo[0]), bed[1].max(lo[1])];
+    let hi = [bed[2].min(hi[0]), bed[3].min(hi[1])];
+    Ok(if lo[0] < hi[0] && lo[1] < hi[1] {
+        [lo[0], lo[1], hi[0], hi[1]]
+    } else {
+        bed
+    })
+}
+
 /// The place for the tower, when the one saved does not fit; none where
 /// it does (`PartPlate::estimate_wipe_tower_polygon`, on a rectangular
 /// bed and a tower square to it). `obstacles` gives each object's outline
 /// on the bed, with its brim and a millimetre round it
 /// (`PartPlate::wipe_tower_obstacles`), asked for only when the tower
-/// is to be moved.
+/// is to be moved. On a printer of two nozzles the bed is the part both
+/// reach ([`placement_box`]).
 pub fn relocate(
     settings: &Settings,
     tower: &TowerSettings,
@@ -324,7 +489,7 @@ pub fn relocate(
     let Some((w, depth, brim)) = footprint(settings, tower, ground)? else {
         return Ok(None);
     };
-    let [bx0, by0, bx1, by1] = ground.bed.map(|value| value as f32);
+    let [bx0, by0, bx1, by1] = placement_box(settings, ground.bed)?.map(|value| value as f32);
     let margin = MARGIN + brim;
     let (x_lo, y_lo) = (bx0 + margin, by0 + margin);
     let (x_hi, y_hi) = (
@@ -617,5 +782,35 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!((moved.y - 192.072).abs() < 1e-3, "{moved:?}");
+    }
+
+    #[test]
+    fn a_two_nozzle_tower_estimates_the_ramming_too() {
+        // Two PLAs priming 150 mm³ each on the two nozzles of an H2D: one 4
+        // mm ramming a layer as well, a line of 1.25 mm depth, so 22.75 mm
+        // in all, where both on one nozzle come to 21.5 (28 rows of 59 mm
+        // at 0.75 mm, the smaller purge left out, behind a 0.5 mm line).
+        let json = |map: &str| {
+            format!(
+                r#"{{"enable_prime_tower": "1", "printer_model": "Bambu Lab H2D",
+                    "prime_tower_width": "60", "filament_type": ["PLA", "PLA"],
+                    "nozzle_diameter": ["0.4", "0.4"], "filament_map": {map},
+                    "filament_prime_volume": ["150", "150"],
+                    "filament_change_length": ["4", "4"], "prime_tower_brim_width": "3",
+                    "prime_tower_infill_gap": "150%"}}"#
+            )
+        };
+        let two = Ground {
+            filaments: vec![0, 1],
+            height: 4.0,
+            ..ground()
+        };
+        let depth = |map: &str| {
+            let (settings, tower) = tower(&json(map));
+            estimated_size(&settings, &tower, &two).unwrap().unwrap().1
+        };
+        let (across, within) = (depth(r#"["1", "2"]"#), depth(r#"["1", "1"]"#));
+        assert!((across - 22.75).abs() < 1e-4, "{across}");
+        assert!((within - 21.5).abs() < 1e-4, "{within}");
     }
 }

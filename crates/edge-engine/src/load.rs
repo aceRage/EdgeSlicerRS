@@ -645,6 +645,20 @@ pub(crate) fn plate_config(kept: Option<&PlateKept>) -> Vec<(&'static str, Strin
         Some("false" | "0") => config.push(("spiral_mode", "0".into())),
         _ => {}
     }
+    // A plate grouped by hand keeps its own map of filaments to nozzles;
+    // the automatic modes are worked out again (bbs_3mf.cpp: only
+    // "Manual" is read, and `filament_maps` only after it, in filament
+    // order, a value below 1 or not a number read as 1).
+    if kept.value("filament_map_mode") == Some("Manual") {
+        config.push(("filament_map_mode", "Manual".to_owned()));
+        if let Some(maps) = kept.value("filament_maps") {
+            let maps: Vec<String> = (maps.split([' ', ',']))
+                .filter(|token| !token.is_empty())
+                .map(|token| token.parse::<i64>().unwrap_or(1).max(1).to_string())
+                .collect();
+            config.push(("filament_map", maps.join(" ")));
+        }
+    }
     // Both or neither, as the reference writes them.
     if let (Some(sequence), Some(count)) = (
         kept.value("other_layers_print_sequence"),
@@ -660,7 +674,7 @@ pub(crate) fn plate_config(kept: Option<&PlateKept>) -> Vec<(&'static str, Strin
 pub(crate) fn plate_settings(kept: Option<&PlateKept>) -> Settings {
     let mut settings = Settings::default();
     for (key, value) in plate_config(kept) {
-        let value = if key == "other_layers_print_sequence" {
+        let value = if key == "other_layers_print_sequence" || key == "filament_map" {
             Value::Many(value.split_whitespace().map(str::to_owned).collect())
         } else {
             Value::One(value)
