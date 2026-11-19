@@ -421,9 +421,15 @@ mod tests {
         // PartPlate.cpp `prime_tower_placement_box`: the H2D's left nozzle
         // reaches 0-325 mm, its right 25-350.
         let bed = [0.0, 0.0, 350.0, 320.0];
-        assert_eq!(edge_tower::placement_box(&h2d(), bed).unwrap(), [25.0, 0.0, 325.0, 320.0]);
+        assert_eq!(
+            edge_tower::placement_box(&h2d(), bed).unwrap(),
+            [25.0, 0.0, 325.0, 320.0]
+        );
         let mut one = h2d();
-        one.insert("nozzle_diameter", edge_config::Value::Many(vec!["0.4".into()]));
+        one.insert(
+            "nozzle_diameter",
+            edge_config::Value::Many(vec!["0.4".into()]),
+        );
         assert_eq!(edge_tower::placement_box(&one, bed).unwrap(), bed);
     }
 

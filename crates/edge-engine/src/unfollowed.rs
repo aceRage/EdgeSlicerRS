@@ -803,11 +803,16 @@ mod tests {
     /// table though a stage names them. `handle_hotend_as_extruder` is read
     /// only to say Bambu's tower interface switch where the reference acts
     /// on it (edge-tower `type1::interface_features_supported`); the rack
-    /// itself is not followed.
-    const PARTLY: [&str; 3] = [
+    /// itself is not followed. The filament grouping (`crate::grouping`)
+    /// reads the rack's nozzle diameters only to refuse a rack, and
+    /// `flush_multiplier_fast` for the grouping's flush matrices alone.
+    const PARTLY: [&str; 6] = [
         "stabilizer_supports",
         "prime_volume_mode",
         "handle_hotend_as_extruder",
+        "extruder_rack_nozzle_diameter",
+        "extruder_rack_nozzle_override",
+        "flush_multiplier_fast",
     ];
 
     /// The workspace's crates.

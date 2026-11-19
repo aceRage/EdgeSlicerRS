@@ -1234,6 +1234,7 @@ dependencies = [
  "edge-extrusion",
  "edge-gcode",
  "edge-geom",
+ "edge-group",
  "edge-infill",
  "edge-mesh",
  "edge-paint",
@@ -1284,6 +1285,10 @@ dependencies = [
 
 [[package]]
 name = "edge-geom"
+version = "0.0.0"
+
+[[package]]
+name = "edge-group"
 version = "0.0.0"
 
 [[package]]
