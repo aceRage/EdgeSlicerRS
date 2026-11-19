@@ -2387,12 +2387,16 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // nozzle each filament prints from (ToolOrdering.cpp
     // `reorder_extruders_for_minimum_flush_volume`): worked out from the
     // lists the solver was handed, before it puts them in order (each
-    // layer's order reads it, below). Not for copies printed one after
-    // another, as there.
+    // layer's order reads it, below). Printing object by object with
+    // several copies, or with no tower, the plate's own `filament_map` is
+    // taken whatever the mode (GCode.cpp `_do_export`,
+    // `group_by_plate_map`): nothing is worked out, nor anything
+    // unprintable; one copy with the tower is grouped as by layer.
     let mut nozzles: Option<edge_gcode::NozzleMap> = None;
     let mut grouped_for_watch: Option<crate::grouping::Grouped> = None;
+    let tower_on = tower_settings.enabled && used.len() > 1;
+    let by_plate_map = crate::sequential::by_object(&settings) && (sequence.is_some() || !tower_on);
     if let Some(lists) = grouping_lists
-        && sequence.is_none()
         && settings.texts("nozzle_diameter").map_or(0, <[String]>::len) == 2
     {
         let filaments = |tools_of: &[usize]| -> Vec<u32> {
@@ -2415,7 +2419,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 Some((points, f64::from(high[2] - low[2])))
             })
             .collect();
-        let tower = if tower_settings.enabled && used.len() > 1 {
+        let tower = if tower_on && !by_plate_map {
             let ground = edge_tower::Ground {
                 bed: print.bed.unwrap_or_default(),
                 filaments: used.iter().map(|filament| filament - 1).collect(),
@@ -2435,8 +2439,9 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         let grouped = crate::grouping::group(
             &settings,
             lists.iter().map(|list| filaments(list)).collect(),
-            &outlines,
+            if by_plate_map { &[] } else { &outlines },
             tower,
+            by_plate_map,
         )?;
         nozzles = grouped
             .grouping

@@ -208,8 +208,10 @@ pub(crate) fn fixed_note(settings: &edge_config::Settings) -> Option<String> {
 /// (ToolOrdering.cpp `reorder_extruders_for_minimum_flush_volume`, gated
 /// on PrintConfig.cpp `support_different_extruders`): a printer of one or
 /// two extruders whose `extruder_variant_list` names more than one
-/// variant (the H2S, P2S and two-nozzle Bambu Lab printers), unless it
-/// prints more than one object one after another. Such a print's file
+/// variant (the H2S, P2S and two-nozzle Bambu Lab printers), unless a
+/// printer of one extruder prints more than one object one after another;
+/// on two the reference groups those by the plate's own map (GCode.cpp
+/// `_do_export`, `group_by_plate_map`). Such a print's file
 /// marks its first filament after the start G-code (`;VT<filament> H-1`,
 /// GCode.cpp `_do_export`; H is -1 with no nozzle rack).
 pub(crate) fn nozzle_grouping(variables: &Variables, objects_in_turn: usize) -> bool {
@@ -217,7 +219,7 @@ pub(crate) fn nozzle_grouping(variables: &Variables, objects_in_turn: usize) -> 
     let by_object = variables
         .value("print_sequence")
         .is_some_and(|sequence| sequence.to_string() == "by object");
-    if extruders == 0 || extruders > 2 || (by_object && objects_in_turn > 1) {
+    if extruders == 0 || extruders > 2 || (by_object && objects_in_turn > 1 && extruders < 2) {
         return false;
     }
     let mut variants: Vec<String> = variables
@@ -341,6 +343,14 @@ mod tests {
         variables.set("print_sequence", Value::text("by object"));
         assert!(nozzle_grouping(&variables, 1));
         assert!(!nozzle_grouping(&variables, 2));
+        // Two nozzles: objects one after another are grouped by the
+        // plate's own map, and marked.
+        variables.set_list("nozzle_diameter", texts(&["0.4", "0.4"]));
+        variables.set_list(
+            "extruder_variant_list",
+            texts(&["Direct Drive Standard", "Direct Drive High Flow"]),
+        );
+        assert!(nozzle_grouping(&variables, 2));
         variables.set_list("extruder_variant_list", texts(&["Direct Drive Standard"]));
         assert!(!nozzle_grouping(&variables, 1));
     }

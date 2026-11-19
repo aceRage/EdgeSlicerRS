@@ -6,11 +6,11 @@
 //! `incoming_extruder_retracted_length`, `set_ec_retraction_placeholders`).
 //!
 //! The grouping itself (which nozzle) is worked out before the writer
-//! (edge-engine `grouping`) and handed over in [`Plate::nozzles`]. Not
-//! done here, and refused before: printers with a nozzle rack (H2C, H3C;
-//! the grouping refuses them) and copies printed one after another (not
-//! grouped). On Bambu's tower the ramming before a change onto the other
-//! nozzle is laid by `bambu_tower`.
+//! (edge-engine `grouping`; for copies printed one after another, the
+//! plate's own map) and handed over in [`Plate::nozzles`]. Not done here,
+//! and refused before: printers with a nozzle rack (H2C, H3C; the grouping
+//! refuses them). On Bambu's tower the ramming before a change onto the
+//! other nozzle is laid by `bambu_tower`.
 
 use edge_template::{Value, Variables};
 
@@ -28,8 +28,7 @@ pub(crate) fn check(s: &PrintSettings) -> Result<(), GcodeError> {
     if s.plate.nozzles.is_none() {
         return Err(GcodeError::Unsupported(
             "a Bambu Lab printer of two nozzles: which nozzle each filament prints from was not \
-             worked out for this plate (the filament grouping is not done for copies printed \
-             one after another), so the nozzle changes cannot be written"
+             worked out for this plate, so the nozzle changes cannot be written"
                 .into(),
         ));
     }

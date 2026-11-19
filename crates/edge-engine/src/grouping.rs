@@ -295,18 +295,27 @@ fn inside(area: &[[f64; 2]], p: [f64; 2], tolerance: f64) -> bool {
 /// the order the layer lists them before it is put in order; `orders` the
 /// order each layer prints them in; `objects` each part's outline on the
 /// bed (its points) and height, `tower` the prime tower's box, if any.
+/// `by_plate_map`: the plate's own `filament_map` is taken whatever
+/// `filament_map_mode` says, as the reference groups copies printed one
+/// after another (GCode.cpp `_do_export`, ToolOrdering.cpp
+/// `group_by_plate_map`: the manual mode, nothing unprintable).
 pub(crate) fn group(
     settings: &Settings,
     layers: Vec<Vec<u32>>,
     objects: &[(Vec<[f64; 2]>, f64)],
     tower: Option<[f64; 4]>,
+    by_plate_map: bool,
 ) -> Result<Grouped, Failure> {
     let settings = &merged(settings);
     let machine = machine(settings)?;
     let filament_count = settings.texts("filament_colour").map_or(0, <[String]>::len);
-    let mode_name = settings
-        .text("filament_map_mode")
-        .unwrap_or("Auto For Flush");
+    let mode_name = if by_plate_map {
+        "Manual"
+    } else {
+        settings
+            .text("filament_map_mode")
+            .unwrap_or("Auto For Flush")
+    };
     let mode = Mode::from_name(mode_name).ok_or_else(|| {
         format!("filament_map_mode \"{mode_name}\": not a grouping mode the reference knows")
     })?;
@@ -539,7 +548,7 @@ mod tests {
             "filament_volume_map",
             edge_config::Value::Many(vec!["0".into(), "0".into(), "5".into()]),
         );
-        let grouped = group(&settings, vec![vec![0, 1]; 2], &[], None).unwrap();
+        let grouped = group(&settings, vec![vec![0, 1]; 2], &[], None, false).unwrap();
         let map = nozzle_map(&settings, grouped.grouping.as_ref().unwrap());
         assert_eq!(map.extruders, [2, 1, 2]);
         assert_eq!(map.nozzles, [1, 0, 1]);
@@ -552,7 +561,7 @@ mod tests {
 
     #[test]
     fn two_filaments_on_an_h2d_go_one_to_each_nozzle() {
-        let grouped = group(&h2d(), vec![vec![0, 1]; 3], &[], None).unwrap();
+        let grouped = group(&h2d(), vec![vec![0, 1]; 3], &[], None, false).unwrap();
         // Either way round costs the same, and the first tried wins:
         // filament 1 on the right nozzle. The reference, reading the one
         // matrix as half a matrix to each nozzle, gives [1, 2]
@@ -563,10 +572,26 @@ mod tests {
             "extruder_max_nozzle_count",
             edge_config::Value::Many(vec!["1".into(), "6".into()]),
         );
-        let said = group(&rack, vec![vec![0, 1]], &[], None)
+        let said = group(&rack, vec![vec![0, 1]], &[], None, false)
             .unwrap_err()
             .to_string();
         assert!(said.contains("rack"), "{said}");
+    }
+
+    /// Copies printed one after another take the plate's own map, the
+    /// grouping mode notwithstanding (work/tower/h2, h2_seq_auto: the
+    /// reference writes `filament_map = 1,1` with Auto For Flush).
+    #[test]
+    fn objects_one_after_another_take_the_plates_map() {
+        let mut settings = h2d();
+        settings.insert(
+            "filament_map",
+            edge_config::Value::Many(vec!["1".into(), "1".into()]),
+        );
+        let grouped = group(&settings, vec![vec![0, 1]; 3], &[], None, true).unwrap();
+        let grouping = grouped.grouping.unwrap();
+        assert_eq!(grouping.filament_map, [1, 1]);
+        assert_eq!(nozzle_map(&settings, &grouping).nozzles, [0, 0]);
     }
 
     /// Nozzles of two sizes are refused, tower or none: the reference
@@ -579,7 +604,7 @@ mod tests {
             "nozzle_diameter",
             edge_config::Value::Many(vec!["0.4".into(), "0.6".into()]),
         );
-        let said = group(&mixed, vec![vec![0, 1]], &[], None)
+        let said = group(&mixed, vec![vec![0, 1]], &[], None, false)
             .unwrap_err()
             .to_string();
         assert!(said.contains("nozzles of two sizes (0.4 and 0.6 mm)"), "{said}");
