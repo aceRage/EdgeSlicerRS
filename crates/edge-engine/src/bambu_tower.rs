@@ -226,7 +226,14 @@ pub(crate) fn plan(
             let mut lines = visit
                 .nozzle_change
                 .as_ref()
-                .map(|ramming| lines_of(&ramming.gcode, origin, ramming_flow))
+                .map(|ramming| {
+                    // From where it starts, which its text does not say.
+                    let from = format!(
+                        "G1 X{} Y{}\n{}",
+                        ramming.start_pos.0, ramming.start_pos.1, ramming.gcode
+                    );
+                    lines_of(&from, origin, ramming_flow)
+                })
                 .unwrap_or_default();
             lines.extend(lines_of(&visit.gcode, origin, flow));
             if visit.is_tool_change {

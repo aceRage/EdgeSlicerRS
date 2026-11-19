@@ -2054,6 +2054,71 @@ mod tests {
     }
 
     #[test]
+    fn with_bambus_interface_features_a_contact_purge_starts_outside_the_tower() {
+        // Two nozzles, a PETG of its own block coming in at layer 10:
+        // its purge there is a contact one, which with Bambu's interface
+        // features starts `filament_tower_interface_pre_extrusion_dist`
+        // (here 10 mm) outside the tower and runs in through a gap cut on
+        // that layer and the three below (`contact_run_in_start`,
+        // `get_wall_skip_points`).
+        let read = |features: &str| {
+            Settings::from_settings(
+                &Config::from_json(&format!(
+                    r#"{{"printer_model": "Bambu Lab H2D", "prime_tower_width": "35",
+                        "nozzle_diameter": ["0.4", "0.4"], "filament_map": ["1", "1", "2"],
+                        "filament_type": ["PLA", "PLA", "PETG"],
+                        "filament_diameter": ["1.75", "1.75", "1.75"],
+                        "enable_tower_interface_features": "{features}"}}"#
+                ))
+                .unwrap(),
+                0,
+            )
+            .unwrap()
+        };
+        let change = |old, new| ChangeIn {
+            old,
+            new,
+            purge_volume: 0.0,
+            nozzle_change: None,
+        };
+        let input: Vec<LayerIn> = (0..20)
+            .map(|index| LayerIn {
+                z: 0.2 * (index + 1) as f32,
+                height: 0.2,
+                changes: if index < 10 {
+                    vec![change(index % 2, 1 - index % 2)]
+                } else {
+                    vec![change(index % 2, 2), change(2, 1 - index % 2)]
+                },
+            })
+            .collect();
+        let start = |features: &str| {
+            let s = read(features);
+            assert_eq!(s.interface_features, features == "1");
+            let planned = plan(&s, &input, 0).unwrap();
+            let visits = lay(&planned, &s).unwrap();
+            let contact = visits[10]
+                .iter()
+                .find(|v| v.is_contact)
+                .expect("a contact change on layer 10");
+            (contact.tool_change_start_pos, planned.skip_points.clone())
+        };
+        let (off, gaps_off) = start("0");
+        let (on, gaps_on) = start("1");
+        // Layer 10 starts its purges on the right (10 % 4 == 2), 10 mm out.
+        assert!((on.0 - (off.0 + 10.0)).abs() < 1e-3, "{off:?} {on:?}");
+        assert_eq!(on.1, off.1);
+        // And its gap is cut on the three layers below too.
+        for below in 7..10 {
+            assert_eq!(
+                gaps_on[below].len(),
+                gaps_off[below].len() + 1,
+                "layer {below}"
+            );
+        }
+    }
+
+    #[test]
     fn a_smooth_timelapse_lays_the_wall_on_its_own_first() {
         let s = settings(r#", "timelapse_type": "1""#);
         let planned = plan(&s, &layers(4), 0).unwrap();
