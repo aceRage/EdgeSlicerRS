@@ -463,6 +463,10 @@ name = "edge-geom"
 version = "0.0.0"
 
 [[package]]
+name = "edge-group"
+version = "0.0.0"
+
+[[package]]
 name = "edge-infill"
 version = "0.0.0"
 dependencies = [
