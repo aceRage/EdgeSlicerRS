@@ -1206,13 +1206,36 @@ fn opened(outline: &[(f64, f64)], gaps: &[f64], half: f64) -> Vec<Vec<(f64, f64)
         };
         (a.0 + share * (b.0 - a.0), a.1 + share * (b.1 - a.1))
     };
+    // A gap's end within 0.01 mm of a point of the outline is that point
+    // (WipeTower2.cpp `insert_points`), so no speck of wall is left
+    // between them.
+    let snap = |along: f64| -> f64 {
+        let along = along.rem_euclid(total);
+        let index = marks.partition_point(|mark| *mark <= along).max(1) - 1;
+        let end = place(along);
+        let close = |p: (f64, f64)| (p.0 - end.0).powi(2) + (p.1 - end.1).powi(2) < 1e-4;
+        if close(outline[index]) {
+            marks[index]
+        } else if close(outline[(index + 1) % count]) {
+            if index + 1 == count {
+                total
+            } else {
+                marks[index + 1]
+            }
+        } else {
+            along
+        }
+    };
     // Measured from the far end of the first gap, so none lies across
     // the start.
-    let origin = gaps[0] + half;
+    let origin = snap(gaps[0] + half);
     let mut out: Vec<(f64, f64)> = Vec::new();
     for gap in gaps {
-        let from = (gap - half - origin).rem_euclid(total);
-        let to = from + 2.0 * half;
+        let from = (snap(gap - half) - origin).rem_euclid(total);
+        let mut to = (snap(gap + half) - origin).rem_euclid(total);
+        if to < from {
+            to += total;
+        }
         if to > total {
             out.push((from, total));
             out.push((0.0, to - total));
@@ -1614,6 +1637,10 @@ pub fn plan_changes(
     let laid_below = |layer: usize| (0..layer).rev().find(|below| laid[*below]);
     // Tool changes made on the layers below (`m_num_tool_changes`).
     let mut made = 0usize;
+    // Which way the tower's writer last laid a row, which picks the
+    // corner its frame is begun at (WipeTower2.cpp `m_left_to_right`):
+    // set by each change's rows, kept from layer to layer.
+    let mut left_to_right = true;
     // How tall the tower stands, by the layers laid.
     let mut tower_top = 0.0;
 
@@ -1661,6 +1688,7 @@ pub fn plan_changes(
         let iron = settings.wall_gap && !settings.bambu_tower;
         // Where each new nozzle comes in: which side, and how far back.
         let mut ways_in: Vec<(bool, f64, Point2)> = Vec::with_capacity(changes[layer].len());
+        let mut finish_left_to_right = left_to_right;
         for (index, change) in changes[layer].iter().enumerate() {
             let ram = &change.ram;
             let wide = line * settings.ram_ratio(change.old);
@@ -1923,6 +1951,19 @@ pub fn plan_changes(
             block.wipe = Some(wipe);
             tower.layers[layer].changes.push(block);
             used += planned.depth();
+            // As the rows left it, turned once more where the layer's
+            // last tool is still to come (`toolchange_Wipe`, its end); the
+            // frame goes on after the layer's first change.
+            left_to_right = rightward;
+            if changes[layer]
+                .last()
+                .is_some_and(|last| last.filament != change.filament)
+            {
+                left_to_right = !left_to_right;
+            }
+            if index == 0 {
+                finish_left_to_right = left_to_right;
+            }
         }
 
         // The depth no tool change uses (`finish_layer`): a frame, and
@@ -1932,15 +1973,57 @@ pub fn plan_changes(
         let (left, right) = (line, span - line);
         let fill = ((blocks - used).max(0.0) - line).max(0.0);
         let (low, high) = (blocks - fill, blocks);
+        // Laid in the reference's order, as given (`TOWER_FILL`): the
+        // frame from its top corner on the side the last row went to,
+        // round, then the fill.
+        let fill_path = |points: Vec<Point2>| ExtrusionPath {
+            part: ExtrusionPath::TOWER_FILL,
+            ..path(points)
+        };
+        // The writer starts at the fill box's top corner on the side the
+        // last row went to (`set_initial_position`), which a change before
+        // it goes to (`merge_tcr`); then along the frame's sides to its
+        // lower left before the fill (`finish_layer`).
+        let way_path = |points: Vec<Point2>| ExtrusionPath {
+            part: ExtrusionPath::TOWER_WAY,
+            ..path(points)
+        };
+        let begun = if finish_left_to_right {
+            (right, high)
+        } else {
+            (left, high)
+        };
         if fill > line - 1e-3 {
-            finish.push(path(vec![
+            let corners = [
                 at(left, low),
                 at(right, low),
                 at(right, high),
                 at(left, high),
-                at(left, low),
-            ]));
+            ];
+            // `rectangle` from that corner.
+            let first = if finish_left_to_right { 2 } else { 3 };
+            finish.push(fill_path(
+                (0..=4).map(|step| corners[(first + step) % 4]).collect(),
+            ));
         }
+        {
+            let mut way = vec![begun];
+            if begun.0 > left + WT_EPSILON {
+                way.push((left, begun.1));
+            }
+            if begun.1 > low + WT_EPSILON {
+                way.push((left, low));
+            }
+            if way.len() == 1 {
+                way.push(begun);
+            }
+            finish.push(way_path(way.into_iter().map(|(x, y)| at(x, y)).collect()));
+        }
+        // Where the tower's writer is once the frame and fill are down:
+        // at the fill box's lower left, where it goes after the frame
+        // whether there is one or not, or where the fill ends.
+        // In the layer's frame with its lift, as the wall and brim are.
+        let mut writer_at = (left, low + lift);
         let room = fill - line;
         if room > line {
             let start = left + 2.0 * line;
@@ -1962,11 +2045,12 @@ pub fn plan_changes(
                     points.push(at(x, y));
                 }
                 points.push(at(x, high));
-                finish.push(path(points));
+                writer_at = (x, high + lift);
+                finish.push(fill_path(points));
             } else {
                 // One line up the left, then one every so far across,
                 // each from the end the last stopped at.
-                finish.push(path(vec![at(start, low), at(start, high)]));
+                finish.push(fill_path(vec![at(start, low), at(start, high)]));
                 let (left, right) = (start, right - 2.0 * line);
                 let count = 1 + ((right - left) / settings.bridging) as usize;
                 let pitch = (right - left) / count as f64;
@@ -1974,7 +2058,8 @@ pub fn plan_changes(
                 for column in 1..=count {
                     let x = left + column as f64 * pitch;
                     let to = if column % 2 == 1 { low } else { high };
-                    finish.push(path(vec![at(x, from), at(x, to)]));
+                    finish.push(fill_path(vec![at(x, from), at(x, to)]));
+                    writer_at = (x, to + lift);
                     from = to;
                 }
             }
@@ -2021,14 +2106,39 @@ pub fn plan_changes(
             part: ExtrusionPath::TOWER_WALL,
             ..path(points)
         };
-        if gaps.is_empty() {
-            finish.push(wall_path(closed(&wall)));
+        // Begun at the side whose start is nearest the writer, and round
+        // from there (`generate_path`); the writer then ends where the
+        // side before it ends.
+        let pieces = if gaps.is_empty() {
+            vec![wall.iter().chain(wall.first()).copied().collect()]
         } else {
-            for piece in opened(&wall, &gaps, GAP_HALF * line) {
-                finish.push(wall_path(
-                    piece.iter().map(|(x, y)| place(*x, *y)).collect(),
-                ));
+            opened(&wall, &gaps, GAP_HALF * line)
+        };
+        let from = writer_at;
+        let mut sides: Vec<((f64, f64), (f64, f64))> = (pieces.iter())
+            .flat_map(|piece| piece.windows(2).map(|pair| (pair[0], pair[1])))
+            .collect();
+        if let Some(first) = (0..sides.len()).min_by(|a, b| {
+            let away = |side: usize| {
+                let (start, _) = sides[side];
+                (start.0 - from.0).hypot(start.1 - from.1)
+            };
+            away(*a).total_cmp(&away(*b))
+        }) {
+            sides.rotate_left(first);
+        }
+        let mut runs: Vec<Vec<(f64, f64)>> = Vec::new();
+        for (a, b) in &sides {
+            match runs.last_mut() {
+                Some(run) if run.last() == Some(a) => run.push(*b),
+                _ => runs.push(vec![*a, *b]),
             }
+        }
+        for run in &runs {
+            finish.push(wall_path(run.iter().map(|(x, y)| place(*x, *y)).collect()));
+        }
+        if let Some(end) = runs.last().and_then(|run| run.last()) {
+            writer_at = *end;
         }
 
         // The brim holds the tower to the bed: loops out from the wall,
@@ -2080,7 +2190,23 @@ pub fn plan_changes(
                 .iter()
                 .map(|p| (unscaled(p.x), unscaled(p.y)))
                 .collect();
-            finish.push(path(closed(&outline)));
+            // Begun at its point nearest the writer, which ends there
+            // again (`finish_layer`, `closest_point_index`).
+            let mut begun = outline.clone();
+            if let Some(nearest) = (0..begun.len()).min_by(|a, b| {
+                let away = |point: usize| {
+                    let (x, y) = begun[point];
+                    (x - writer_at.0).hypot(y - writer_at.1)
+                };
+                away(*a).total_cmp(&away(*b))
+            }) {
+                begun.rotate_left(nearest);
+                writer_at = begun[0];
+            }
+            finish.push(ExtrusionPath {
+                part: ExtrusionPath::TOWER_BRIM,
+                ..path(closed(&begun))
+            });
             ring = vec![region(&outline)];
         }
         made += changes[layer].len();
@@ -2465,6 +2591,38 @@ mod tests {
     }
 
     #[test]
+    fn the_tower_s_own_lines_are_given_in_the_reference_s_order() {
+        let settings = TowerSettings {
+            brim_chamfer: false,
+            ..on()
+        };
+        let tower = plan(&counts(&[0, 1, 0, 2, 0, 0]), &[0.2; 6], &settings).unwrap();
+        // A layer with no change: the frame from a corner of its top side,
+        // then the writer's way along it to its lower left, then the fill
+        // two lines in from there, then the wall in one piece.
+        let finish = &tower.layers[2].finish;
+        let parts: Vec<u32> = finish.iter().map(|path| path.part).collect();
+        assert_eq!(
+            parts[..3],
+            [
+                ExtrusionPath::TOWER_FILL,
+                ExtrusionPath::TOWER_WAY,
+                ExtrusionPath::TOWER_FILL
+            ]
+        );
+        let frame = &finish[0].points;
+        assert_eq!(frame.len(), 5);
+        let way = &finish[1].points;
+        assert_eq!(way[0], frame[0]);
+        let lower_left = way[way.len() - 1];
+        assert!(frame.contains(&lower_left));
+        let fill = finish[2].points[0];
+        assert_eq!(fill.y, lower_left.y);
+        assert!((unscaled((fill.x - lower_left.x).abs()) - 1.0).abs() < 1e-3);
+        assert_eq!(parts.last(), Some(&ExtrusionPath::TOWER_WALL));
+    }
+
+    #[test]
     fn the_tower_is_turned_end_for_end_on_alternate_layers() {
         let settings = TowerSettings {
             brim_width: 0.0,
@@ -2573,7 +2731,10 @@ mod tests {
         }
         // Where a layer uses no depth, a frame goes round it and lines
         // cross it no further apart than the layer above can bridge.
-        let finish = &tower.layers[2].finish;
+        // The writer's way between them is not a line of the tower's.
+        let finish: Vec<&ExtrusionPath> = (tower.layers[2].finish.iter())
+            .filter(|path| path.part != ExtrusionPath::TOWER_WAY)
+            .collect();
         assert_eq!(finish[0].points.len(), 5);
         let columns: Vec<f64> = finish[1..finish.len() - 1]
             .iter()
@@ -2602,7 +2763,9 @@ mod tests {
     fn the_first_layer_is_solid_and_has_a_brim() {
         let settings = on();
         let tower = plan(&counts(&[0, 1]), &[0.25, 0.2], &settings).unwrap();
-        let first = &tower.layers[0].finish;
+        let first: Vec<&ExtrusionPath> = (tower.layers[0].finish.iter())
+            .filter(|path| path.part != ExtrusionPath::TOWER_WAY)
+            .collect();
         // A frame, solid fill, the wall, and brim loops out to 5 mm.
         let spacing = settings.flow(0.25).unwrap().spacing;
         let loops = ((5.0 + spacing / 2.0) / spacing).floor() as usize;
@@ -2725,6 +2888,7 @@ mod tests {
                 extra: 8.0,
                 rounded: false,
             },
+            wall_gap: false,
             ..ribbed()
         };
         let tower = plan(&counts(&[1, 5, 5, 5, 5]), &[0.2; 5], &sharp).unwrap();
@@ -2995,7 +3159,10 @@ mod tests {
             let closed: Vec<&ExtrusionPath> = tower.layers[layer]
                 .finish
                 .iter()
-                .filter(|path| path.points.first() == path.points.last())
+                .filter(|path| {
+                    path.part != ExtrusionPath::TOWER_WAY
+                        && path.points.first() == path.points.last()
+                })
                 .collect();
             closed
                 .iter()
@@ -3016,7 +3183,9 @@ mod tests {
         // the layer does not have.
         let [_, low, _, high] = extent(&tower.layers[2].changes[0].lines);
         assert!(low > front && high < back);
-        assert_eq!(tower.layers[2].finish.len(), 1);
+        // The wall and the writer's way to it, no more.
+        assert_eq!(tower.layers[2].finish.len(), 2);
+        assert_eq!(tower.layers[2].finish[0].part, ExtrusionPath::TOWER_WAY);
         // A layer below that has a change to spare gets its frame and
         // lines across, as before.
         let spare = plan(&counts(&[1, 2]), &[0.2; 2], &settings).unwrap();
@@ -3027,9 +3196,8 @@ mod tests {
             tower.layers[layer]
                 .finish
                 .iter()
-                .filter(|path| path.points.first() == path.points.last())
+                .filter(|path| path.part == ExtrusionPath::TOWER_BRIM)
                 .count()
-                - 1
         };
         assert!(brimmed(1) > 0);
         assert_eq!(brimmed(2), 0);
