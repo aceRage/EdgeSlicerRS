@@ -5760,8 +5760,8 @@ fn two_nozzles_start_names_each_extruders_first_filament() {
     assert!(text.contains("; map 121 first 1,0 model 1,2"), "{text}");
 }
 
-/// Notes for what is not done on two nozzles: the idle nozzle's
-/// pre-cooling and pre-heating, and the timelapse picture.
+/// Notes for what is not done on two nozzles: the timelapse picture. The
+/// idle nozzle's pre-cooling and pre-heating is done, and not noted.
 #[test]
 fn two_nozzles_say_what_is_not_done() {
     let settings = edge_config::Settings::from_json(
@@ -5771,8 +5771,9 @@ fn two_nozzles_say_what_is_not_done() {
     .unwrap();
     let print = PrintSettings::for_filament(&settings, 0).unwrap();
     let said = print.unsupported.join("\n");
-    assert!(said.contains("enable_pre_heating"), "{said}");
+    assert!(!said.contains("enable_pre_heating"), "{said}");
     assert!(said.contains("time_lapse_gcode"), "{said}");
+    assert!(print.pre_heating.is_some());
     // And no second nozzle, no note.
     let one = edge_config::Settings::from_json(
         r#"{"printer_model": "Bambu Lab A1", "nozzle_diameter": ["0.4"],
