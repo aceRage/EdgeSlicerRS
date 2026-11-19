@@ -2331,9 +2331,13 @@ impl Writer<'_> {
         // Two nozzles (the H2D): a change within one nozzle flushes as on
         // a printer of one; onto the other, what that nozzle still holds
         // is flushed into it (GCode.cpp `set_extruder`,
-        // `cross_extruder_flush_volume`).
+        // `cross_extruder_flush_volume`). On Bambu's tower the reference
+        // flushes what the tower planned, nothing onto the other nozzle
+        // (`append_tcr`, its "Phase 7" rule, which `set_extruder` has
+        // dropped); that is the tower's two-nozzle part, not done yet (the
+        // tower is refused on two nozzles).
         let flushed = match (nozzles, old) {
-            (Some(map), Some(old)) => self
+            (Some(map), Some(old)) if !on_tower => self
                 .state
                 .held
                 .cross_flush(map, old, to, new_settings)
@@ -2422,7 +2426,19 @@ impl Writer<'_> {
                         vec![Value::Float(0.0); list.len()],
                     );
                 }
+                // Nor a tower to keep clear of: the wipe-avoid spot the
+                // reference gives such a change (`set_extruder`, 110), read
+                // only with `wipe_avoid_perimeter`, which is off there.
+                let avoid = (!on_tower)
+                    .then(|| self.variables.value("wipe_avoid_pos_x"))
+                    .flatten();
+                if avoid.is_some() {
+                    self.variables.set("wipe_avoid_pos_x", Value::Float(110.0));
+                }
                 let expanded = edge_template::expand_mut(template, &mut self.variables);
+                if let Some(value) = avoid {
+                    self.variables.set("wipe_avoid_pos_x", value);
+                }
                 if let Some(list) = cooling {
                     self.variables
                         .set_list("filament_cooling_before_tower", list);
