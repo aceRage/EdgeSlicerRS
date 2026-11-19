@@ -205,8 +205,14 @@ pub struct TowerSettings {
     /// `reorder_extruders_for_minimum_flush_volume`).
     pub order_by_flush: bool,
     /// `flush_volumes_matrix` as given: mm³ from filament i to filament
-    /// j at `i * n + j`.
+    /// j at `i * n + j`; on a printer of two nozzles maybe a matrix to
+    /// each nozzle, one after the other (`n × n` values each, as Bambu
+    /// Studio writes an H2D project).
     pub flush_matrix: Vec<f64>,
+    /// How many filaments the project has (`filament_colour`), which
+    /// sizes the matrix; 0 where none is said, and the matrix is read as
+    /// one square.
+    pub filaments: usize,
     pub flush_multiplier: f64,
     /// The least each filament lays on the tower when it is flushed in
     /// it, in mm³ (`filament_minimal_purge_on_wipe_tower`).
@@ -276,6 +282,7 @@ impl Default for TowerSettings {
             purge_in_tower: true,
             order_by_flush: true,
             flush_matrix: Vec::new(),
+            filaments: 0,
             flush_multiplier: 0.3,
             minimal_purge: Vec::new(),
             stagger: false,
@@ -592,6 +599,10 @@ impl TowerSettings {
             purge_in_tower,
             order_by_flush: (single_nozzle && purge_in) || bambu_tower,
             flush_matrix,
+            filaments: settings
+                .texts("filament_colour")
+                .or(settings.texts("filament_diameter"))
+                .map_or(0, <[String]>::len),
             flush_multiplier,
             minimal_purge: list("filament_minimal_purge_on_wipe_tower")?
                 .into_iter()
@@ -619,10 +630,31 @@ impl TowerSettings {
     }
 
     /// `flush_volumes_matrix` from filament `old` to filament `new`
-    /// (counting from 0), as given; none where the matrix does not reach.
-    fn flush(&self, old: usize, new: usize) -> Option<f64> {
+    /// (counting from 0), as given, in the matrix of `nozzle` (from 0)
+    /// where the project carries one to each nozzle of its `filaments`
+    /// filaments (the last for a nozzle past them); none where the matrix
+    /// does not reach. A matrix not sized by the filaments is read as one
+    /// square. The reference reads a matrix to each nozzle as one square
+    /// of floor(sqrt(2 n²)) filaments too, rows out of place
+    /// (ToolOrdering.cpp `reorder_extruders_for_minimum_flush_volume`):
+    /// a flaw, not followed.
+    fn flush_in(&self, old: usize, new: usize, nozzle: usize, filaments: usize) -> Option<f64> {
+        let square = filaments * filaments;
+        if square > 0
+            && !self.flush_matrix.is_empty()
+            && self.flush_matrix.len().is_multiple_of(square)
+        {
+            let nozzle = nozzle.min(self.flush_matrix.len() / square - 1);
+            return (old < filaments && new < filaments)
+                .then(|| self.flush_matrix[nozzle * square + old * filaments + new]);
+        }
         let count = ((self.flush_matrix.len() as f64).sqrt() + 1e-9) as usize;
         (old < count && new < count).then(|| self.flush_matrix[old * count + new])
+    }
+
+    /// [`Self::flush_in`] the first nozzle's matrix.
+    fn flush(&self, old: usize, new: usize) -> Option<f64> {
+        self.flush_in(old, new, 0, self.filaments)
     }
 
     /// What a change from filament `old` to filament `new` (counting from
@@ -633,7 +665,14 @@ impl TowerSettings {
     /// matrix does not reach takes `prime_volume`. Worked in single
     /// precision, as there.
     pub fn wipe_volume(&self, old: usize, new: usize) -> f64 {
-        match self.flush(old, new).filter(|_| self.purge_in_tower) {
+        self.wipe_volume_on(old, new, 0)
+    }
+
+    /// [`Self::wipe_volume`] on a printer of more than one nozzle: from
+    /// the matrix of `nozzle` (from 0), the new filament's, where the
+    /// project carries one to each nozzle.
+    pub fn wipe_volume_on(&self, old: usize, new: usize, nozzle: usize) -> f64 {
+        match (self.flush_in(old, new, nozzle, self.filaments)).filter(|_| self.purge_in_tower) {
             Some(volume) => {
                 let least = (self.minimal_purge.get(new))
                     .or(self.minimal_purge.last())
@@ -665,18 +704,13 @@ impl TowerSettings {
     /// new filament prints from. A project of one matrix is read as
     /// [`Self::change_cost`] reads it, for every nozzle.
     pub fn change_cost_on(&self, old: usize, new: usize, nozzle: usize, filaments: usize) -> f32 {
-        let square = filaments * filaments;
-        if self.order_by_flush
-            && square > 0
-            && old < filaments
-            && new < filaments
-            && self.flush_matrix.len() > square
-            && self.flush_matrix.len().is_multiple_of(square)
+        match self
+            .flush_in(old, new, nozzle, filaments)
+            .filter(|_| self.order_by_flush)
         {
-            let nozzle = nozzle.min(self.flush_matrix.len() / square - 1);
-            return self.flush_matrix[nozzle * square + old * filaments + new] as f32;
+            Some(volume) => volume as f32,
+            None => self.prime_volume as f32,
         }
-        self.change_cost(old, new)
     }
 
     /// A tower line on a layer `height` mm thick.
@@ -3500,6 +3534,19 @@ mod tests {
         // to what there is.
         assert_eq!(each.change_cost_on(1, 0, 5, 2), 120.0);
         assert_eq!(each.change_cost_on(2, 0, 1, 2), each.change_cost(2, 0));
+        // Three filaments and a matrix to each nozzle (2 × 3 × 3): every
+        // reading of the tower's own goes by the filament count, the first
+        // nozzle's where none is named, never as one square of four.
+        let three = read(
+            r##"{"enable_prime_tower": "1", "printer_model": "Bambu Lab H2D",
+                "filament_colour": ["#FFFFFF", "#000000", "#FF0000"],
+                "flush_volumes_matrix": ["0", "1", "2", "3", "0", "5", "6", "7", "0",
+                                         "0", "11", "12", "13", "0", "15", "16", "17", "0"]}"##,
+        );
+        assert_eq!(three.filaments, 3);
+        assert_eq!(three.change_cost(2, 1), 7.0);
+        assert_eq!(three.change_cost_on(2, 1, 1, 3), 17.0);
+        assert_eq!(three.change_cost_on(1, 2, 0, 3), 5.0);
         // Bambu Studio's names for its tower are read for it, and what it
         // does that is not done here is said.
         let named = read(&format!(

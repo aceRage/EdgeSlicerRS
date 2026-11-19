@@ -2648,9 +2648,14 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                             .copied()
                             .flatten()
                     }),
+                    // On two nozzles from the matrix of the nozzle the new
+                    // filament prints from, where the project carries one
+                    // to each.
                     volume: match held {
                         Some(old) => {
-                            tower_settings.wipe_volume(tools[old] - 1, tools[*filament] - 1)
+                            let new = tools[*filament] - 1;
+                            let nozzle = nozzles.as_ref().map_or(0, |map| map.extruder(new));
+                            tower_settings.wipe_volume_on(tools[old] - 1, new, nozzle)
                         }
                         None => tower_settings.prime_volume,
                     },
