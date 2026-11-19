@@ -76,6 +76,7 @@ fn layer<'a>(z: f64, loops: &'a [ExtrusionLoop], below: &'a [ExPolygon]) -> Laye
         tower: &[],
         tower_z: None,
         tower_first: false,
+        visits: &[],
         around: &[],
         support: &[],
         loops,

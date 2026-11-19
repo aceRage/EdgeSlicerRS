@@ -121,6 +121,8 @@ pub(crate) struct Entry {
     /// How it lays its block, move by move, after a tool change: the
     /// first `laid` of `lines`.
     pub(crate) wipe: Option<edge_tower::Wipe>,
+    /// On Bambu's tower, the visits this turn starts with.
+    pub(crate) visits: Vec<edge_gcode::TowerVisit>,
     pub(crate) laid: usize,
 }
 
@@ -2558,7 +2560,30 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             }
         }
     }
-    let mut tower = edge_tower::plan_changes(&rams, &heights.all(), &tower_settings)?;
+    // Bambu's tower (WipeTower.cpp) is planned and laid by edge-tower's
+    // `type1` and written as its visits; the other by `plan_changes`.
+    let mut bambu_visits: Vec<Vec<edge_gcode::TowerVisit>> = Vec::new();
+    let mut tower = if tower_settings.bambu_tower && tower_settings.enabled {
+        let tops: Vec<f64> = (0..layers.len())
+            .map(|index| heights.top_of(index))
+            .collect();
+        let start = (orders.first())
+            .and_then(|order| order.first())
+            .map_or(0, |filament| tools[*filament] - 1);
+        let laid = crate::bambu_tower::plan(
+            &settings,
+            plate,
+            &tower_settings,
+            &rams,
+            &heights.all(),
+            &tops,
+            start,
+        )?;
+        bambu_visits = laid.visits;
+        laid.tower
+    } else {
+        edge_tower::plan_changes(&rams, &heights.all(), &tower_settings)?
+    };
     // And by what the tower lays, layer by layer (Print.cpp
     // `validate_compacted_wipe_tower_clearance`).
     if let Some(clearance) = &clearance {
@@ -2808,11 +2833,24 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         let mut blocks = tower.layers[index].changes.iter();
         let mut finish = Some(&tower.layers[index].finish);
         let any_change = changes[index] > 0;
-        for filament in order {
+        // Bambu's: the visits that change nothing (a smooth timelapse's
+        // wall, a layer with no change) go to the layer's first turn, each
+        // change's to the turn it starts.
+        let mut visits = bambu_visits.get(index).into_iter().flatten().peekable();
+        for (turn, filament) in order.iter().enumerate() {
             let mut lines = Vec::new();
             let (mut ram, mut enter, mut wipe, mut laid) = (None, Vec::new(), None, 0);
+            let mut mine: Vec<edge_gcode::TowerVisit> = Vec::new();
+            if turn == 0 {
+                while let Some(visit) = visits.next_if(|visit| !visit.tool_change) {
+                    mine.push(visit.clone());
+                }
+            }
             let switched = Some(tool_of[*filament]) != held;
             if switched {
+                if let Some(visit) = visits.next_if(|visit| visit.tool_change) {
+                    mine.push(visit.clone());
+                }
                 if let Some(block) = blocks.next() {
                     lines.extend(block.lines.iter().cloned());
                     ram = block.ram.clone();
@@ -2834,6 +2872,10 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                     laid = lines.len();
                 }
             }
+            // Bambu's tower lays only what its visits say.
+            if !mine.is_empty() {
+                laid = lines.len();
+            }
             entries.push(Entry {
                 layer: index,
                 filament: *filament,
@@ -2842,6 +2884,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 enter,
                 wipe,
                 laid,
+                visits: mine,
             });
         }
     }
@@ -3552,6 +3595,7 @@ impl Sliced {
                         .layers
                         .get(index)
                         .is_some_and(|layer| layer.first_speed),
+                    visits: &turn.visits,
                     around: match shared.get(entry) {
                         Some((around, _)) => around,
                         None if starts => &self.around[index],
@@ -3698,9 +3742,6 @@ impl Sliced {
                         std::iter::once(&wipe.start).chain(wipe.strokes.iter().filter_map(
                             |stroke| match stroke {
                                 edge_extrusion::TowerStroke::Lay(to, _)
-                                | edge_extrusion::TowerStroke::LayAs(to, ..)
-                                | edge_extrusion::TowerStroke::Bend(to, ..)
-                                | edge_extrusion::TowerStroke::Glide(to)
                                 | edge_extrusion::TowerStroke::Move(to, _) => Some(to),
                                 _ => None,
                             },

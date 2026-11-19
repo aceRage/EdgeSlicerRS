@@ -12,6 +12,7 @@
 //! work has got and may stop it.
 
 mod arrange_to_slice;
+mod bambu_tower;
 mod by_object;
 pub mod calib;
 mod clock;

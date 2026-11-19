@@ -365,8 +365,12 @@ impl Layer<'_> {
         writer: &mut Writer,
         area: &Box2,
         f: f32,
+        extrude: bool,
     ) -> Result<Polygon, PlanError> {
         let wall = self.wall_polygon(area)?;
+        if !extrude {
+            return Ok(wall);
+        }
         let gaps: Vec<GapPoint> = self.plan.skip_points[self.index]
             .iter()
             .map(|p| GapPoint {
@@ -405,6 +409,7 @@ impl Layer<'_> {
     /// layer with no change the fill of every block.
     fn finish_layer(
         &mut self,
+        extrude_perimeter: bool,
         extrude_fill: bool,
         extrude_fill_wall: bool,
     ) -> Result<Visit, PlanError> {
@@ -479,7 +484,7 @@ impl Layer<'_> {
         let mut area = self
             .plan
             .align_perimeter(Box2::new(0.0, 0.0, self.width(), depth), self.y_shift);
-        let mut outer = self.print_outer_wall(&mut writer, &area, feedrate)?;
+        let mut outer = self.print_outer_wall(&mut writer, &area, feedrate, extrude_perimeter)?;
         let spacing = pw - self.height * (1.0 - PI / 4.0);
         let loops = self.plan.brim_loops(self.index);
         if loops > 0 && self.plan.ribs.is_some() {
@@ -514,7 +519,7 @@ impl Layer<'_> {
                 );
             }
         }
-        if self.plan.ribs.is_some() {
+        if self.plan.ribs.is_some() && (extrude_perimeter || loops > 0) {
             let reach = self.settings.filaments
                 [self.current_tool.min(self.settings.filaments.len() - 1)]
             .wipe_distance;
@@ -539,6 +544,60 @@ impl Layer<'_> {
             if wipe.len() == 2 && wipe[0] == at {
                 target = wipe[1];
             }
+            writer.add_wipe_point(at).add_wipe_point(target);
+        }
+        writer.append("; WIPE_TOWER_END\n");
+        Ok(self.visit(writer, old_tool, true, false, 0.0, false))
+    }
+
+    /// `only_generate_out_wall`: a smooth timelapse's wall, the tower
+    /// laid whole on every layer, by the filament in hand.
+    fn only_wall(&mut self) -> Result<Visit, PlanError> {
+        let old_tool = self.current_tool;
+        let pw = self.pw();
+        let mut writer = self.writer(self.height, self.flow, self.current_tool);
+        let feedrate = self.tower_feedrate(self.current_tool, self.is_first_layer());
+        let planned = &self.plan.layers[self.index];
+        let used: f32 = planned.changes.iter().map(|c| c.required_depth).sum();
+        let fill_y = used + pw;
+        let fill = Box2::new(pw, fill_y, self.width() - 2.0 * pw, planned.depth - fill_y);
+        writer.set_initial_position(
+            if self.left_to_right {
+                (fill.right, fill.top)
+            } else {
+                (fill.left, fill.top)
+            },
+            self.width(),
+            self.depth(),
+        );
+        writer.append("; WIPE_TOWER_START\n");
+        let area = self.plan.align_perimeter(
+            Box2::new(0.0, 0.0, self.width(), self.depth()),
+            self.y_shift,
+        );
+        let wall = self.print_outer_wall(&mut writer, &area, feedrate, true)?;
+        if self.plan.ribs.is_some() {
+            let reach = self.settings.filaments
+                [self.current_tool.min(self.settings.filaments.len() - 1)]
+            .wipe_distance;
+            writer.add_wipe_path(&wall, f64::from(reach));
+        } else {
+            let corners = [
+                (area.left, area.bottom),
+                (area.right, area.bottom),
+                (area.right, area.top),
+                (area.left, area.top),
+            ];
+            let at = writer.pos();
+            let target = if at == corners[0] {
+                corners[1]
+            } else if at == corners[1] {
+                corners[2]
+            } else if at == corners[2] {
+                corners[3]
+            } else {
+                corners[0]
+            };
             writer.add_wipe_point(at).add_wipe_point(target);
         }
         writer.append("; WIPE_TOWER_END\n");
@@ -1121,13 +1180,10 @@ fn wall_filament(plan: &Plan, settings: &Settings) -> Option<usize> {
 /// Lays the planned tower (WipeTower.cpp `generate`, the layers' part):
 /// for each layer, its visits in the order they are made.
 pub fn lay(plan: &Plan, settings: &Settings) -> Result<Vec<Vec<Visit>>, PlanError> {
-    if settings.smooth_timelapse {
-        return Err(PlanError::Unsupported(
-            "timelapse_type \"1\": the tower laid whole on every layer for a smooth timelapse is not \
-             laid yet"
-                .to_owned(),
-        ));
-    }
+    // A smooth timelapse lays the tower's wall on every layer, on its own
+    // before the layer's changes, and the changes lay none
+    // (`only_generate_wall`).
+    let only_wall = settings.smooth_timelapse;
     let area0 = settings.filaments.first().map_or(1.0, |f| f.area);
     let max_e_speed: Vec<f32> = settings
         .filaments
@@ -1212,6 +1268,7 @@ pub fn lay(plan: &Plan, settings: &Settings) -> Result<Vec<Vec<Visit>>, PlanErro
         };
         let mut wall_idx = wall_idx;
         let mut finish: Option<Visit> = None;
+        let mut timelapse_wall: Option<Visit> = None;
         if wall_idx.is_none() {
             let solid = plan
                 .blocks
@@ -1220,31 +1277,37 @@ pub fn lay(plan: &Plan, settings: &Settings) -> Result<Vec<Vec<Visit>>, PlanErro
             if solid {
                 wall_idx = Some(state.current_tool);
             } else {
-                finish = Some(state.finish_layer(true, true)?);
+                if only_wall {
+                    timelapse_wall = Some(state.only_wall()?);
+                }
+                finish = Some(state.finish_layer(!only_wall, true, true)?);
                 for (block, planned) in state.blocks.iter_mut().zip(&plan.blocks) {
                     block.finish_depth[index] = planned.start_depth;
                 }
             }
+        }
+        if wall_idx.is_some() && only_wall {
+            timelapse_wall = Some(state.only_wall()?);
         }
         let mut visits: Vec<Visit> = Vec::new();
         let mut insert_at: Option<usize> = None;
         for (i, change) in layer.changes.iter().enumerate() {
             let wall_by_first = i == 0 && Some(change.old) == wall_idx;
             if wall_by_first {
-                finish = Some(state.finish_layer(false, false)?);
+                finish = Some(state.finish_layer(!only_wall, false, false)?);
             }
             let solid = state
                 .block_of(change.new)
                 .is_some_and(|b| plan.blocks[b].layer_types[index] == LayerType::Contact);
             visits.push(state.tool_change(change.new, solid)?);
             if !wall_by_first && Some(change.new) == wall_idx {
-                finish = Some(state.finish_layer(false, false)?);
+                finish = Some(state.finish_layer(!only_wall, false, false)?);
                 insert_at = Some(i);
             }
         }
         if let Some(wall_idx) = wall_idx {
             if layer.changes.is_empty() {
-                finish = Some(state.finish_layer(false, false)?);
+                finish = Some(state.finish_layer(!only_wall, false, false)?);
             }
             for b in 0..plan.blocks.len() {
                 let planned = &plan.blocks[b];
@@ -1298,6 +1361,9 @@ pub fn lay(plan: &Plan, settings: &Settings) -> Result<Vec<Vec<Visit>>, PlanErro
                 None => visits[0] = state.merge(&finish, &visits[0]),
                 Some(at) => visits[at] = state.merge(&visits[at], &finish),
             }
+        }
+        if let Some(wall) = timelapse_wall.filter(|wall| !wall.gcode.is_empty()) {
+            visits.insert(0, wall);
         }
         result.push(visits);
     }
@@ -1387,6 +1453,35 @@ mod tests {
             .filter(|e| *e > 0.0)
             .sum();
         assert!(laid * area > 44.0 && laid * area < 52.0, "{}", laid * area);
+    }
+
+    #[test]
+    fn the_nozzle_cooled_for_the_change_is_heated_back_up_above_the_first_layer() {
+        // The change G-code cools the nozzle by `filament_cooling_before_tower`;
+        // the purge's first row heats it back up, though not on the first
+        // layer (WipeTower.cpp `toolchange_Wipe`, "Wipe tower reheat before
+        // wipe").
+        let s = settings(r#", "filament_cooling_before_tower": ["10", "10"]"#);
+        let planned = plan(&s, &layers(3), 0).unwrap();
+        let visits = lay(&planned, &s).unwrap();
+        let reheats = |layer: usize| {
+            let change = visits[layer].iter().find(|v| v.is_tool_change).unwrap();
+            (
+                change.reheats_after_cooling,
+                change.gcode.matches("reheat before wipe").count(),
+            )
+        };
+        assert_eq!(reheats(0), (false, 0));
+        assert_eq!(reheats(1), (true, 1));
+        assert!(
+            visits[1]
+                .iter()
+                .any(|v| v.gcode.contains("M104 T0 S220 N0 W ;Wipe tower reheat"))
+        );
+        // Nothing to heat back up where the change does not cool.
+        let s = settings("");
+        let visits = lay(&plan(&s, &layers(3), 0).unwrap(), &s).unwrap();
+        assert!(visits.iter().flatten().all(|v| !v.gcode.contains("reheat")));
     }
 
     #[test]
@@ -1487,9 +1582,14 @@ mod tests {
     }
 
     #[test]
-    fn smooth_timelapse_is_refused() {
+    fn a_smooth_timelapse_lays_the_wall_on_its_own_first() {
         let s = settings(r#", "timelapse_type": "1""#);
         let planned = plan(&s, &layers(4), 0).unwrap();
-        assert!(matches!(lay(&planned, &s), Err(PlanError::Unsupported(_))));
+        let visits = lay(&planned, &s).unwrap();
+        for layer in &visits {
+            assert_eq!(layer.len(), 2, "the wall, then the change");
+            assert!(!layer[0].is_tool_change && layer[1].is_tool_change);
+            assert!(layer[0].gcode.contains("; WIPE_TOWER_START"));
+        }
     }
 }

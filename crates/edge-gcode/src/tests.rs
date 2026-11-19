@@ -78,6 +78,7 @@ fn one_layer<'a>(
         tower: &[],
         tower_z: None,
         tower_first: false,
+        visits: &[],
         around: &[],
         support: &[],
         loops,
@@ -650,6 +651,7 @@ fn speeds_follow_role_layer_and_the_melt_limit() {
             tower: &[],
             tower_z: None,
             tower_first: false,
+            visits: &[],
             around: &[],
             support: &[],
             loops: &loops,
@@ -669,6 +671,7 @@ fn speeds_follow_role_layer_and_the_melt_limit() {
             tower: &[],
             tower_z: None,
             tower_first: false,
+            visits: &[],
             around: &[],
             support: &[],
             loops: &loops,
@@ -738,6 +741,7 @@ fn temperatures_change_after_the_first_layer() {
         tower: &[],
         tower_z: None,
         tower_first: false,
+        visits: &[],
         around: &[],
         support: &[],
         loops: &loops,
@@ -852,6 +856,7 @@ fn moves_inside_the_shelter_can_skip_retraction() {
         tower: &[],
         tower_z: None,
         tower_first: false,
+        visits: &[],
         around: &[],
         support: &[],
         loops: &[],
@@ -1315,6 +1320,7 @@ fn printed_with_summary(count: usize, settings: &PrintSettings) -> (String, Summ
             tower: &[],
             tower_z: None,
             tower_first: false,
+            visits: &[],
             around: &[],
             support: &[],
             loops: &loops,
@@ -2645,124 +2651,6 @@ fn a_new_nozzle_lays_its_block_on_the_tower_move_by_move() {
 }
 
 #[test]
-fn bambu_s_tower_moves_at_the_speed_in_force_and_lays_its_own_cross_sections() {
-    let part = [wall(0.0, 0.0, 10.0, 0)];
-    let at = |x: f64, y: f64| Point2::from_mm(x, y);
-    let flow = Flow::new(0.5, 0.2, 0.4).unwrap();
-    let fuller = flow
-        .with_width(1.15 * (0.5 - 0.2 * (1.0 - PI / 4.0)) + 0.2 * (1.0 - PI / 4.0))
-        .unwrap();
-    let strokes = [
-        TowerStroke::LayAs(at(60.0, 40.0), 90.0, flow),
-        TowerStroke::Glide(at(40.0, 40.0)),
-        TowerStroke::LayAs(at(60.0, 40.5), 26.4, fuller),
-        TowerStroke::Sync,
-        TowerStroke::Move(at(60.0, 50.0), Some(120.0)),
-    ];
-    let wiped = [at(60.0, 50.0), at(58.0, 50.0)];
-    let layer = Layer {
-        wipe: Some(TowerWipe {
-            start: at(40.0, 40.0),
-            strokes: &strokes,
-            flow,
-            wipe_path: &wiped,
-        }),
-        ..one_layer(&part, &[0..1], &[])[0]
-    };
-    let settings = PrintSettings {
-        bambu_tower: true,
-        ..basic()
-    };
-    let (text, _) = print(&[layer], &settings);
-    let lines: Vec<&str> = text.lines().collect();
-    let first = lines
-        .iter()
-        .position(|line| line.starts_with("G1 X60.000 Y40.000 E"))
-        .unwrap_or_else(|| panic!("{text}"));
-    assert_eq!(
-        word(lines[first], 'F'),
-        Some(5400.0),
-        "{:?}",
-        &lines[first..first + 6]
-    );
-    // The way back across goes at the speed in force, none written
-    // (WipeTower.cpp's `travel` with no speed).
-    assert_eq!(lines[first + 1], "G1 X40.000 Y40.000");
-    // A row of the first layer's carries 15% more plastic.
-    let area = PI * 1.75 * 1.75 / 4.0;
-    assert!(lines[first + 2].starts_with(";WIDTH:"));
-    let e = word(lines[first + 3], 'E').unwrap();
-    let length = (20.0f64).hypot(0.5);
-    assert!(
-        (e - length * fuller.mm3_per_mm() / area).abs() < 1e-5,
-        "{}",
-        lines[first + 3]
-    );
-    assert_eq!(lines[first + 4], "G4 S0");
-    assert_eq!(lines[first + 5], "G1 X60.000 Y50.000 F7200");
-}
-
-#[test]
-fn bambu_s_tower_wall_is_thinned_or_fitted_with_arcs() {
-    let part = [wall(0.0, 0.0, 10.0, 0)];
-    let at = |x: f64, y: f64| Point2::from_mm(x, y);
-    let flow = Flow::new(0.5, 0.2, 0.4).unwrap();
-    // A quarter circle of radius 10 round (40, 40), in 32 pieces, then
-    // a straight run back to where it started.
-    let mut strokes: Vec<TowerStroke> = (1..=32)
-        .map(|step| {
-            let angle = std::f64::consts::FRAC_PI_2 * step as f64 / 32.0;
-            TowerStroke::Bend(
-                at(40.0 + 10.0 * angle.cos(), 40.0 + 10.0 * angle.sin()),
-                90.0,
-                flow,
-            )
-        })
-        .collect();
-    strokes.push(TowerStroke::Bend(at(40.0, 45.0), 90.0, flow));
-    strokes.push(TowerStroke::Bend(at(40.0, 40.0), 90.0, flow));
-    strokes.push(TowerStroke::Bend(at(50.0, 40.0), 90.0, flow));
-    let layer = Layer {
-        wipe: Some(TowerWipe {
-            start: at(50.0, 40.0),
-            strokes: &strokes,
-            flow,
-            wipe_path: &[],
-        }),
-        ..one_layer(&part, &[0..1], &[])[0]
-    };
-    let tower = |arcs: bool| {
-        let settings = PrintSettings {
-            bambu_tower: true,
-            arc_fitting: arcs,
-            ..basic()
-        };
-        let (text, _) = print(&[layer], &settings);
-        let start = text.find(";TYPE:Prime tower").unwrap();
-        text[start..]
-            .lines()
-            .skip(1)
-            .take_while(|line| !line.starts_with(";TYPE") && !line.starts_with("G1 E-"))
-            .filter(|line| {
-                line.starts_with("G1 X") || line.starts_with("G2") || line.starts_with("G3")
-            })
-            .map(str::to_owned)
-            .collect::<Vec<String>>()
-    };
-    // Thinned to 0.1 mm: the quarter circle in a few straight pieces.
-    let straight = tower(false);
-    assert!(
-        straight.iter().all(|line| line.starts_with("G1")),
-        "{straight:?}"
-    );
-    assert!(straight.len() < 20, "{straight:?}");
-    // With arcs: one G3 for the quarter circle, then the straight run.
-    let arcs = tower(true);
-    assert!(arcs[0].starts_with("G3 X40.000 Y50.000"), "{arcs:?}");
-    assert_eq!(arcs.len(), 3, "{arcs:?}");
-}
-
-#[test]
 fn a_tree_branch_s_wall_is_laid_hook_first() {
     // A support line that ends at (10, 0), then a branch's wall whose
     // hook starts at (14, 0) and whose far end, at (12, 0), is the nearer.
@@ -3057,6 +2945,7 @@ fn wall_over_a_smaller_plate(settings: &PrintSettings, measured: bool) -> String
         tower: &[],
         tower_z: None,
         tower_first: false,
+        visits: &[],
         around: &[],
         support: &[],
         loops,
@@ -3804,6 +3693,7 @@ fn round_wall_over_a_round_plate(settings: &PrintSettings, out: f64) -> (usize, 
         tower: &[],
         tower_z: None,
         tower_first: false,
+        visits: &[],
         around: &[],
         support: &[],
         loops,
@@ -3890,6 +3780,7 @@ fn a_speed_within_one_mm_a_second_of_the_last_is_not_written() {
         tower: &[],
         tower_z: None,
         tower_first: false,
+        visits: &[],
         around: &[],
         support: &[],
         loops,
@@ -4102,7 +3993,7 @@ fn a_printer_of_one_nozzle_is_told_how_much_to_flush() {
 /// Two filaments through one nozzle (`single_extruder_multi_material`),
 /// with a prime tower or not, whose change G-code lifts by
 /// `max_layer_z`.
-fn one_nozzle(tower: bool, bambu: bool) -> [PrintSettings; 2] {
+fn one_nozzle(tower: bool) -> [PrintSettings; 2] {
     let tool = |temperature: f64| PrintSettings {
         machine_start_gcode: Some("PRINT_START\nT0".into()),
         change_filament_gcode: Some("G1 Z{max_layer_z + 3}\nT[next_extruder]".into()),
@@ -4111,8 +4002,6 @@ fn one_nozzle(tower: bool, bambu: bool) -> [PrintSettings; 2] {
         retract_length_toolchange: 0.0,
         single_nozzle: true,
         prime_tower: tower,
-        bambu_tower: bambu,
-        cooling_before_tower: 10.0,
         ..basic()
     };
     [tool(210.0), tool(240.0)]
@@ -4131,7 +4020,7 @@ fn one_nozzle_sets_the_new_temperature_without_waiting() {
     // differs from what the tower set last. Nothing is waited for and no
     // tool is named (WipeTower2.cpp `toolchange_Unload`).
     let layers: &[&[usize]] = &[&[0, 1], &[1, 0], &[0, 1], &[1]];
-    let (text, summary) = in_filaments(layers, &one_nozzle(true, false));
+    let (text, summary) = in_filaments(layers, &one_nozzle(true));
     assert_eq!(summary.tool_changes, 3);
     // (The second layer's own temperature is the filament in hand's,
     // which the tower does not know of.)
@@ -4164,7 +4053,7 @@ fn one_nozzle_sets_the_new_temperature_without_waiting() {
     assert_eq!(lifts, ["G1 Z3", "G1 Z3.2", "G1 Z3.4", "G1 Z3.6"]);
     // Without a tower the temperature is set after the change, still
     // without waiting (GCode.cpp `set_extruder`).
-    let (text, _) = in_filaments(layers, &one_nozzle(false, false));
+    let (text, _) = in_filaments(layers, &one_nozzle(false));
     assert_eq!(
         temperatures(&text),
         [
@@ -4174,17 +4063,6 @@ fn one_nozzle_sets_the_new_temperature_without_waiting() {
             "M104 S210 ; set nozzle temperature",
             "M104 S240 ; set nozzle temperature",
             "M104 S0",
-        ]
-    );
-    // A Bambu Lab printer's tower heats the nozzle back up after its
-    // change G-code cooled it, above the first layer.
-    let (text, _) = in_filaments(layers, &one_nozzle(true, true));
-    let reheats: Vec<&str> = text.lines().filter(|l| l.contains("reheat")).collect();
-    assert_eq!(
-        reheats,
-        [
-            "M104 T0 S210 N0 ;Wipe tower reheat before wipe",
-            "M104 T0 S240 N0 ;Wipe tower reheat before wipe",
         ]
     );
 }
@@ -4376,21 +4254,22 @@ fn the_way_to_the_cutter_goes_round_the_objects() {
 }
 
 #[test]
-fn bambus_tower_frames_its_tool_change_and_ends_the_old_filament_first() {
+fn bambus_tower_visit_is_written_where_the_tower_stands_with_the_change_in_its_place() {
+    // A visit as edge-tower's `type1` writes it: the old filament's wall,
+    // then the change at its placeholders, then the purge (GCode.cpp
+    // `append_tcr`, `post_process_wipe_tower_moves`).
     let at = |x: f64, y: f64| Point2::from_mm(x, y);
-    let flow = Flow::new(0.5, 0.2, 0.4).unwrap();
-    let strokes = [
-        TowerStroke::Glide(at(40.0, 40.0)),
-        TowerStroke::LayAs(at(60.0, 40.0), 30.0, flow),
-        TowerStroke::Sync,
-        TowerStroke::Move(at(60.0, 50.0), Some(120.0)),
-    ];
     let tool = |filament: &str| {
         let mut tool = PrintSettings {
             bambu_tower: true,
             prime_tower: true,
+            single_nozzle: true,
+            tools: 1,
             filament_end_gcode: Some("; filament end gcode".into()),
-            change_filament_gcode: Some("M620 S[next_extruder]A\nT[next_extruder]".into()),
+            filament_start_gcode: Some("; filament start gcode".into()),
+            change_filament_gcode: Some(
+                "M620 S[next_extruder]A\nT[next_extruder]\n; after X[x_after_toolchange] Y[y_after_toolchange]".into(),
+            ),
             ..bambu(&[("start", "PRINT_START")])
         };
         tool.variables.set_list(
@@ -4399,16 +4278,28 @@ fn bambus_tower_frames_its_tool_change_and_ends_the_old_filament_first() {
         );
         tool
     };
+    let visit = TowerVisit {
+        gcode: "; FEATURE: Prime tower\n; WIPE_TOWER_START\nG1 X1.000 Y1.000\nG1 X5.000 Y1.000 E0.2000 F3000\n\
+                ; WIPE_TOWER_END\n; CP TOOLCHANGE START\n[filament_end_gcode]\n\
+                [restore_layer_z_before_toolchange]\n[change_filament_gcode]\n\
+                [deretraction_from_wipe_tower_generator]\n[filament_start_gcode]\nG4 S0\n\
+                ; CP TOOLCHANGE WIPE\nG1 X9.000 Y2.000 E0.3000 F2000\n; CP TOOLCHANGE END\n"
+            .into(),
+        origin: [100.0, 50.0],
+        start: at(101.0, 51.0),
+        change_start: at(108.0, 52.0),
+        end: at(109.0, 52.0),
+        wipe_path: vec![at(109.0, 52.0), at(100.0, 52.0)],
+        finish_first: true,
+        tool_change: true,
+        reheats_after_cooling: true,
+    };
     let part = [wall(0.0, 0.0, 10.0, 0)];
     let first = one_layer(&part, &[0..1], &[])[0];
+    let visits = [visit];
     let second = Layer {
         filament: 1,
-        wipe: Some(TowerWipe {
-            start: at(40.0, 40.0),
-            strokes: &strokes,
-            flow,
-            wipe_path: &[],
-        }),
+        visits: &visits,
         loops: &[],
         islands: &[],
         ..first
@@ -4416,36 +4307,26 @@ fn bambus_tower_frames_its_tool_change_and_ends_the_old_filament_first() {
     let mut out = Vec::new();
     write_tools(&mut out, &[first, second], &[tool("PETG"), tool("PETG")]).unwrap();
     let text = String::from_utf8(out).unwrap();
-    let change = text
-        .split("; CP TOOLCHANGE START\n")
-        .nth(1)
-        .unwrap_or_else(|| panic!("{text}"));
-    let lines: Vec<&str> = change.lines().collect();
-    assert_eq!(
-        lines[..5],
-        [
-            "; toolchange #1",
-            "; material : PLA -> PETG",
-            ";--------------------",
-            "M220 S100",
-            "; WIPE_TOWER_START"
-        ]
-    );
-    let at = |what: &str| {
-        change
+    // Each found after the one before it (the print's own start and end
+    // G-codes say the filament's start and end G-codes too).
+    let after = |from: usize, what: &str| {
+        from + text[from..]
             .find(what)
-            .unwrap_or_else(|| panic!("{what}: {change}"))
+            .unwrap_or_else(|| panic!("{what} after {from}: {text}"))
     };
-    assert!(
-        at("; filament end gcode") < at("M620 S1A") && at("M620 S1A") < at("; CP TOOLCHANGE WIPE")
-    );
-    assert!(at("; CP TOOLCHANGE WIPE") < at("; WIPE_TOWER_END"));
-    assert!(
-        change.contains("; WIPE_TOWER_END\nG1 F") || change.contains("; WIPE_TOWER_END\nG4 S0")
-    );
-    assert!(change.contains("G4 S0\nG92 E0\n; CP TOOLCHANGE END\n;------------------\n"));
-    // The filament's end G-code is written once.
-    assert_eq!(text.matches("; filament end gcode").count(), 2);
+    // Moved to the tower's place.
+    assert!(text.contains("G1 X105.000 Y51.000 E0.2000 F3000"), "{text}");
+    assert!(text.contains("G1 X109.000 Y52.000 E0.3000 F2000"), "{text}");
+    // The old filament's lines, its end G-code, the change, the new one's
+    // start G-code, then the purge.
+    let wall = after(0, "X105.000 Y51.000");
+    let end = after(wall, "; filament end gcode");
+    let change = after(end, "M620 S1A");
+    let start = after(change, "; filament start gcode");
+    after(start, "X109.000 Y52.000");
+    // The template is told where the purge starts.
+    assert!(text.contains("; after X108 Y52"), "{text}");
+    assert!(!text.contains("[change_filament_gcode]"));
 }
 
 #[test]
@@ -4454,12 +4335,16 @@ fn bambus_tower_flushes_at_least_100_cubic_millimetres() {
     // a change on Bambu's tower flushes 100 mm³ at least, or nothing when
     // nothing is to be flushed (GCode.cpp `append_tcr`,
     // `g_min_purge_volume`).
-    let at = |x: f64, y: f64| Point2::from_mm(x, y);
-    let flow = Flow::new(0.5, 0.2, 0.4).unwrap();
-    let strokes = [
-        TowerStroke::Glide(at(40.0, 40.0)),
-        TowerStroke::LayAs(at(60.0, 40.0), 30.0, flow),
-    ];
+    // Each change in a visit of the tower, as edge-tower's `type1` writes
+    // it; the floor and the grab are kept by the change made there
+    // (`bambu_change`, `swap`'s `on_tower`).
+    let visit = TowerVisit {
+        gcode: "[change_filament_gcode]\nG1 X5.000 Y1.000 E0.2000 F3000\n".into(),
+        tool_change: true,
+        reheats_after_cooling: true,
+        ..TowerVisit::default()
+    };
+    let visits = [visit];
     let tool = |tower: bool, flush: f64, grab: f64| PrintSettings {
         bambu_tower: true,
         prime_tower: tower,
@@ -4479,12 +4364,7 @@ fn bambus_tower_flushes_at_least_100_cubic_millimetres() {
             .iter()
             .map(|&filament| Layer {
                 filament,
-                wipe: tower.then_some(TowerWipe {
-                    start: at(40.0, 40.0),
-                    strokes: &strokes,
-                    flow,
-                    wipe_path: &[],
-                }),
+                visits: if tower { &visits } else { &[] },
                 ..first
             })
             .collect();

@@ -446,10 +446,6 @@ pub struct PrintSettings {
     /// The printer's timelapse G-code and where in a layer it goes
     /// (`time_lapse_gcode`; GCode.cpp `process_layer`).
     pub time_lapse: Option<(String, Timelapse)>,
-    /// How far below its temperature the printer's change G-code leaves
-    /// this filament before the tower, which that tower heats it back up
-    /// from (`filament_cooling_before_tower`).
-    pub cooling_before_tower: f64,
     /// How many tools the printer has.
     pub tools: usize,
     /// What is flushed going from filament i to filament j, in mm³
@@ -661,7 +657,6 @@ impl Default for PrintSettings {
             power_loss_recovery: None,
             scan_first_layer: false,
             time_lapse: None,
-            cooling_before_tower: 0.0,
             tools: 1,
             flush_volumes: Vec::new(),
             grab_length: 0.0,
@@ -1438,7 +1433,6 @@ impl PrintSettings {
                     (template, place)
                 })
             },
-            cooling_before_tower: number("filament_cooling_before_tower", 0.0)?,
             flush_volumes: {
                 // Some projects write the multiplier as a list of one;
                 // what cannot be read flushes nothing, as an empty matrix.

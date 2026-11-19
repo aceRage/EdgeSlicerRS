@@ -43,7 +43,8 @@
 //! infill, objects or support; each is said in a note.
 //!
 //! A Bambu Lab printer, or one set to `wipe_tower_type` `type1`, gets the
-//! reference's other tower, WipeTower.cpp (`bambu.rs`).
+//! reference's other tower, WipeTower.cpp ([`type1`]), which edge-engine
+//! plans and lays through that module.
 //!
 //! A tower whose saved place no longer fits it is moved onto the bed
 //! before it is planned (`place.rs`).
@@ -61,7 +62,6 @@
 //!
 //! Not done: the cone wall.
 
-mod bambu;
 mod clearance;
 mod place;
 pub mod type1;
@@ -73,7 +73,6 @@ use edge_config::{ConfigError, FloatOrPercent, Settings};
 use edge_extrusion::{ExtrusionPath, Flow, FlowError, Role, TowerStroke};
 use edge_geom::{ExPolygon, Point2, Polygon, scaled, unscaled};
 
-pub use bambu::Type1;
 pub use clearance::{
     CLEARANCE_ERROR, Clearance, Object, estimate_clears, purge_drop_clears, tower_clears,
 };
@@ -228,8 +227,6 @@ pub struct TowerSettings {
     /// How much of the tower each filament irons flat as its nozzle comes
     /// in, in mm² (`filament_tower_ironing_area`).
     pub iron_areas: Vec<f64>,
-    /// What the Bambu Lab tower reads besides (`bambu_tower`).
-    pub type1: Type1,
     /// The tower leaves out the layers with no tool change, and stands
     /// only as tall as the layers it lays: `wipe_tower_no_sparse_layers`,
     /// unless a smooth timelapse wants a tower on every layer
@@ -286,7 +283,6 @@ impl Default for TowerSettings {
             max_purge_speed: 90.0,
             infill_speed: 100.0,
             iron_areas: Vec::new(),
-            type1: Type1::default(),
             skip_sparse: false,
             unsupported: Vec::new(),
         }
@@ -470,53 +466,8 @@ impl TowerSettings {
             alias("wipe_tower_max_purge_speed", "prime_tower_max_speed"),
             defaults.max_purge_speed,
         )?;
-        let type1 = if bambu_tower {
-            let flags = |key: &str| -> Vec<bool> {
-                settings
-                    .texts(key)
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|flag| flag == "1")
-                    .collect()
-            };
-            let forced = number("wipe_tower_filament", 0.0)? as usize;
-            let soluble = if forced > 0 {
-                (0..flags("filament_soluble").len().max(forced))
-                    .map(|filament| filament != forced - 1)
-                    .collect()
-            } else {
-                flags("filament_soluble")
-            };
-            Type1 {
-                line_width: number("prime_tower_line_width", 0.0)?.max(0.0),
-                brim_width: number("prime_tower_brim_width", defaults.brim_width)?,
-                max_speed: max_purge_speed,
-                max_volumetric: list("filament_max_volumetric_speed")?
-                    .into_iter()
-                    .map(|speed| speed.unwrap_or(0.0))
-                    .collect(),
-                soluble,
-                support: flags("filament_is_support"),
-                wipe_distance: list("wipe_distance")?
-                    .into_iter()
-                    .map(|reach| reach.unwrap_or(2.0))
-                    .collect(),
-                // Not for a rotated tower, as there.
-                arc_fitting: settings.flag("enable_arc_fitting")?.unwrap_or(false)
-                    && number("wipe_tower_rotation_angle", 0.0)?.abs() < 1e-4,
-            }
-        } else {
-            Type1::default()
-        };
         if enabled && bambu_tower {
             let on = |key: &str| settings.text(key).is_some_and(|value| value != "0");
-            if settings.text("timelapse_type") == Some("1") {
-                unsupported.push(
-                    "timelapse_type \"1\": the prime tower is laid only up to the last tool change, \
-                     where for a smooth timelapse the reference stands it on every layer"
-                        .to_owned(),
-                );
-            }
             // Leaving the layers out wins over laying them as one
             // (WipeTower.cpp `wipe_tower_sparse_layers_combined`).
             if on("wipe_tower_sparse_layers_combination") && !skip_sparse {
@@ -666,7 +617,6 @@ impl TowerSettings {
                 .into_iter()
                 .map(|area| area.unwrap_or(4.0))
                 .collect(),
-            type1,
             skip_sparse,
             unsupported,
         })
@@ -784,15 +734,11 @@ impl TowerSettings {
     /// The speed a block's rows build up to, in mm/min, worked in single
     /// precision as there: on the first layer that layer's speed, above
     /// it the purge speed held to the infill's (WipeTower2.cpp
-    /// `toolchange_Wipe`), or on a Bambu Lab printer's tower 80 mm/s at
-    /// most (WipeTower.cpp `toolchange_Wipe`).
+    /// `toolchange_Wipe`).
     fn wipe_target(&self, first_layer: bool) -> f32 {
         let first = self.first_layer_speed as f32 * 60.0;
         let purge = self.max_purge_speed as f32 * 60.0;
-        if self.bambu_tower {
-            let most = purge.min(4800.0);
-            if first_layer { first.min(most) } else { most }
-        } else if first_layer {
+        if first_layer {
             first
         } else {
             purge.min(self.infill_speed as f32 * 60.0)
@@ -908,11 +854,7 @@ impl Wipe {
     /// Where the nozzle is after the strokes so far.
     fn at(&self) -> Point2 {
         match self.strokes.iter().rev().find_map(|stroke| match stroke {
-            TowerStroke::Lay(to, _)
-            | TowerStroke::LayAs(to, ..)
-            | TowerStroke::Bend(to, ..)
-            | TowerStroke::Move(to, _)
-            | TowerStroke::Glide(to) => Some(*to),
+            TowerStroke::Lay(to, _) | TowerStroke::Move(to, _) => Some(*to),
             _ => None,
         }) {
             Some(at) => at,
@@ -940,16 +882,14 @@ impl Wipe {
         let mut run = vec![self.start];
         for stroke in &self.strokes {
             match stroke {
-                TowerStroke::Lay(to, _)
-                | TowerStroke::LayAs(to, ..)
-                | TowerStroke::Bend(to, ..) => run.push(*to),
-                TowerStroke::Move(to, _) | TowerStroke::Glide(to) => {
+                TowerStroke::Lay(to, _) => run.push(*to),
+                TowerStroke::Move(to, _) => {
                     if run.len() >= 2 {
                         lines.push(std::mem::take(&mut run));
                     }
                     run = vec![*to];
                 }
-                TowerStroke::Retract | TowerStroke::Unretract | TowerStroke::Sync => {}
+                TowerStroke::Retract | TowerStroke::Unretract => {}
             }
         }
         if run.len() >= 2 {
@@ -1576,10 +1516,6 @@ pub fn plan_changes(
     if !settings.enabled {
         return Ok(tower);
     }
-    // A Bambu Lab printer's tower is the reference's other one.
-    if settings.bambu_tower {
-        return bambu::plan(changes, heights, settings);
-    }
     let line = WIDTH_TO_NOZZLE * settings.nozzle_diameter;
     // What each layer's tool changes take of a tower `span` wide.
     let used_at = |span: f64, layer: usize| -> f64 {
@@ -1723,8 +1659,8 @@ pub fn plan_changes(
         let wipe_flow = flow.with_spacing(flow.spacing * settings.extra_flow)?;
         // Where the wall is left open, the nozzle coming in irons the
         // tower flat first (WipeTower2.cpp `toolchange_Wipe`, with
-        // `m_use_gap_wall`; not in WipeTower.cpp's).
-        let iron = settings.wall_gap && !settings.bambu_tower;
+        // `m_use_gap_wall`).
+        let iron = settings.wall_gap;
         // Where each new nozzle comes in: which side, and how far back.
         let mut ways_in: Vec<(bool, f64, Point2)> = Vec::with_capacity(changes[layer].len());
         let mut finish_left_to_right = left_to_right;
@@ -2542,7 +2478,6 @@ mod tests {
                 }
                 TowerStroke::Retract => ("retract".into(), 0.0, 0.0),
                 TowerStroke::Unretract => ("unretract".into(), 0.0, 0.0),
-                other => panic!("not a stroke of this tower's: {other:?}"),
             })
             .take(15)
             .collect();
@@ -3546,11 +3481,11 @@ mod tests {
                 rounded: true
             }
         );
-        assert_eq!((named.max_purge_speed, named.type1.max_speed), (70.0, 70.0));
+        assert_eq!(named.max_purge_speed, 70.0);
         let said: Vec<&str> = (named.unsupported.iter())
             .map(|note| note.split(' ').next().unwrap())
             .collect();
-        assert_eq!(said, ["timelapse_type", "nozzle_diameter:"]);
+        assert_eq!(said, ["nozzle_diameter:"]);
         // Not for any other printer.
         let other = read(&format!(r#"{{{base}, "prime_tower_rib_wall": "1"}}"#));
         assert_eq!(other.wall, Wall::Box);
