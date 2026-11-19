@@ -3454,7 +3454,7 @@ impl Writer<'_> {
                 }
             }
             if let Some(wipe) = layer.wipe {
-                self.tower_wipe(wipe, low)?;
+                self.tower_wipe(wipe, low, layer.ram.is_some())?;
             }
             self.inner_wall = layer
                 .loops
@@ -4787,10 +4787,40 @@ impl Writer<'_> {
     /// `extrude_explicit`). The filament is pulled back and pushed on
     /// again where the tower says, by its retraction length at its
     /// retraction speed and with nothing else in between.
-    fn tower_wipe(&mut self, wipe: TowerWipe<'_>, low: Option<f64>) -> io::Result<()> {
+    ///
+    /// On the reference's own tower (WipeTower2.cpp) the filament the
+    /// change pulled back is pushed on again where the nozzle is when the
+    /// change ends (`[deretraction_from_wipe_tower_generator]`): where the
+    /// ram left it (`rammed`), else where the unload left it, the block's
+    /// first move; the moves on to the first row are then made at the
+    /// speed that leaves in force, as its writer's travels name none.
+    fn tower_wipe(
+        &mut self,
+        wipe: TowerWipe<'_>,
+        low: Option<f64>,
+        rammed: bool,
+    ) -> io::Result<()> {
         let s = self.settings;
-        self.tower_route(wipe.start, self.state.position)?;
-        self.travel(wipe.start, false, Some(Role::PrimeTower))?;
+        let mut reprime = !s.bambu_tower && self.state.retracted;
+        let mut glide = false;
+        if reprime && rammed {
+            self.prime()?;
+            (reprime, glide) = (false, true);
+        }
+        if glide {
+            let length = self
+                .state
+                .position
+                .map_or(0.0, |at| distance(at, wipe.start));
+            let speed = match self.state.feedrate.abs() {
+                0.0 => s.travel_speed,
+                feedrate => feedrate / 60.0,
+            };
+            self.go(wipe.start, None, speed, length)?;
+        } else {
+            self.tower_route(wipe.start, self.state.position)?;
+            self.travel(wipe.start, false, Some(Role::PrimeTower))?;
+        }
         if let Some(tower) = low {
             self.lower_to_tower(tower)?;
         }
@@ -4875,8 +4905,21 @@ impl Writer<'_> {
                 }
                 TowerStroke::Move(to, speed) => {
                     let length = self.state.position.map_or(0.0, |at| distance(at, to));
-                    self.go(to, None, speed.unwrap_or(s.travel_speed), length)?;
+                    let in_force = match self.state.feedrate.abs() {
+                        0.0 => s.travel_speed,
+                        feedrate => feedrate / 60.0,
+                    };
+                    let speed = match speed {
+                        Some(speed) => speed,
+                        None if glide => in_force,
+                        None => s.travel_speed,
+                    };
+                    self.go(to, None, speed, length)?;
                     run.clear();
+                    if reprime {
+                        self.prime()?;
+                        (reprime, glide) = (false, true);
+                    }
                 }
                 // At the speed in force, which is written again only
                 // where none is known.
