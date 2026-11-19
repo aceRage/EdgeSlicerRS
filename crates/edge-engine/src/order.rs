@@ -21,7 +21,12 @@ use std::collections::HashMap;
 /// copies come out a hair different (on mcbrim_test's first layer, by up
 /// to 2e-4 mm² in 609 after elephant foot compensation), which would
 /// leave the order to chance. Parts that are not copies but differ by
-/// less than this are taken in the reference's order only by chance.
+/// less than this are taken in the reference's order only by chance:
+/// threetone's two end blocks (13.3 mm wide each, walls the same to the
+/// micron in both files) come out 1, 0, 2 here and on the reference's X1
+/// Carbon, but 1, 2, 0 on its H2D, whatever the filament map; with the
+/// end blocks' filaments swapped the H2D gives 1, 0, 2. That is which
+/// side rounds larger, not a rule to follow.
 const SAME_AREA: f64 = 1e-6;
 
 /// The first layer's order: `pieces` gives, for each tool on it in
@@ -329,5 +334,41 @@ mod tests {
         // carries on from it.
         let orders = layers(vec![0, 1], &[vec![], vec![0, 1]], same);
         assert_eq!(orders, [vec![0, 1], vec![], vec![1, 0]]);
+    }
+
+    #[test]
+    fn two_nozzles_with_a_matrix_each_are_priced_at_the_new_filament_s() {
+        // fx/m2c_four_pn_1212 (H2D, filaments 1 and 3 on the left nozzle,
+        // 2 and 4 on the right, a 4 × 4 matrix to each): layers 1 to 5.
+        let each: [f32; 32] = [
+            0., 300., 120., 510., 90., 0., 260., 180., 450., 70., 0., 330., 200., 610., 140., 0.,
+            0., 250., 410., 160., 330., 0., 95., 520., 60., 380., 0., 240., 470., 130., 210., 0.,
+        ];
+        let nozzle = [0, 1, 0, 1];
+        let per_nozzle = |from: usize, to: usize| each[nozzle[to] * 16 + from * 4 + to];
+        let later = vec![vec![0, 1, 2, 3]; 4];
+        let wanted: [&[usize]; 5] = [
+            &[1, 2, 0, 3],
+            &[3, 1, 0, 2],
+            &[2, 3, 1, 0],
+            &[0, 2, 3, 1],
+            &[1, 0, 3, 2],
+        ];
+        assert_eq!(layers(vec![1, 2, 0, 3], &later, per_nozzle), wanted);
+        // The reference reads the 32 values (as its command line leaves
+        // them) as one 5 × 5 square, and its file has these orders.
+        let theirs: [f32; 32] = [
+            0., 300., 120., 510., 90., 0., 0., 180., 450., 70., 0., 330., 0., 610., 140., 0., 0.,
+            250., 0., 160., 330., 0., 95., 520., 0., 380., 0., 240., 470., 130., 210., 0.,
+        ];
+        let square = |from: usize, to: usize| theirs[from * 5 + to];
+        let wanted: [&[usize]; 5] = [
+            &[1, 2, 0, 3],
+            &[3, 1, 0, 2],
+            &[2, 0, 3, 1],
+            &[1, 3, 0, 2],
+            &[2, 0, 3, 1],
+        ];
+        assert_eq!(layers(vec![1, 2, 0, 3], &later, square), wanted);
     }
 }

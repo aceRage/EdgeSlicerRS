@@ -278,7 +278,6 @@ fn inside(area: &[[f64; 2]], p: [f64; 2], tolerance: f64) -> bool {
 pub(crate) fn group(
     settings: &Settings,
     layers: Vec<Vec<u32>>,
-    orders: Vec<Vec<u32>>,
     objects: &[(Vec<[f64; 2]>, f64)],
     tower: Option<[f64; 4]>,
 ) -> Result<Grouped, Failure> {
@@ -344,8 +343,28 @@ pub(crate) fn group(
             .collect(),
     };
     let grouping = edge_group::group_filaments(&machine, &input)?;
-    let mut orders = orders;
-    if let Some(grouping) = &grouping
+    Ok(Grouped {
+        machine,
+        input,
+        flush_values,
+        flush_multiplier,
+        flush_fast,
+        grouping,
+        orders: Vec::new(),
+    })
+}
+
+/// Each layer's filaments in the order the layer prints them, put in
+/// `grouped` once the layers are put in order (which reads the grouping):
+/// with `preload_all_filaments`, the first layer loads every other
+/// filament ahead of its own (ToolOrdering.cpp `apply_preload_all_filaments`).
+pub(crate) fn set_orders(
+    settings: &Settings,
+    grouped: &mut Grouped,
+    mut orders: Vec<Vec<u32>>,
+) -> Result<(), Failure> {
+    let settings = &merged(settings);
+    if let Some(grouping) = &grouped.grouping
         && settings.flag("preload_all_filaments")? == Some(true)
         && settings.flag("enable_prime_tower")? == Some(true)
         && let Some(first) = orders.iter_mut().find(|order| !order.is_empty())
@@ -355,15 +374,8 @@ pub(crate) fn group(
             extruders.get(f as usize).copied().unwrap_or(0)
         });
     }
-    Ok(Grouped {
-        machine,
-        input,
-        flush_values,
-        flush_multiplier,
-        flush_fast,
-        grouping,
-        orders,
-    })
+    grouped.orders = orders;
+    Ok(())
 }
 
 /// What the G-code writer is told of a grouping: each of the project's
@@ -507,7 +519,7 @@ mod tests {
             "filament_volume_map",
             edge_config::Value::Many(vec!["0".into(), "0".into(), "5".into()]),
         );
-        let grouped = group(&settings, vec![vec![0, 1]; 2], Vec::new(), &[], None).unwrap();
+        let grouped = group(&settings, vec![vec![0, 1]; 2], &[], None).unwrap();
         let map = nozzle_map(&settings, grouped.grouping.as_ref().unwrap());
         assert_eq!(map.extruders, [2, 1, 2]);
         assert_eq!(map.nozzles, [1, 0, 1]);
@@ -520,7 +532,7 @@ mod tests {
 
     #[test]
     fn two_filaments_on_an_h2d_go_one_to_each_nozzle() {
-        let grouped = group(&h2d(), vec![vec![0, 1]; 3], Vec::new(), &[], None).unwrap();
+        let grouped = group(&h2d(), vec![vec![0, 1]; 3], &[], None).unwrap();
         // Either way round costs the same, and the first tried wins:
         // filament 1 on the right nozzle. The reference, reading the one
         // matrix as half a matrix to each nozzle, gives [1, 2]
@@ -531,7 +543,7 @@ mod tests {
             "extruder_max_nozzle_count",
             edge_config::Value::Many(vec!["1".into(), "6".into()]),
         );
-        let said = group(&rack, vec![vec![0, 1]], Vec::new(), &[], None)
+        let said = group(&rack, vec![vec![0, 1]], &[], None)
             .unwrap_err()
             .to_string();
         assert!(said.contains("rack"), "{said}");
