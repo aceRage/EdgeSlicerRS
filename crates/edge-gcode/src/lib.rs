@@ -67,6 +67,7 @@ pub use contour::Contours;
 pub use edge_avoid::{Detour, Slices};
 pub use fan_mover::FanTiming;
 pub use labels::label_outline;
+pub use pre_heating::PreHeating;
 pub use scarf::{Scarf, ScarfSeam};
 pub use seam::Seam;
 pub use seam_plan::{SeamMeasures, SeamMesh, SeamObject, SeamPart, SeamScene, measure_seams};
@@ -75,7 +76,6 @@ pub use settings::{
     Plate, PrintSettings, PurgeDrop, Timelapse, TowerInterface, WallDirection, WallOrder,
     gcode_template,
 };
-pub use pre_heating::PreHeating;
 pub use spiral_vase::Spiral;
 
 #[derive(Debug, thiserror::Error)]

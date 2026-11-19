@@ -89,7 +89,10 @@ fn machine(settings: &Settings) -> Result<Machine, Failure> {
     // sizes it may merge layers into slabs per nozzle
     // (AdaptiveLayerMerge.cpp). Neither is done here, and slicing with the
     // plate's widths would put 0.42 mm lines through a 0.6 mm nozzle.
-    if let Some(pair) = diameters.windows(2).find(|pair| (pair[0] - pair[1]).abs() > 1e-6) {
+    if let Some(pair) = diameters
+        .windows(2)
+        .find(|pair| (pair[0] - pair[1]).abs() > 1e-6)
+    {
         return Err(format!(
             "nozzles of two sizes ({} and {} mm): printing each nozzle with a process of its own \
              size, as the reference does, is not done yet; use nozzles of one size; no G-code \
@@ -607,6 +610,9 @@ mod tests {
         let said = group(&mixed, vec![vec![0, 1]], &[], None, false)
             .unwrap_err()
             .to_string();
-        assert!(said.contains("nozzles of two sizes (0.4 and 0.6 mm)"), "{said}");
+        assert!(
+            said.contains("nozzles of two sizes (0.4 and 0.6 mm)"),
+            "{said}"
+        );
     }
 }

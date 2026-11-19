@@ -129,7 +129,9 @@ impl PreHeating {
             temperatures: (0..filaments)
                 .map(|f| at(&temperature, f, 0.0) as i32)
                 .collect(),
-            pre_cooling: (0..filaments).map(|f| at(&cooling, f, 0.0) as i32).collect(),
+            pre_cooling: (0..filaments)
+                .map(|f| at(&cooling, f, 0.0) as i32)
+                .collect(),
             preheat_delta: (0..filaments).map(|f| at(&delta, f, 0.0)).collect(),
             cooling_rate: (0..nozzles.len())
                 .map(|e| rate(variant_value(&cooling_rates, e)))
@@ -180,7 +182,11 @@ impl Group<'_> {
         if filament < 0 {
             return -1;
         }
-        self.map.nozzles.get(filament as usize).copied().unwrap_or(-1)
+        self.map
+            .nozzles
+            .get(filament as usize)
+            .copied()
+            .unwrap_or(-1)
     }
     fn extruder_of_nozzle(&self, nozzle: i32) -> Option<usize> {
         (nozzle >= 0).then_some(nozzle as usize)
@@ -662,7 +668,11 @@ impl Injector<'_> {
     }
 
     /// `process_pre_cooling_and_heating`.
-    fn process(&self, free: &[FreeBlock], out: &mut std::collections::BTreeMap<usize, Vec<String>>) {
+    fn process(
+        &self,
+        free: &[FreeBlock],
+        out: &mut std::collections::BTreeMap<usize, Vec<String>>,
+    ) {
         let p = self.params;
         let mixed = p.bowden.windows(2).any(|pair| pair[0] != pair[1]);
         let offset = if p.first_nozzle >= 0.6 - 1e-4 {
@@ -767,29 +777,30 @@ impl Injector<'_> {
             .unwrap_or(0);
         let heating_rate = p.heating_rate.get(extruder).copied().unwrap_or(2.0);
         let cooling_rate = p.cooling_rate.get(extruder).copied().unwrap_or(2.0);
-        let mut add = |line: usize, temperature: i32, skippable: bool, heating: bool, comment: &str| {
-            let buffer = out.entry(line).or_default();
-            if skippable {
-                let mut m632 = format!("M632 S{}", block.next_filament);
-                if p.nozzle_count.get(extruder).is_some_and(|count| *count > 1) {
-                    m632.push_str(" N R");
+        let mut add =
+            |line: usize, temperature: i32, skippable: bool, heating: bool, comment: &str| {
+                let buffer = out.entry(line).or_default();
+                if skippable {
+                    let mut m632 = format!("M632 S{}", block.next_filament);
+                    if p.nozzle_count.get(extruder).is_some_and(|count| *count > 1) {
+                        m632.push_str(" N R");
+                    }
+                    m632.push_str(" W\n");
+                    buffer.push(m632);
                 }
-                m632.push_str(" W\n");
-                buffer.push(m632);
-            }
-            // Only a cooling waits for the moves before it.
-            if !heating {
-                buffer.push("M400\n".to_owned());
-            }
-            let physical = p.physical.get(extruder).copied().unwrap_or(extruder);
-            buffer.push(format!(
-                "M104 T{physical} S{temperature} N0 {} ;{comment}\n",
-                if heating { "W" } else { "C" }
-            ));
-            if skippable {
-                buffer.push("M633\n".to_owned());
-            }
-        };
+                // Only a cooling waits for the moves before it.
+                if !heating {
+                    buffer.push("M400\n".to_owned());
+                }
+                let physical = p.physical.get(extruder).copied().unwrap_or(extruder);
+                buffer.push(format!(
+                    "M104 T{physical} S{temperature} N0 {} ;{comment}\n",
+                    if heating { "W" } else { "C" }
+                ));
+                if skippable {
+                    buffer.push("M633\n".to_owned());
+                }
+            };
         if cool_partial {
             let f = block.last_filament as usize;
             let threshold = f64::from(p.temperatures[f]) - f64::from(p.pre_cooling[f]);
@@ -808,11 +819,18 @@ impl Injector<'_> {
                 return;
             }
             let clamped = (ROOM_TEMPERATURE as i32).max(target as i32);
-            add(block.lower, clamped, false, false, "Multi extruder pre cooling");
+            add(
+                block.lower,
+                clamped,
+                false,
+                false,
+                "Multi extruder pre cooling",
+            );
             return;
         }
         // The first move ending after `time`, among lower..=upper.
-        let first_after = |time: f64| lower + moves[lower..=upper].partition_point(|(_, t)| *t <= time);
+        let first_after =
+            |time: f64| lower + moves[lower..=upper].partition_point(|(_, t)| *t <= time);
         // Back out of a skippable block: a heating never goes inside one.
         let back = |mut at: usize| -> usize {
             while at != lower {
@@ -839,7 +857,13 @@ impl Injector<'_> {
             } else {
                 moves[back(at - 1)].0
             };
-            add(line, target as i32, true, true, "Multi extruder pre heating");
+            add(
+                line,
+                target as i32,
+                true,
+                true,
+                "Multi extruder pre heating",
+            );
             return;
         }
         // Cool first, then heat in time for the next use.
@@ -862,7 +886,13 @@ impl Injector<'_> {
             return;
         }
         let cooled = (ROOM_TEMPERATURE as i32).max(current as i32 - delta);
-        add(block.lower, cooled, false, false, "Multi extruder pre cooling");
+        add(
+            block.lower,
+            cooled,
+            false,
+            false,
+            "Multi extruder pre cooling",
+        );
         add(
             moves[at].0,
             target as i32,
@@ -939,7 +969,8 @@ mod tests {
             nozzles: vec![1, 0],
             volumes: vec![0, 0],
         };
-        let mut text = String::from("; MACHINE_START_GCODE_END\nT0 H-1\nG1 X1 E1\n; CHANGE_LAYER\n");
+        let mut text =
+            String::from("; MACHINE_START_GCODE_END\nT0 H-1\nG1 X1 E1\n; CHANGE_LAYER\n");
         text.push_str("; CHANGE_LAYER\n; NOZZLE_CHANGE_START OF0 NF1 ON1 NN0\nG1 X2 E1\n");
         text.push_str("; NOZZLE_CHANGE_END OF0 NF1 ON1 NN0\nT1 H-1\n");
         for _ in 0..100 {
@@ -960,8 +991,14 @@ mod tests {
         assert!(cooling[0].starts_with("M104 T0 S"), "{lines:?}");
         // ...and heated back to 210 (220 less the delta, past the first
         // layer) inside its idle stretch, with the interlock round it.
-        let at = lines.iter().position(|l| l.contains("pre heating")).unwrap();
-        assert_eq!(heating[0], "M104 T0 S210 N0 W ;Multi extruder pre heating\n");
+        let at = lines
+            .iter()
+            .position(|l| l.contains("pre heating"))
+            .unwrap();
+        assert_eq!(
+            heating[0],
+            "M104 T0 S210 N0 W ;Multi extruder pre heating\n"
+        );
         assert_eq!(lines[at - 1], "M632 S0 W\n");
         assert_eq!(lines[at + 1], "M633\n");
     }
