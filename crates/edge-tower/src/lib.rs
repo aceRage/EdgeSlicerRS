@@ -1432,12 +1432,51 @@ impl Shape {
             ]));
         }
         shapes.push(region(&plain));
+        // Where a rib ends at the tower's corner (no length past it), the
+        // corner lies on the rib's end and stays a point of the outline,
+        // as ClipperLib leaves the reference's last union of the ribs and
+        // the box (`support_rib_wall_polygon`; before the rounding it is
+        // not a point, as the rounding's reach shows): its points are a
+        // hair off the line, which Clipper2 here takes as in line and
+        // drops.
         let ribbed = outline_of(&shapes)?;
         if !round {
-            return Ok(ribbed);
+            return Ok(with_corners(&ribbed, &plain));
         }
-        outline_of(&[region(&rounded(&ribbed)), region(&plain)])
+        Ok(with_corners(
+            &outline_of(&[region(&rounded(&ribbed)), region(&plain)])?,
+            &plain,
+        ))
     }
+}
+
+/// `outline` with each of `corners` that lies on one of its slanted sides,
+/// within a micrometre, and is not a point of it already, put in as a point.
+fn with_corners(outline: &[(f64, f64)], corners: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let count = outline.len();
+    let mut out = Vec::with_capacity(count + corners.len());
+    for (index, a) in outline.iter().enumerate() {
+        out.push(*a);
+        let b = outline[(index + 1) % count];
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let length = dx.hypot(dy);
+        // Only on a slanted side: one along the bed's axes is in line with
+        // a corner on it exactly, there too, and loses it.
+        if length <= 0.0 || dx.abs() < 1e-6 || dy.abs() < 1e-6 {
+            continue;
+        }
+        let mut on: Vec<(f64, (f64, f64))> = corners
+            .iter()
+            .filter_map(|c| {
+                let along = ((c.0 - a.0) * dx + (c.1 - a.1) * dy) / length;
+                let off = ((c.0 - a.0) * dy - (c.1 - a.1) * dx).abs() / length;
+                (off < 1e-3 && along > 1e-3 && along < length - 1e-3).then_some((along, *c))
+            })
+            .collect();
+        on.sort_by(|x, y| x.0.total_cmp(&y.0));
+        out.extend(on.into_iter().map(|(_, c)| c));
+    }
+    out
 }
 
 /// Where a point of the tower's goes on the bed, worked as the reference
@@ -2588,6 +2627,23 @@ mod tests {
         assert_eq!(kept.len(), 6);
         assert!(!kept.contains(&Point2::from_mm(5.0, 0.0)));
         assert!(kept.contains(&Point2::from_mm(2.0, 8.0)));
+    }
+
+    #[test]
+    fn a_corner_on_a_rib_s_end_stays_a_point_of_the_wall() {
+        // A rib's end running through the box's corner (10, 10), and a
+        // box side along an axis through another corner (0, 10).
+        let outline = [
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (12.0, 8.0),
+            (8.0, 12.0),
+            (-2.0, 10.0),
+        ];
+        let corners = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+        let with = with_corners(&outline, &corners);
+        assert_eq!(with.len(), 6);
+        assert_eq!(with[3], (10.0, 10.0));
     }
 
     #[test]
