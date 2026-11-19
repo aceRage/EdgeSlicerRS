@@ -834,12 +834,24 @@ impl Planner<'_> {
 /// print starts with (WipeTower.cpp `plan_toolchange` for each, then
 /// `generate` up to the layers' laying: `plan_tower_new`, `set_rib_offset`).
 pub fn plan(settings: &Settings, layers: &[LayerIn], start_tool: usize) -> Result<Plan, PlanError> {
+    // Nozzle grouping, ramming on a nozzle change and the H3C's merged
+    // slabs are not ported yet.
     if settings.nozzles > 1 || settings.hotend_as_extruder {
-        return Err(PlanError::Unsupported(
-            "printers of more than one nozzle, or of rack hotends, are not planned yet (nozzle \
-             grouping, ramming on a nozzle change, the H3C's merged slabs)"
-                .to_owned(),
-        ));
+        let what = if settings.hotend_as_extruder {
+            "a printer whose rack hotends count as extruders"
+        } else {
+            "a printer of more than one nozzle"
+        };
+        // A Bambu Lab printer always gets this tower (Print.cpp
+        // `wipe_tower_type`); another gets it only where Type 1 is chosen.
+        let instead = if settings.bambu {
+            "turn the prime tower off (Prime tower: Enable) to slice this print"
+        } else {
+            "choose the Type 2 tower instead (Wipe tower type: Type 2)"
+        };
+        return Err(PlanError::Unsupported(format!(
+            "the Type 1 tower is not supported on {what} yet; {instead}"
+        )));
     }
     if settings.combine_sparse {
         return Err(PlanError::Unsupported(
@@ -1674,10 +1686,18 @@ mod tests {
     #[test]
     fn what_is_not_planned_yet_is_refused() {
         let two = settings(r#"{"nozzle_diameter": ["0.4", "0.4"]}"#);
-        assert!(matches!(
-            super::plan(&two, &layers(2, &[0, 1]), 0),
-            Err(PlanError::Unsupported(_))
-        ));
+        let refused = super::plan(&two, &layers(2, &[0, 1]), 0).unwrap_err();
+        assert!(matches!(refused, PlanError::Unsupported(_)));
+        let said = refused.to_string();
+        assert!(said.contains("more than one nozzle"), "{said}");
+        assert!(said.contains("choose the Type 2 tower"), "{said}");
+        // A Bambu Lab printer has no other tower to choose.
+        let h2d =
+            settings(r#"{"printer_model": "Bambu Lab H2D", "nozzle_diameter": ["0.4", "0.4"]}"#);
+        let said = super::plan(&h2d, &layers(2, &[0, 1]), 0)
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("turn the prime tower off"), "{said}");
         let combined = settings(r#"{"wipe_tower_sparse_layers_combination": "1"}"#);
         assert!(matches!(
             super::plan(&combined, &layers(2, &[0, 1]), 0),

@@ -854,11 +854,7 @@ impl Wipe {
     /// Where the nozzle is after the strokes so far.
     fn at(&self) -> Point2 {
         match self.strokes.iter().rev().find_map(|stroke| match stroke {
-            TowerStroke::Lay(to, _)
-            | TowerStroke::LayAs(to, ..)
-            | TowerStroke::Bend(to, ..)
-            | TowerStroke::Move(to, _)
-            | TowerStroke::Glide(to) => Some(*to),
+            TowerStroke::Lay(to, _) | TowerStroke::Move(to, _) => Some(*to),
             _ => None,
         }) {
             Some(at) => at,
@@ -886,16 +882,14 @@ impl Wipe {
         let mut run = vec![self.start];
         for stroke in &self.strokes {
             match stroke {
-                TowerStroke::Lay(to, _)
-                | TowerStroke::LayAs(to, ..)
-                | TowerStroke::Bend(to, ..) => run.push(*to),
-                TowerStroke::Move(to, _) | TowerStroke::Glide(to) => {
+                TowerStroke::Lay(to, _) => run.push(*to),
+                TowerStroke::Move(to, _) => {
                     if run.len() >= 2 {
                         lines.push(std::mem::take(&mut run));
                     }
                     run = vec![*to];
                 }
-                TowerStroke::Retract | TowerStroke::Unretract | TowerStroke::Sync => {}
+                TowerStroke::Retract | TowerStroke::Unretract => {}
             }
         }
         if run.len() >= 2 {
@@ -1458,11 +1452,6 @@ pub fn plan_changes(
         return Ok(tower);
     };
     if !settings.enabled {
-        return Ok(tower);
-    }
-    // A Bambu Lab printer's tower is the reference's other one, which
-    // edge-engine plans and lays through [`type1`].
-    if settings.bambu_tower {
         return Ok(tower);
     }
     let line = WIDTH_TO_NOZZLE * settings.nozzle_diameter;
@@ -2324,7 +2313,6 @@ mod tests {
                 }
                 TowerStroke::Retract => ("retract".into(), 0.0, 0.0),
                 TowerStroke::Unretract => ("unretract".into(), 0.0, 0.0),
-                other => panic!("not a stroke of this tower's: {other:?}"),
             })
             .take(15)
             .collect();

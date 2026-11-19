@@ -55,7 +55,6 @@ impl Writer<'_> {
         layer: &Layer<'_>,
         visit: &TowerVisit,
         index: usize,
-        cursor: usize,
         low: Option<f64>,
     ) -> Result<(), GcodeError> {
         let from = self.state.tool;
@@ -88,7 +87,7 @@ impl Writer<'_> {
                 }
                 "[change_filament_gcode]" => {
                     if changes {
-                        self.bambu_change(visit, to, index, cursor, layer.z, low)?;
+                        self.bambu_change(visit, to, index, layer.z, low)?;
                     }
                 }
                 "[deretraction_from_wipe_tower_generator]" => {
@@ -118,7 +117,6 @@ impl Writer<'_> {
         visit: &TowerVisit,
         to: usize,
         layer: usize,
-        cursor: usize,
         z: f64,
         low: Option<f64>,
     ) -> Result<(), GcodeError> {
@@ -136,7 +134,6 @@ impl Writer<'_> {
                 self.spend(more / s.retraction_speed);
             }
         }
-        let _ = cursor;
         self.out.extend_from_slice(crate::CHANGE_MARK);
         writeln!(self.out, "T{to} S{:.0}", self.temperature(to, layer == 0))?;
         let toolchange_z = low.unwrap_or(z);
@@ -157,8 +154,7 @@ impl Writer<'_> {
             );
         }
         self.state.after_change = Some(visit.change_start);
-        self.state.framing = true;
-        let swapped = self.swap(Some(from as i64), to, Some(layer), z, toolchange_z);
+        let swapped = self.swap(Some(from as i64), to, Some(layer), z, toolchange_z, true);
         self.state.after_change = None;
         if let Some(list) = cooling {
             self.variables

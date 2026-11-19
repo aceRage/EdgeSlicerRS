@@ -1456,6 +1456,35 @@ mod tests {
     }
 
     #[test]
+    fn the_nozzle_cooled_for_the_change_is_heated_back_up_above_the_first_layer() {
+        // The change G-code cools the nozzle by `filament_cooling_before_tower`;
+        // the purge's first row heats it back up, though not on the first
+        // layer (WipeTower.cpp `toolchange_Wipe`, "Wipe tower reheat before
+        // wipe").
+        let s = settings(r#", "filament_cooling_before_tower": ["10", "10"]"#);
+        let planned = plan(&s, &layers(3), 0).unwrap();
+        let visits = lay(&planned, &s).unwrap();
+        let reheats = |layer: usize| {
+            let change = visits[layer].iter().find(|v| v.is_tool_change).unwrap();
+            (
+                change.reheats_after_cooling,
+                change.gcode.matches("reheat before wipe").count(),
+            )
+        };
+        assert_eq!(reheats(0), (false, 0));
+        assert_eq!(reheats(1), (true, 1));
+        assert!(
+            visits[1]
+                .iter()
+                .any(|v| v.gcode.contains("M104 T0 S220 N0 W ;Wipe tower reheat"))
+        );
+        // Nothing to heat back up where the change does not cool.
+        let s = settings("");
+        let visits = lay(&plan(&s, &layers(3), 0).unwrap(), &s).unwrap();
+        assert!(visits.iter().flatten().all(|v| !v.gcode.contains("reheat")));
+    }
+
+    #[test]
     fn the_rows_ramp_up_and_hold_the_fifth_step() {
         let s = settings("");
         let planned = plan(&s, &layers(20), 0).unwrap();

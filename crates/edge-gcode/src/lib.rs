@@ -1562,10 +1562,6 @@ struct State {
     /// the next travel's time is reckoned from, as the reference's
     /// cooling follows the template's moves (CoolingBuffer.cpp `parse`).
     left_at: Option<[f64; 2]>,
-    /// A tool change on Bambu's tower is under way, framed in the tower
-    /// writer's comments (WipeTower.cpp `tool_change`), which its block
-    /// closes.
-    framing: bool,
     /// Where a change on Bambu's tower leaves the head for its template:
     /// where the purge starts (`tool_change_start_pos`).
     after_change: Option<Point2>,
@@ -2034,7 +2030,7 @@ impl Writer<'_> {
                 let tool = line.trim().strip_prefix('T')?.parse::<i64>().ok()?;
                 (0..255).contains(&tool).then_some(tool)
             });
-            let swapped = self.swap(from, self.state.tool, None, 0.0, 0.0)?;
+            let swapped = self.swap(from, self.state.tool, None, 0.0, 0.0, false)?;
             // The reference leaves this marker of its own here, where the
             // change G-code ran.
             if swapped.templated {
@@ -2140,7 +2136,8 @@ impl Writer<'_> {
     }
 
     /// Runs the printer's tool-change G-code from one tool to another.
-    /// `layer` is the layer being printed, or none before the first.
+    /// `layer` is the layer being printed, or none before the first;
+    /// `on_tower` says the change is made inside a visit to Bambu's tower.
     /// Afterwards nothing is known of where the nozzle is.
     fn swap(
         &mut self,
@@ -2149,6 +2146,7 @@ impl Writer<'_> {
         layer: Option<usize>,
         z: f64,
         toolchange_z: f64,
+        on_tower: bool,
     ) -> Result<Swapped, GcodeError> {
         let first_layer = layer.is_none_or(|layer| layer == 0);
         let old = from.and_then(|tool| usize::try_from(tool).ok());
@@ -2261,7 +2259,7 @@ impl Writer<'_> {
         // (GCode.cpp `append_tcr`, `g_min_purge_volume`). Only there: a
         // change with no tower, or on the other tower, gives the volume as
         // it is (`set_extruder`, `append_tcr2`).
-        let flushed = if self.state.framing {
+        let flushed = if on_tower {
             let flushed = if new_settings.bambu {
                 f64::from((flushed as f32 - new_settings.grab_length as f32 * 2.4).max(0.0))
             } else {
@@ -2425,39 +2423,6 @@ impl Writer<'_> {
     ) -> Result<bool, GcodeError> {
         let from = self.state.tool;
         let s = self.settings;
-        let framed = self.state.framing;
-        // Bambu's tower frames its change in comments, sets the speed
-        // override back to 100% and writes the filament's end G-code
-        // before the filament is pulled back (WipeTower.cpp `tool_change`,
-        // GCode.cpp `append_tcr`).
-        if framed {
-            let material = |tool: usize| {
-                self.variables
-                    .list("filament_type")
-                    .and_then(|types| types.get(tool).or(types.first()))
-                    .map_or_else(|| "(NONE)".to_owned(), Value::to_string)
-            };
-            if self.state.role != Some(Role::PrimeTower) {
-                writeln!(
-                    self.out,
-                    "{}{}",
-                    self.tags().feature,
-                    role_name(Role::PrimeTower)
-                )?;
-                self.state.role = Some(Role::PrimeTower);
-            }
-            writeln!(
-                self.out,
-                ";--------------------\n; CP TOOLCHANGE START\n; toolchange #{}\n\
-                 ; material : {} -> {}\n;--------------------\nM220 S100\n; WIPE_TOWER_START",
-                self.state.tool_changes + 1,
-                material(from),
-                material(to)
-            )?;
-            if let Some(template) = &s.filament_end_gcode {
-                self.custom("filament_end_gcode", template)?;
-            }
-        }
         let ram = ram.filter(|_| self.state.primed);
         let rammed = ram.is_some();
         // The reference's own tower (WipeTower2.cpp) unloads the old tool
@@ -2465,11 +2430,10 @@ impl Writer<'_> {
         // by letting the planner's queue run empty, on Klipper too since
         // aceRage/EdgeSlicer#875, so that the change G-code does not run
         // while the unload is still queued (`toolchange_Unload`).
-        let unloads = over.is_some() && s.prime_tower && !s.bambu_tower;
+        let unloads = over.is_some() && s.prime_tower;
         // A tool of the reference's other tower changed where it is
         // (described below).
-        let in_place =
-            ram.is_none() && !s.bambu_tower && !(s.single_nozzle || s.change_on_tower || first);
+        let in_place = ram.is_none() && !(s.single_nozzle || s.change_on_tower || first);
         match ram {
             // A rammed filament is pushed out fast on the tower, and its
             // tool then waits just clear of what it laid.
@@ -2548,10 +2512,9 @@ impl Writer<'_> {
                 // "Restore layer Z before toolchange").
                 self.leave_tower()?;
             }
-            // Bambu's tower changes filament where the nozzle is, and
-            // goes to the tower after (WipeTower.cpp, GCode.cpp
-            // `append_tcr`). So does the other on a printer of a nozzle
-            // for each filament, for a tool that is not rammed, unless
+            // (Bambu's tower is written by `bambu_visit`.) On a printer of
+            // a nozzle for each filament, a tool that is not rammed is
+            // changed where the nozzle is, and goes to the tower after, unless
             // the change is set to be made on the tower
             // (`tool_change_on_wipe_tower`) or is the first thing on the
             // layer (GCode.cpp `append_tcr2`: `should_travel_to_tower`,
@@ -2580,9 +2543,7 @@ impl Writer<'_> {
             // the layer's height until after the change; it goes down once,
             // to lay the block.
             None => {
-                if let Some(over) =
-                    over.filter(|_| self.state.primed && !s.bambu_tower && !in_place)
-                {
+                if let Some(over) = over.filter(|_| self.state.primed && !in_place) {
                     self.tower_route(enter.first().copied().unwrap_or(over), self.state.position)?;
                     for point in enter {
                         self.travel(*point, false, None)?;
@@ -2617,7 +2578,7 @@ impl Writer<'_> {
                 self.spend(more / s.retraction_speed);
             }
         }
-        if let Some(template) = s.filament_end_gcode.as_ref().filter(|_| !framed) {
+        if let Some(template) = &s.filament_end_gcode {
             self.custom("filament_end_gcode", template)?;
         }
         // A tool waiting its turn is kept cooler so it does not ooze, at
@@ -2642,13 +2603,7 @@ impl Writer<'_> {
         // and timed, when the tool is told to warm up ahead of it.
         self.out.extend_from_slice(CHANGE_MARK);
         writeln!(self.out, "T{to} S{:.0}", self.temperature(to, layer == 0))?;
-        // Bambu's tower gives the change G-code the height of the tower's
-        // layer (GCode.cpp `append_tcr`), the other that of the print's.
-        let toolchange_z = match low {
-            Some(tower) if s.bambu_tower => tower,
-            _ => z,
-        };
-        let swapped = self.swap(Some(from as i64), to, Some(layer), z, toolchange_z)?;
+        let swapped = self.swap(Some(from as i64), to, Some(layer), z, z, false)?;
         self.state.flushed.select(to, self.all);
         // Each nozzle keeps its own filament's retraction; with one nozzle
         // for all the filaments it is the one retraction, carried on to
@@ -2671,37 +2626,7 @@ impl Writer<'_> {
         if let Some(command) = swapped.command {
             self.out.extend_from_slice(command.as_bytes());
         }
-        // Bambu's tower: to where its block starts and down to the layer,
-        // the filament pushed back, straight after the change G-code and
-        // before the new filament's start G-code (GCode.cpp `append_tcr`,
-        // "Move to start pos", `unretract`).
-        if let Some(start) = over.filter(|_| framed && self.state.primed) {
-            self.settings = &self.all[to];
-            self.travel(start, false, None)?;
-            self.prime()?;
-        }
         self.announce(to, layer == 0)?;
-        // A Bambu Lab printer's change G-code leaves the nozzle cooler
-        // before the tower, which heats it back up above the first layer
-        // (WipeTower.cpp `tool_change`, "Wipe tower reheat before wipe").
-        let next = &self.all[to];
-        // Bambu's tower lets the planner's queue run empty once the new
-        // filament is in (WipeTower.cpp `toolchange_Change`).
-        if next.bambu_tower && next.prime_tower {
-            writeln!(self.out, "G4 S0")?;
-        }
-        if next.single_nozzle
-            && next.bambu_tower
-            && next.prime_tower
-            && layer > 0
-            && next.cooling_before_tower > 0.0
-        {
-            writeln!(
-                self.out,
-                "M104 T0 S{:.0} N0 ;Wipe tower reheat before wipe",
-                next.nozzle_temperature
-            )?;
-        }
         Ok(in_place)
     }
 
@@ -2758,11 +2683,10 @@ impl Writer<'_> {
     /// temperature without waiting, on the first layer and wherever it
     /// differs from what it last set, the planner's queue let run empty
     /// first so the change comes with the moves (WipeTower2.cpp
-    /// `toolchange_Unload`, `set_extruder_temp`). Bambu's tower sets none
-    /// (its `toolchange_Unload` is left out).
+    /// `toolchange_Unload`, `set_extruder_temp`).
     fn tower_temperature(&mut self, to: usize, layer: usize) -> io::Result<()> {
         let s = self.settings;
-        if s.single_nozzle && s.prime_tower && !s.bambu_tower {
+        if s.single_nozzle && s.prime_tower {
             let wanted = self.temperature(to, layer == 0);
             if wanted > 0.0 && (layer == 0 || self.state.tower_temperature != Some(wanted)) {
                 self.sync_planner()?;
@@ -3406,8 +3330,7 @@ impl Writer<'_> {
                     if visit.tool_change && layer.filament != self.state.tool {
                         self.interface_fan(None)?;
                     }
-                    self.bambu_visit(layer, visit, index, cursor + offset, low)?;
-                    self.state.framing = false;
+                    self.bambu_visit(layer, visit, index, low)?;
                 }
             } else if layer.filament != self.state.tool {
                 let over = (layer.wipe.map(|wipe| wipe.start)).or_else(|| {
@@ -3416,9 +3339,6 @@ impl Writer<'_> {
                         .first()
                         .and_then(|line| line.points.first().copied())
                 });
-                // Bambu's tower frames the change it takes in comments
-                // (WipeTower.cpp `tool_change`).
-                self.state.framing = layer.wipe.is_some() && self.all[layer.filament].bambu_tower;
                 let before = self.state.position;
                 // The new filament starts at the layer's fan (CoolingBuffer.cpp
                 // closes the role fans at a tool change).
@@ -3455,7 +3375,7 @@ impl Writer<'_> {
                     for point in layer.enter {
                         self.travel(*point, false, None)?;
                     }
-                } else if let Some(wipe) = layer.wipe.filter(|_| !self.settings.bambu_tower) {
+                } else if let Some(wipe) = layer.wipe {
                     // Changed over the tower: on to where the block starts
                     // and down to the layer, as the tower's own moves
                     // (WipeTower2.cpp, the block's first move; GCode.cpp
@@ -4782,83 +4702,26 @@ impl Writer<'_> {
         if let Some(tower) = low {
             self.lower_to_tower(tower)?;
         }
-        let mut usual = self.motion(Role::PrimeTower, &wipe.flow, self.state.first_layer);
-        // Bambu's tower (WipeTower.cpp) sets no acceleration of its own:
-        // its lines go at whatever is in force.
-        if s.bambu_tower {
-            usual.acceleration = 0.0;
-        }
-        let most = |flow: &Flow| {
-            if s.filament_max_volumetric_speed > 0.0 {
-                s.filament_max_volumetric_speed / flow.mm3_per_mm()
-            } else {
-                f64::INFINITY
-            }
+        let usual = self.motion(Role::PrimeTower, &wipe.flow, self.state.first_layer);
+        let most = if s.filament_max_volumetric_speed > 0.0 {
+            s.filament_max_volumetric_speed / wipe.flow.mm3_per_mm()
+        } else {
+            f64::INFINITY
         };
         let mut run: Vec<Point2> = Vec::new();
-        let mut index = 0;
-        let mut wiping = false;
-        while index < wipe.strokes.len() {
-            let stroke = &wipe.strokes[index];
-            index += 1;
+        for stroke in wipe.strokes {
             match *stroke {
-                // A wall: its lines together, thinned to the tower's
-                // resolution or fitted with arcs within it, as the
-                // reference's tower writer lays them (WipeTower.cpp
-                // `WipeTowerWriter::polygon`).
-                TowerStroke::Bend(to, speed, flow) => {
-                    let Some(at) = self.state.position else {
-                        continue;
-                    };
-                    let mut points = vec![at, to];
-                    while let Some(TowerStroke::Bend(next, more, same)) = wipe.strokes.get(index)
-                        && *more == speed
-                        && *same == flow
-                    {
-                        points.push(*next);
-                        index += 1;
-                    }
-                    let within = arc::tolerance(TOWER_RESOLUTION);
-                    let fitted = if s.arc_fitting {
-                        arc::Fitted::new(&points, within)
-                    } else {
-                        arc::Fitted::straight(arc::douglas_peucker(&points, within))
-                    };
-                    let motion = Motion {
-                        speed: speed.min(most(&flow)),
-                        ..usual
-                    };
-                    if run.is_empty() {
-                        run.push(at);
-                    }
-                    self.lay_parts(
-                        &fitted.points,
-                        &fitted.parts,
-                        Role::PrimeTower,
-                        &flow,
-                        motion,
-                    )?;
-                    run.extend_from_slice(&fitted.points[1..]);
-                }
-                TowerStroke::Lay(to, speed) | TowerStroke::LayAs(to, speed, _) => {
-                    if self.state.framing && !wiping {
-                        writeln!(self.out, "; CP TOOLCHANGE WIPE")?;
-                        wiping = true;
-                    }
-                    let flow = match *stroke {
-                        TowerStroke::LayAs(_, _, flow) => flow,
-                        _ => wipe.flow,
-                    };
+                TowerStroke::Lay(to, speed) => {
                     if run.is_empty()
                         && let Some(at) = self.state.position
                     {
                         run.push(at);
                     }
                     let motion = Motion {
-                        speed: speed.min(most(&flow)),
+                        speed: speed.min(most),
                         ..usual
                     };
-                    self.extrude(to, Role::PrimeTower, &flow, motion)?;
+                    self.extrude(to, Role::PrimeTower, &wipe.flow, motion)?;
                     run.push(to);
                 }
                 TowerStroke::Move(to, speed) => {
@@ -4866,33 +4729,6 @@ impl Writer<'_> {
                     self.go(to, None, speed.unwrap_or(s.travel_speed), length)?;
                     run.clear();
                 }
-                // At the speed in force, which is written again only
-                // where none is known.
-                TowerStroke::Glide(to) => {
-                    let length = self.state.position.map_or(0.0, |at| distance(at, to));
-                    let speed = match self.state.feedrate.abs() {
-                        0.0 => s.travel_speed,
-                        feedrate => feedrate / 60.0,
-                    };
-                    self.go(to, None, speed, length)?;
-                    run.clear();
-                }
-                // The end of the change's block: the frame closed round it
-                // (WipeTower.cpp `tool_change`).
-                TowerStroke::Sync if self.state.framing => {
-                    writeln!(self.out, "; WIPE_TOWER_END")?;
-                    let travel = (s.travel_speed * 60.0).round();
-                    if self.state.feedrate != travel {
-                        writeln!(self.out, "G1 F{travel:.0}")?;
-                        self.state.feedrate = travel;
-                    }
-                    writeln!(
-                        self.out,
-                        "G4 S0\nG92 E0\n; CP TOOLCHANGE END\n;------------------\n\n"
-                    )?;
-                    self.state.framing = false;
-                }
-                TowerStroke::Sync => writeln!(self.out, "G4 S0")?,
                 TowerStroke::Retract | TowerStroke::Unretract if s.retraction_length > 0.0 => {
                     let sign = if *stroke == TowerStroke::Retract {
                         "-"
@@ -7195,9 +7031,6 @@ fn find(text: &[u8], needle: &[u8]) -> Option<usize> {
 
 /// Markers a layer is written with where the fan is to change for an
 /// overhang and back, until the layer's own fan speed is known.
-/// How closely the prime tower's walls are followed, in mm, whether
-/// thinned or fitted with arcs (WipeTower.cpp `WIPE_TOWER_RESOLUTION`).
-const TOWER_RESOLUTION: f64 = 0.1;
 const FAN_MARK: &[u8] = b";_FAN_OVER_AIR_";
 const FAN_OVER_AIR: &[u8] = b";_FAN_OVER_AIR_ON\n";
 const FAN_AS_LAYER: &[u8] = b";_FAN_OVER_AIR_OFF\n";
