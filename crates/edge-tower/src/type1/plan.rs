@@ -3,19 +3,21 @@
 //! where every purge starts and the wall is left open for it, and where
 //! the tower stands.
 //!
-//! Ported: `plan_toolchange` / `replan_toolchange`, `plan_tower_new`,
-//! `calc_block_infill_gap`, `generate_wipe_tower_blocks`, the stability
-//! table (`min_depth_per_height`), `update_all_layer_depth`,
-//! `layer_y_shifts`, `get_all_wall_skip_points`, `set_rib_offset`,
-//! `get_auto_brim_by_height`, and the footprint estimates
+//! Ported: `plan_toolchange` / `replan_toolchange` with the ramming of a
+//! change onto another nozzle (`nozzle_change_length`, `_depth`),
+//! `plan_tower_new`, `calc_block_infill_gap`, `generate_wipe_tower_blocks`,
+//! the stability table (`min_depth_per_height`), `update_all_layer_depth`,
+//! `set_nozzle_last_layer_id`, `layer_y_shifts`, `get_all_wall_skip_points`,
+//! `set_rib_offset`, `get_auto_brim_by_height`, and the footprint estimates
 //! (`estimate_tower_blocks_depth` and its company).
 //!
-//! For a printer of one nozzle only. Refused rather than planned some
-//! other way: a printer of more than one nozzle, or whose rack hotends
-//! count as extruders (the nozzle-change ramming, grouping, and the H3C's
-//! ladder and merged slabs, `plan_tower_ladder` / `plan_merged_slabs`);
-//! sparse layers laid as one (`combine_sparse_wipe_tower_plan`); and the
-//! tower interfaces (`mark_interfaces`).
+//! Refused rather than planned some other way: a printer whose rack
+//! hotends count as extruders (the H3C's ladder and merged slabs,
+//! `plan_tower_ladder` / `plan_merged_slabs`, its idle cooling), more than
+//! two nozzles or two of different sizes (`tool_line_width`), the side
+//! scrape, sparse layers laid as one (`combine_sparse_wipe_tower_plan`),
+//! and Edge's own tower interfaces (`mark_interfaces`, which Bambu's
+//! interface switch leaves idle).
 
 use std::collections::BTreeMap;
 use std::f32::consts::PI;
@@ -46,6 +48,20 @@ pub enum PlanError {
     Clip(#[from] ClipError),
 }
 
+/// What the plate's nozzle grouping says of a change between filaments on
+/// two nozzles (WipeTower.hpp `NozzleChangePlan`): the outgoing filament
+/// rams on the tower before the swap (Bambu Studio's `is_need_ramming`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NozzleChange {
+    /// The two are on different extruders: `filament_change_length`
+    /// rams, else (another hotend of one extruder) `_nc`.
+    pub extruder_change: bool,
+    /// The two nozzles, and the outgoing filament's extruder, by number.
+    pub old_nozzle: i32,
+    pub new_nozzle: i32,
+    pub old_extruder: usize,
+}
+
 /// One tool change asked of the tower.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ChangeIn {
@@ -54,6 +70,8 @@ pub struct ChangeIn {
     /// What the change G-code flushes, in mm³ (Print.cpp `volume_to_purge`):
     /// carried for the G-code, not laid on the tower.
     pub purge_volume: f32,
+    /// Onto another nozzle: the ramming before it.
+    pub nozzle_change: Option<NozzleChange>,
 }
 
 /// One layer the tower stands on, with its changes in the order made.
@@ -76,8 +94,15 @@ pub struct Change {
     pub wipe_volume: f32,
     pub wipe_length: f32,
     pub purge_volume: f32,
-    /// The depth its purge takes in its block (`required_depth`).
+    /// The depth its purge takes in its block, and the ramming in its
+    /// own (`required_depth`, which holds both).
     pub required_depth: f32,
+    /// Onto another nozzle: the ramming of the outgoing filament, as a
+    /// length of ramming line and the depth it takes in its block
+    /// (`nozzle_change_length`, `nozzle_change_depth`).
+    pub nozzle_change: Option<NozzleChange>,
+    pub nozzle_change_length: f32,
+    pub nozzle_change_depth: f32,
     /// Where its purge starts on the outer wall, in the tower's frame
     /// (`start_point`; set with the wall gap).
     pub start_point: (f32, f32),
@@ -198,6 +223,18 @@ pub struct Plan {
     pub skip_sparse: bool,
     /// The place set (`m_wipe_tower_pos`).
     pub origin: (f32, f32),
+    /// The widest ramming line of the filaments
+    /// (`m_nozzle_change_perimeter_width`).
+    pub nozzle_change_width: f32,
+    /// On a printer of more than one nozzle, each extruder's last tower
+    /// layer with a change to or from one of its filaments
+    /// (`m_last_layer_id`, `set_nozzle_last_layer_id`).
+    pub last_layers: Vec<Option<usize>>,
+    /// Each extruder's printable height, 0 for no limit
+    /// (`extruder_printable_height`).
+    pub printable_height: Vec<f64>,
+    /// Each filament's extruder.
+    pub extruders: Vec<usize>,
 }
 
 /// The least depth a tower `height` mm tall should have to stand
@@ -253,7 +290,7 @@ fn length_to_volume(length: f32, width: f32, height: f32) -> f32 {
 
 /// The width of the lines a nozzle-change ram lays
 /// (`nozzle_change_perimeter_width`).
-fn nozzle_change_width(nozzle: f32) -> f32 {
+pub(crate) fn nozzle_change_width(nozzle: f32) -> f32 {
     const TABLE: [(f32, f32); 4] = [(0.2, 0.5), (0.4, 1.0), (0.6, 1.2), (0.8, 1.4)];
     TABLE
         .iter()
@@ -552,15 +589,76 @@ impl Planner<'_> {
             .map_or(self.line, |gap| gap.0)
     }
 
-    /// `replan_toolchange`, one nozzle: whole rows of the new filament's
-    /// prime at its block's gap.
+    /// The width of the ramming lines of `filament`'s nozzle
+    /// (`nozzle_change_width`).
+    fn nc_width(&self, filament: usize) -> f32 {
+        nozzle_change_width(self.settings.nozzle_of(filament))
+    }
+
+    /// The widest ramming line (`m_nozzle_change_perimeter_width`).
+    fn ncpw(&self) -> f32 {
+        (0..self.settings.filaments.len().max(1))
+            .map(|filament| self.nc_width(filament))
+            .fold(0.0, f32::max)
+    }
+
+    /// The row gap of a filament's ramming in its block
+    /// (`get_block_gap_width` for a nozzle change).
+    fn ramming_gap(&self, filament: usize) -> f32 {
+        let own = self.nc_width(filament);
+        self.gaps
+            .get(&self.category(filament))
+            .map_or(own, |gap| gap.1 + (own - self.ncpw()))
+    }
+
+    /// `nozzle_change_length`: how long a ramming line lays the outgoing
+    /// filament's `filament_change_length`.
+    fn nozzle_change_length(&self, old: usize, extruder_change: bool, height: f32) -> f32 {
+        let Some(own) = self.settings.filaments.get(old) else {
+            return 0.0;
+        };
+        if height <= 0.0 {
+            return 0.0;
+        }
+        let length = if extruder_change {
+            own.change_length.0
+        } else {
+            own.change_length.1
+        };
+        let width = self.nc_width(old);
+        let e_flow = f64::from(height * (width - height * (1.0 - PI / 4.0)) / own.area);
+        if e_flow > 0.0 {
+            (f64::from(length) / e_flow) as f32
+        } else {
+            0.0
+        }
+    }
+
+    /// `replan_toolchange`: whole rows of the new filament's prime at its
+    /// block's gap, and onto another nozzle whole ramming lines of the
+    /// outgoing filament at its block's ramming gap.
     fn replan(&self, change: &mut Change, height: f32) {
         let across = self.width - 2.0 * self.line;
         if across <= EPSILON {
             return;
         }
         change.wipe_length = volume_to_length(change.wipe_volume, self.line, height);
-        change.required_depth = (change.wipe_length / across).ceil() * self.gap_width(change.new);
+        let mut depth = (change.wipe_length / across).ceil() * self.gap_width(change.new);
+        change.nozzle_change_length = 0.0;
+        change.nozzle_change_depth = 0.0;
+        if let Some(nozzle) = change.nozzle_change {
+            change.nozzle_change_length =
+                self.nozzle_change_length(change.old, nozzle.extruder_change, height);
+            // The ramming box spans the tower between the outgoing
+            // filament's purge lines on both sides.
+            let box_width = self.width - (self.nc_width(change.old) + self.line);
+            if change.nozzle_change_length > 0.0 && box_width > EPSILON {
+                change.nozzle_change_depth =
+                    (change.nozzle_change_length / box_width).ceil() * self.ramming_gap(change.old);
+            }
+            depth += change.nozzle_change_depth;
+        }
+        change.required_depth = depth;
     }
 
     fn replan_all(&mut self) {
@@ -573,24 +671,99 @@ impl Planner<'_> {
         self.plan = plan;
     }
 
-    /// `calc_block_infill_gap`, one nozzle: no block rams, so every block's
-    /// rows are `prime_tower_infill_gap` apart. Then every change is
-    /// re-planned at its block's gap.
+    /// `calc_block_infill_gap`: each block's purge row gap
+    /// (`prime_tower_infill_gap`), and that of its ramming lines. A block
+    /// that rams lays its purge rows at the ramming gap too once that gap,
+    /// stretched to the stability minimum, gets wide, so both stay on one
+    /// grid; a reverse travel after the ramming needs room
+    /// (`m_tpu_fixed_spacing`). Then every change is re-planned at its
+    /// block's gaps.
     fn calc_block_infill_gap(&mut self) {
-        // Each category the layers purge into, top down (its depth would
-        // decide a ramming block's gap; there are none on one nozzle).
-        let mut categories = BTreeMap::new();
-        for layer in &self.plan {
-            for change in &layer.changes {
-                categories.insert(self.category(change.new), ());
+        #[derive(Clone, Copy, Default)]
+        struct Info {
+            ramming: bool,
+            reverse_travel: bool,
+            depth: f32,
+        }
+        /// `m_tpu_fixed_spacing`.
+        const TPU_FIXED_SPACING: f32 = 2.0;
+        let reverse_travel = |tool: usize, extruder_change: bool| {
+            self.settings.filaments.get(tool).is_some_and(|own| {
+                if extruder_change {
+                    own.ramming_travel_time.0 > EPSILON && own.change_length.0 > EPSILON
+                } else {
+                    own.ramming_travel_time.1 > EPSILON && own.change_length.1 > EPSILON
+                }
+            })
+        };
+        // The categories the layers purge and ram into, top down, each as
+        // deep as on its deepest layer from there up.
+        let mut info: BTreeMap<i32, Info> = BTreeMap::new();
+        let mut high: BTreeMap<i32, Info> = BTreeMap::new();
+        for index in (0..self.plan.len()).rev() {
+            for change in &self.plan[index].changes {
+                if let Some(nozzle) = change.nozzle_change {
+                    let old = info.entry(self.category(change.old)).or_default();
+                    old.ramming = true;
+                    if reverse_travel(change.old, nozzle.extruder_change) {
+                        old.reverse_travel = true;
+                    }
+                    old.depth += change.nozzle_change_depth;
+                }
+                info.entry(self.category(change.new)).or_default().depth +=
+                    change.required_depth - change.nozzle_change_depth;
+            }
+            for (category, block) in &mut info {
+                if let Some(above) = high.get(category)
+                    && above.depth > block.depth
+                {
+                    block.depth = above.depth;
+                }
+            }
+            high = info.clone();
+            for block in info.values_mut() {
+                block.depth = 0.0;
+            }
+            if index == 0 {
+                info = high.clone();
             }
         }
+        let max_depth: f32 = info.values().map(|block| block.depth).sum();
+        let height_to_depth = limit_depth(self.height);
+        let height_to_spacing = if max_depth > height_to_depth || max_depth < EPSILON {
+            1.0
+        } else {
+            height_to_depth / max_depth
+        };
+        let ribs = matches!(self.settings.wall, Wall::Ribs { .. });
+        let ncpw = self.ncpw();
         let extra_width = (self.extra_spacing - 1.0) * self.line;
-        self.gaps = categories
-            .into_keys()
-            .map(|category| {
-                let gap = extra_width + self.line;
-                (category, (gap, gap))
+        // A ramming gap past this aligns the block's purge rows to it.
+        let tolerance = 2.0 * ncpw;
+        let line = self.line;
+        self.gaps = info
+            .iter()
+            .map(|(category, block)| {
+                let gap = if !block.ramming {
+                    let gap = extra_width + line;
+                    (gap, gap)
+                } else {
+                    let ramming = if block.reverse_travel {
+                        ncpw + ((TPU_FIXED_SPACING - 1.0) * line).max(extra_width)
+                    } else {
+                        ncpw + extra_width
+                    };
+                    let mut line_gap = ramming;
+                    if !ribs {
+                        line_gap *= height_to_spacing;
+                    }
+                    if line_gap < tolerance {
+                        (line + extra_width, ramming)
+                    } else {
+                        (ramming, ramming)
+                    }
+                };
+                (*category, gap)
             })
             .collect();
         self.replan_all();
@@ -608,11 +781,23 @@ impl Planner<'_> {
             .iter()
             .map(|layer| {
                 let mut depths: Vec<(i32, f32)> = Vec::new();
+                let mut add = |category: i32, depth: f32| match depths
+                    .iter_mut()
+                    .find(|(at, _)| *at == category)
+                {
+                    Some((_, sum)) => *sum += depth,
+                    None => depths.push((category, depth)),
+                };
                 for change in &layer.changes {
-                    let category = self.category(change.new);
-                    match depths.iter_mut().find(|(at, _)| *at == category) {
-                        Some((_, depth)) => *depth += change.required_depth,
-                        None => depths.push((category, change.required_depth)),
+                    // The ramming goes to the outgoing filament's block.
+                    if change.nozzle_change.is_none() {
+                        add(self.category(change.new), change.required_depth);
+                    } else {
+                        add(self.category(change.old), change.nozzle_change_depth);
+                        add(
+                            self.category(change.new),
+                            change.required_depth - change.nozzle_change_depth,
+                        );
                     }
                 }
                 depths
@@ -787,33 +972,109 @@ impl Planner<'_> {
             .collect()
     }
 
-    /// `get_all_wall_skip_points` / `get_wall_skip_points`, one nozzle:
-    /// each purge starts on the outer wall, by layer at the left front,
-    /// the right back, the right front or the left back of its rows, and
-    /// the wall is left open there.
-    fn wall_skip_points(&mut self) -> Vec<Vec<(f32, f32)>> {
-        let mut points = vec![Vec::new(); self.plan.len()];
+    /// `set_nozzle_last_layer_id`: on a printer of more than one nozzle,
+    /// each extruder's last layer with a change to or from one of its
+    /// filaments.
+    fn last_layers(&self) -> Vec<Option<usize>> {
+        let extruders = self.settings.nozzle_diameters.len().max(1);
+        let mut last = vec![None; extruders];
+        if self.settings.nozzles < 2 {
+            return last;
+        }
+        for (index, layer) in self.plan.iter().enumerate() {
+            for change in &layer.changes {
+                for tool in [change.old, change.new] {
+                    let extruder = self.settings.filaments.get(tool).map_or(0, |f| f.extruder);
+                    if let Some(slot) = last.get_mut(extruder) {
+                        *slot = Some(index);
+                    }
+                }
+            }
+        }
+        last
+    }
+
+    /// `get_all_wall_skip_points` / `get_wall_skip_points`: each purge
+    /// starts on the outer wall, by layer at the left front, the right
+    /// back, the right front or the left back of its rows (after the
+    /// outgoing filament's ramming where that is in the same block), and
+    /// the wall is left open there. With Bambu's interface features a
+    /// contact purge, and a contact block no change fills, start outside
+    /// the tower: their gap is cut on the three layers below as well.
+    fn wall_skip_points(
+        &mut self,
+        last_layers: &[Option<usize>],
+        y_shifts: &[f32],
+    ) -> Vec<Vec<(f32, f32)>> {
+        let mut points: Vec<Vec<(f32, f32)>> = vec![Vec::new(); self.plan.len()];
         if !self.settings.wall_gap {
             return points;
         }
-        for (index, layer) in self.plan.iter_mut().enumerate() {
+        let features = self.settings.interface_features;
+        /// `TowerInterface::GAP_LAYERS`.
+        const GAP_LAYERS: usize = 4;
+        let add_below = |points: &mut Vec<Vec<(f32, f32)>>, index: usize, at: (f32, f32)| {
+            for below in 1..GAP_LAYERS.min(index + 1) {
+                let lower = index - below;
+                let p = (at.0, at.1 + y_shifts[index] - y_shifts[lower]);
+                let near = |q: &(f32, f32)| {
+                    let (dx, dy) = (p.0 - q.0, p.1 - q.1);
+                    dx * dx + dy * dy < 1e-6
+                };
+                if !points[lower].iter().any(near) {
+                    points[lower].push(p);
+                }
+            }
+        };
+        for index in 0..self.plan.len() {
+            let z = self.plan[index].z;
+            let extra = self.plan[index].extra_spacing;
             let mut reached: Vec<(i32, f32)> = Vec::new();
-            for change in &mut layer.changes {
-                let category = self.settings.category(change.new);
-                let Some(block) = self.blocks.iter().find(|b| b.category == category) else {
+            let depth_of = |reached: &[(i32, f32)], category: i32| {
+                reached.iter().position(|(c, _)| *c == category)
+            };
+            let mut changes = std::mem::take(&mut self.plan[index].changes);
+            for change in &mut changes {
+                let mut nozzle_change_depth = change.nozzle_change_depth;
+                let wipe_depth = change.required_depth - nozzle_change_depth;
+                if !self.valid_last_layer(last_layers, change.old, index, z) {
+                    nozzle_change_depth = 0.0;
+                }
+                let new_category = self.settings.category(change.new);
+                let old_category = self.settings.category(change.old);
+                let Some(block) = self.blocks.iter().find(|b| b.category == new_category) else {
                     continue;
                 };
-                let at = match reached.iter().position(|(c, _)| *c == category) {
+                let contact = block.layer_types[index] == LayerType::Contact;
+                let at = match depth_of(&reached, new_category) {
                     Some(at) => at,
                     None => {
-                        reached.push((category, block.start_depth));
+                        reached.push((new_category, block.start_depth));
                         reached.len() - 1
                     }
                 };
-                let process = reached[at].1;
-                let wipe_depth = change.required_depth;
-                let gap = self.gaps.get(&category).map_or(self.line, |gap| gap.0);
-                let last_row = process + wipe_depth - layer.extra_spacing * gap;
+                let mut process = reached[at].1;
+                if change.nozzle_change.is_some() {
+                    if new_category == old_category {
+                        process += nozzle_change_depth;
+                    } else {
+                        let old_at = match depth_of(&reached, old_category) {
+                            Some(old_at) => old_at,
+                            None => {
+                                let Some(old_block) =
+                                    self.blocks.iter().find(|b| b.category == old_category)
+                                else {
+                                    continue;
+                                };
+                                reached.push((old_category, old_block.start_depth));
+                                reached.len() - 1
+                            }
+                        };
+                        reached[old_at].1 += nozzle_change_depth;
+                    }
+                }
+                let gap = self.gaps.get(&new_category).map_or(self.line, |gap| gap.0);
+                let last_row = process + wipe_depth - extra * gap;
                 let point = match index % 4 {
                     0 => (0.0, process),
                     1 => (self.width, last_row),
@@ -822,11 +1083,80 @@ impl Planner<'_> {
                 };
                 change.start_point = point;
                 points[index].push(point);
+                let at = depth_of(&reached, new_category).unwrap_or(at);
                 reached[at].1 = process + wipe_depth;
+                if features && contact {
+                    add_below(&mut points, index, point);
+                }
+            }
+            self.plan[index].changes = changes;
+            // A contact block the changes leave untouched is filled solid
+            // from outside the tower (`finish_block_solid`): a gap where
+            // its first row crosses the wall.
+            if features {
+                for block in &self.blocks {
+                    let depth = depth_of(&reached, block.category)
+                        .map_or(block.start_depth, |at| reached[at].1);
+                    if depth + EPSILON >= block.start_depth + block.layer_depths[index] - self.line
+                    {
+                        continue;
+                    }
+                    if block.layer_types[index] != LayerType::Contact
+                        || (depth - block.start_depth).abs() >= EPSILON
+                    {
+                        continue;
+                    }
+                    let dy = block.layer_depths[index] - self.line;
+                    let rows = ((dy + 0.25 * self.line) / self.line + 1.0) as i32;
+                    let grid = self.line * (rows - 1) as f32;
+                    let point = match index % 4 {
+                        0 => (0.0, depth),
+                        1 => (self.width, depth + grid),
+                        2 => (self.width, depth),
+                        _ => (0.0, depth + grid),
+                    };
+                    points[index].push(point);
+                    add_below(&mut points, index, point);
+                }
             }
         }
         points
     }
+
+    /// `is_valid_last_layer`: whether `tool`'s extruder can still lay on
+    /// layer `index`, which is not its last above its printable height.
+    fn valid_last_layer(
+        &self,
+        last_layers: &[Option<usize>],
+        tool: usize,
+        index: usize,
+        z: f32,
+    ) -> bool {
+        valid_last_layer(self.settings, last_layers, tool, index, z)
+    }
+}
+
+/// `is_valid_last_layer`: whether `tool`'s extruder can still lay on
+/// layer `index` (topped at `z`): not where that is the extruder's last
+/// tower layer and above its `extruder_printable_height` (0: no limit).
+pub(crate) fn valid_last_layer(
+    settings: &Settings,
+    last_layers: &[Option<usize>],
+    tool: usize,
+    index: usize,
+    z: f32,
+) -> bool {
+    if settings.nozzles < 2 {
+        return true;
+    }
+    let extruder = settings.filaments.get(tool).map_or(0, |f| f.extruder);
+    let Some(&height) = settings.printable_height.get(extruder) else {
+        return true;
+    };
+    if extruder >= last_layers.len() || height.is_nan() || height <= 0.0 {
+        return true;
+    }
+    !(last_layers[extruder] == Some(index) && f64::from(z) > height)
 }
 
 /// Plans the tower for `layers`, the layers it stands on from the print's
@@ -834,13 +1164,14 @@ impl Planner<'_> {
 /// print starts with (WipeTower.cpp `plan_toolchange` for each, then
 /// `generate` up to the layers' laying: `plan_tower_new`, `set_rib_offset`).
 pub fn plan(settings: &Settings, layers: &[LayerIn], start_tool: usize) -> Result<Plan, PlanError> {
-    // Nozzle grouping, ramming on a nozzle change and the H3C's merged
-    // slabs are not ported yet.
-    if settings.nozzles > 1 || settings.hotend_as_extruder {
+    // A printer whose rack hotends count as extruders (H2C, H3C) has its
+    // racks' machinery (idle cooling, heater-off changes, the H3C's
+    // ladder and merged slabs) not ported; nor more than two nozzles.
+    if settings.hotend_as_extruder || settings.nozzles > 2 {
         let what = if settings.hotend_as_extruder {
-            "a printer whose rack hotends count as extruders"
+            "a printer whose rack hotends count as extruders (H2C, H3C)".to_owned()
         } else {
-            "a printer of more than one nozzle"
+            format!("a printer of {} nozzles", settings.nozzles)
         };
         // A Bambu Lab printer always gets this tower (Print.cpp
         // `wipe_tower_type`); another gets it only where Type 1 is chosen.
@@ -852,6 +1183,34 @@ pub fn plan(settings: &Settings, layers: &[LayerIn], start_tool: usize) -> Resul
         return Err(PlanError::Unsupported(format!(
             "the Type 1 tower is not supported on {what} yet; {instead}"
         )));
+    }
+    // Two nozzles of different sizes lay each filament's purge at its own
+    // nozzle's line width (`tool_line_width`), which is not done here.
+    if settings.nozzles > 1
+        && settings
+            .nozzle_diameters
+            .windows(2)
+            .any(|pair| (pair[0] - pair[1]).abs() > 1e-6)
+    {
+        return Err(PlanError::Unsupported(
+            "nozzles of two sizes: each filament's purge at its own nozzle's line width is not \
+             done yet; use nozzles of one size or turn the prime tower off"
+                .to_owned(),
+        ));
+    }
+    if settings.mixed_extruders {
+        return Err(PlanError::Unsupported(
+            "a filament switcher on extruders of two kinds: the extra cooling before the tower \
+             (Bambu's 10 °C) is not done yet; turn the prime tower off to slice this print"
+                .to_owned(),
+        ));
+    }
+    if settings.side_scrape {
+        return Err(PlanError::Unsupported(
+            "prime_tower_side_scrape: scraping the nozzle on the tower's side is not done yet; \
+             turn it off (Prime tower: Side scrape)"
+                .to_owned(),
+        ));
     }
     if settings.combine_sparse {
         return Err(PlanError::Unsupported(
@@ -911,13 +1270,21 @@ pub fn plan(settings: &Settings, layers: &[LayerIn], start_tool: usize) -> Resul
                     line,
                 });
             }
+            // Onto another hotend of one extruder the new filament primes
+            // `filament_prime_volume_nc` (Print.cpp `_make_wipe_tower`).
+            let hotend_change = asked
+                .nozzle_change
+                .is_some_and(|nozzle| !nozzle.extruder_change);
             let mut change = Change {
                 old: asked.old,
                 new: asked.new,
-                wipe_volume: settings.prime_volume(asked.new, false),
+                wipe_volume: settings.prime_volume(asked.new, hotend_change),
                 wipe_length: 0.0,
                 purge_volume: asked.purge_volume,
                 required_depth: 0.0,
+                nozzle_change: asked.nozzle_change,
+                nozzle_change_length: 0.0,
+                nozzle_change_depth: 0.0,
                 start_point: (0.0, 0.0),
             };
             planner.replan(&mut change, layer.height);
@@ -944,6 +1311,10 @@ pub fn plan(settings: &Settings, layers: &[LayerIn], start_tool: usize) -> Resul
             rib_footprint: (0.0, 0.0),
             skip_sparse: settings.skip_sparse,
             origin: (settings.x, settings.y),
+            nozzle_change_width: planner.ncpw(),
+            last_layers: Vec::new(),
+            printable_height: settings.printable_height.clone(),
+            extruders: settings.filaments.iter().map(|f| f.extruder).collect(),
         });
     }
     // `generate`: the filament in hand is the first change's old one, and
@@ -1011,21 +1382,29 @@ pub fn plan(settings: &Settings, layers: &[LayerIn], start_tool: usize) -> Resul
             // for them.
             layer.extra_spacing = 1.0;
             for change in &mut layer.changes {
-                let wipe_depth = change.required_depth * spacing;
-                change.required_depth = wipe_depth;
+                let nc_width = nozzle_change_width(settings.nozzle_of(change.old));
+                let wipe_depth = (change.required_depth - change.nozzle_change_depth) * spacing;
+                let nc_depth = change.nozzle_change_depth * spacing;
+                let nc_lines = ((nc_depth + WT_EPSILON) / nc_width) as i32;
+                change.required_depth = wipe_depth + nc_depth;
                 change.wipe_length = wipe_depth / line * across;
                 change.wipe_volume = length_to_volume(change.wipe_length, line, layer.height);
+                change.nozzle_change_length = nc_lines as f32 * (planner.width - (nc_width + line));
+                change.nozzle_change_depth = nc_depth;
             }
         } else {
             layer.extra_spacing = spacing;
             for change in &mut layer.changes {
                 change.required_depth *= spacing;
+                change.nozzle_change_depth *= spacing;
                 change.wipe_length = volume_to_length(change.wipe_volume, line, layer.height);
             }
         }
     }
     planner.update_all_layer_depth(most);
-    let skip_points = planner.wall_skip_points();
+    let last_layers = planner.last_layers();
+    let y_shifts = planner.y_shifts();
+    let skip_points = planner.wall_skip_points(&last_layers, &y_shifts);
     if let Some(ribs) = &mut ribs {
         let (w, d) = (planner.width, planner.depth);
         let diagonal = (d * d + w * w).sqrt();
@@ -1034,7 +1413,7 @@ pub fn plan(settings: &Settings, layers: &[LayerIn], start_tool: usize) -> Resul
         ribs.length = planner.rib_length;
         ribs.width = ribs.width.min(d.min(w) / 2.0);
     }
-    let y_shifts = planner.y_shifts();
+    let nozzle_change_width = planner.ncpw();
     let mut plan = Plan {
         layers: planner.plan,
         blocks: planner.blocks,
@@ -1054,6 +1433,10 @@ pub fn plan(settings: &Settings, layers: &[LayerIn], start_tool: usize) -> Resul
         rib_footprint: (0.0, 0.0),
         skip_sparse: settings.skip_sparse,
         origin: (settings.x, settings.y),
+        nozzle_change_width,
+        last_layers,
+        printable_height: settings.printable_height.clone(),
+        extruders: settings.filaments.iter().map(|f| f.extruder).collect(),
     };
     plan.set_rib_offset()?;
     Ok(plan)
@@ -1453,7 +1836,7 @@ fn bounds(points: impl Iterator<Item = (f64, f64)>) -> [f64; 4] {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use edge_config::Settings as Config;
 
     use super::*;
@@ -1480,6 +1863,7 @@ mod tests {
                             old: tool,
                             new: next,
                             purge_volume: 100.0,
+                            nozzle_change: None,
                         });
                         tool = next;
                     }
@@ -1645,6 +2029,7 @@ mod tests {
                     old: 1,
                     new: 0,
                     purge_volume: 0.0,
+                    nozzle_change: None,
                 }]
             } else {
                 Vec::new()
@@ -1660,6 +2045,7 @@ mod tests {
             old,
             new,
             purge_volume: 0.0,
+            nozzle_change: None,
         };
         let input: Vec<LayerIn> = (0..20)
             .map(|index| LayerIn {
@@ -1685,19 +2071,42 @@ mod tests {
 
     #[test]
     fn what_is_not_planned_yet_is_refused() {
-        let two = settings(r#"{"nozzle_diameter": ["0.4", "0.4"]}"#);
-        let refused = super::plan(&two, &layers(2, &[0, 1]), 0).unwrap_err();
+        // Rack hotends counted as extruders (H2C, H3C).
+        let rack =
+            settings(r#"{"nozzle_diameter": ["0.4", "0.4"], "handle_hotend_as_extruder": "1"}"#);
+        let refused = super::plan(&rack, &layers(2, &[0, 1]), 0).unwrap_err();
         assert!(matches!(refused, PlanError::Unsupported(_)));
         let said = refused.to_string();
-        assert!(said.contains("more than one nozzle"), "{said}");
+        assert!(said.contains("rack hotends"), "{said}");
         assert!(said.contains("choose the Type 2 tower"), "{said}");
         // A Bambu Lab printer has no other tower to choose.
-        let h2d =
-            settings(r#"{"printer_model": "Bambu Lab H2D", "nozzle_diameter": ["0.4", "0.4"]}"#);
-        let said = super::plan(&h2d, &layers(2, &[0, 1]), 0)
+        let h2c = settings(
+            r#"{"printer_model": "Bambu Lab H2C", "nozzle_diameter": ["0.4", "0.4"],
+                "handle_hotend_as_extruder": "1"}"#,
+        );
+        let said = super::plan(&h2c, &layers(2, &[0, 1]), 0)
             .unwrap_err()
             .to_string();
         assert!(said.contains("turn the prime tower off"), "{said}");
+        // More than two nozzles, or two of different sizes.
+        for nozzles in [r#"["0.4", "0.4", "0.4"]"#, r#"["0.4", "0.6"]"#] {
+            let s = settings(&format!(
+                r#"{{"printer_model": "Bambu Lab H2D", "nozzle_diameter": {nozzles}}}"#
+            ));
+            assert!(matches!(
+                super::plan(&s, &layers(2, &[0, 1]), 0),
+                Err(PlanError::Unsupported(_))
+            ));
+        }
+        // Two of one size are planned.
+        let h2d =
+            settings(r#"{"printer_model": "Bambu Lab H2D", "nozzle_diameter": ["0.4", "0.4"]}"#);
+        assert!(super::plan(&h2d, &layers(2, &[0, 1]), 0).is_ok());
+        let scrape = settings(r#"{"prime_tower_side_scrape": "1"}"#);
+        assert!(matches!(
+            super::plan(&scrape, &layers(2, &[0, 1]), 0),
+            Err(PlanError::Unsupported(_))
+        ));
         let combined = settings(r#"{"wipe_tower_sparse_layers_combination": "1"}"#);
         assert!(matches!(
             super::plan(&combined, &layers(2, &[0, 1]), 0),
@@ -1708,6 +2117,72 @@ mod tests {
             super::plan(&narrow, &layers(2, &[0, 1]), 0),
             Err(PlanError::TooNarrow { .. })
         ));
+    }
+
+    /// Two PLAs on the two nozzles of an H2D, one each, as the H2D's
+    /// presets have them (`filament_change_length` 4 mm).
+    pub(crate) const H2D_TWO: &str = r#"{"printer_model": "Bambu Lab H2D", "prime_tower_width": "60",
+        "nozzle_diameter": ["0.4", "0.4"], "filament_map": ["1", "2"],
+        "physical_extruder_map": ["1", "0"], "filament_type": ["PLA", "PLA"],
+        "filament_diameter": ["1.75", "1.75"], "filament_change_length": ["4", "4"],
+        "filament_max_volumetric_speed": ["21", "21"], "nozzle_temperature": ["220", "220"],
+        "filament_ramming_volumetric_speed": ["-1", "nil"], "initial_layer_speed": "50"}"#;
+
+    /// Every change onto the other nozzle (`ChangeIn::nozzle_change`).
+    pub(crate) fn across(mut layers: Vec<LayerIn>) -> Vec<LayerIn> {
+        for layer in &mut layers {
+            for change in &mut layer.changes {
+                change.nozzle_change = Some(NozzleChange {
+                    extruder_change: true,
+                    old_nozzle: change.old as i32,
+                    new_nozzle: change.new as i32,
+                    old_extruder: change.old,
+                });
+            }
+        }
+        layers
+    }
+
+    #[test]
+    fn a_change_onto_the_other_nozzle_rams_first_in_the_outgoing_filaments_block() {
+        let s = settings(H2D_TWO);
+        assert_eq!(s.filaments[1].extruder, 1);
+        assert_eq!(s.physical_extruder(0), 1);
+        // 21 mm³/s over 2.405 mm² of filament, for "-1" and "nil" both.
+        assert!((s.filaments[0].ramming_speed.0 - 8.731).abs() < 1e-3);
+        assert_eq!(
+            s.filaments[1].ramming_speed.0,
+            s.filaments[0].ramming_speed.0
+        );
+        let plan = super::plan(&s, &across(layers(20, &[0, 1])), 0).unwrap();
+        // 4 mm of filament is one ramming line 1 mm wide across the 58.5 mm
+        // between the purge lines; the rows of a block that rams are
+        // 150% of the 0.5 mm line apart, its ramming lines 1.25 mm.
+        assert_eq!(plan.blocks.len(), 1);
+        assert_eq!(plan.nozzle_change_width, 1.0);
+        assert_eq!(plan.gaps[&100], (0.75, 1.25));
+        let change = &plan.layers[1].changes[0];
+        assert!(
+            (change.nozzle_change_length - 50.26).abs() < 0.01,
+            "{change:?}"
+        );
+        assert!(
+            (change.nozzle_change_depth - 1.25).abs() < 1e-4,
+            "{change:?}"
+        );
+        // Measured on the reference's G-code (m2b_two_12): the tower is
+        // 8.5 mm deep.
+        assert!((plan.depth - 8.5).abs() < 1e-4, "{}", plan.depth);
+        // The first layer keeps the ramming's depth, whole lines of it
+        // (one), and the purge starts behind it on the wall: on the bed at
+        // y 221.75 with the tower at 220 (m2b_two_12).
+        let first = &plan.layers[0].changes[0];
+        assert!((first.nozzle_change_depth - 1.25).abs() < 1e-4, "{first:?}");
+        assert!(
+            (first.nozzle_change_length - 58.5).abs() < 1e-4,
+            "{first:?}"
+        );
+        assert!((plan.skip_points[0][0].1 - 1.75).abs() < 1e-4);
     }
 
     #[test]

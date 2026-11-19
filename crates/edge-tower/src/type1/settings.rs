@@ -77,6 +77,34 @@ pub struct Filament {
     pub speed_factor_curve: Vec<f32>,
     /// `filament_cooling_before_tower`, in °C.
     pub cooling_before_tower: f32,
+    /// The extruder it prints from, from 0 (`filament_map`, which the
+    /// grouping sets on a printer of two nozzles; [`Settings::map_extruders`]).
+    pub extruder: usize,
+    /// What it rams on the tower when it leaves its nozzle, in mm of
+    /// filament: for a change onto the other extruder, and for one onto
+    /// another hotend of its own (`filament_change_length`, `_nc`).
+    pub change_length: (f32, f32),
+    /// How fast it is rammed, in mm/s of filament
+    /// (`filament_ramming_volumetric_speed`, `_nc`; -1 or nil is its
+    /// `filament_max_volumetric_speed`).
+    pub ramming_speed: (f32, f32),
+    /// How long the nozzle travels back over the ramming lines after it
+    /// (`filament_ramming_travel_time`, `_nc`), in seconds.
+    pub ramming_travel_time: (f32, f32),
+    /// The temperature the nozzle put away is cooled to while it rams
+    /// (`filament_pre_cooling_temperature`, `_nc`, with
+    /// `enable_pre_heating`; 0 for none), and how long that takes on each
+    /// extruder (by `hotend_cooling_rate`), on the first layer and above.
+    pub precool_target: (i32, i32),
+    pub precool_seconds: (Vec<f32>, Vec<f32>),
+    pub precool_seconds_first: (Vec<f32>, Vec<f32>),
+    /// The tower interface's temperature (`filament_tower_interface_print_temp`,
+    /// -1 for `nozzle_temperature_range_high`), how far outside the tower
+    /// a contact purge starts (`filament_tower_interface_pre_extrusion_dist`)
+    /// and what it primes more there (`_length`).
+    pub interface_temperature: i32,
+    pub run_in_distance: f32,
+    pub extra_prime_length: f32,
 }
 
 /// Everything the Type 1 tower reads. Defaults are the reference's
@@ -146,6 +174,16 @@ pub struct Settings {
     /// `enable_tower_interface_features`, where the reference acts on it
     /// ([`interface_features_supported`]).
     pub interface_features: bool,
+    /// `enable_tower_interface_cooldown_during_tower`: the print
+    /// temperature goes back on before a contact block's rows, not after.
+    pub interface_cooldown: bool,
+    /// A filament switcher on extruders of two kinds
+    /// (`has_filament_switcher`, `extruder_type`): the change cools 10 °C
+    /// more before the tower, which is not done.
+    pub mixed_extruders: bool,
+    /// `prime_tower_side_scrape`: the nozzle scrapes on the tower's side
+    /// before a purge (Bambu Studio 2.9.1's, set by the H3C's presets).
+    pub side_scrape: bool,
     /// Any of Edge's own tower interface options is on
     /// (`wipe_tower_interface_temp`, `wipe_tower_interface_run_in` with the
     /// wall gap, `wipe_tower_interface_extra_prime`;
@@ -160,6 +198,15 @@ pub struct Settings {
     /// each rack hotend counts as an extruder (`handle_hotend_as_extruder`).
     pub nozzles: usize,
     pub hotend_as_extruder: bool,
+    /// Each extruder's nozzle diameter (`nozzle_diameter`), and its
+    /// physical extruder, the one a temperature line names
+    /// (`physical_extruder_map`).
+    pub nozzle_diameters: Vec<f32>,
+    pub physical_extruders: Vec<usize>,
+    /// The shared part of the bed both nozzles reach, min x, min y, max x,
+    /// max y (`printable_area` cut by `extruder_printable_area`;
+    /// WipeTowerInterface.cpp `shared_printable_box`); none for no bed.
+    pub shared_bed: Option<[f64; 4]>,
     pub filaments: Vec<Filament>,
     /// What is read but not followed as the reference follows it, each
     /// with what is done instead.
@@ -175,6 +222,45 @@ pub fn interface_features_supported(config: &Config) -> Result<bool, ConfigError
         || config
             .texts("nozzle_diameter")
             .is_some_and(|nozzles| nozzles.len() > 1))
+}
+
+/// The part of the bed every nozzle reaches, as a box (WipeTowerInterface.cpp
+/// `shared_printable_box`): the box round `printable_area`, cut to the box
+/// round each `extruder_printable_area` of three corners or more.
+fn shared_printable_box(config: &Config) -> Option<[f64; 4]> {
+    let point = |text: &str| -> Option<(f64, f64)> {
+        let (x, y) = text.trim().split_once('x')?;
+        Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+    };
+    let bounds = |points: &[(f64, f64)]| -> Option<[f64; 4]> {
+        let first = points.first()?;
+        Some(points.iter().fold(
+            [first.0, first.1, first.0, first.1],
+            |[a, b, c, d], (x, y)| [a.min(*x), b.min(*y), c.max(*x), d.max(*y)],
+        ))
+    };
+    let bed: Vec<(f64, f64)> = config
+        .texts("printable_area")
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|text| point(text))
+        .collect();
+    let mut shared = bounds(&bed)?;
+    for group in config.texts("extruder_printable_area").unwrap_or_default() {
+        let points: Vec<(f64, f64)> = group.split(',').filter_map(point).collect();
+        if points.len() < 3 {
+            continue;
+        }
+        if let Some([a, b, c, d]) = bounds(&points) {
+            shared = [
+                shared[0].max(a),
+                shared[1].max(b),
+                shared[2].min(c),
+                shared[3].min(d),
+            ];
+        }
+    }
+    Some(shared)
 }
 
 /// The block a filament purges into (WipeTower.cpp `adhesiveness_category`):
@@ -392,9 +478,21 @@ impl Settings {
         let volumetric = list("filament_max_volumetric_speed")?;
         let temperatures = list("nozzle_temperature")?;
         let first_temperatures = list("nozzle_temperature_initial_layer")?;
-        let wipe = list("wipe_distance")?;
-        let retract = list("retraction_length")?;
-        let retract_speed = list("retraction_speed")?;
+        // A filament's own retraction settings over the printer's, entry by
+        // entry, `nil` taking the printer's (PrintApply.cpp
+        // `print_config_diffs`, `filament_<key>`), as the tower reads them.
+        let overridden = |key: &str| -> Result<Vec<Option<f64>>, ConfigError> {
+            let printer = list(key)?;
+            let own = list(&format!("filament_{key}"))?;
+            if own.iter().all(Option::is_none) {
+                return Ok(printer);
+            }
+            let first = printer.first().copied().flatten();
+            Ok(own.into_iter().map(|value| value.or(first)).collect())
+        };
+        let wipe = overridden("wipe_distance")?;
+        let retract = overridden("retraction_length")?;
+        let retract_speed = overridden("retraction_speed")?;
         let iron = list("filament_tower_ironing_area")?;
         let cooling = list("filament_cooling_before_tower")?;
         let curves: Vec<String> = config
@@ -402,6 +500,36 @@ impl Settings {
             .map(<[String]>::to_vec)
             .unwrap_or_default();
         let prime_volume = number("prime_volume", 45.0)? as f32;
+        // The nozzle-change ramming (WipeTower.cpp `set_extruder`, Bambu
+        // Studio 2.9.1's): `.0` for a change onto the other extruder, `.1`
+        // for one onto another hotend of the same extruder.
+        let change_length = (
+            list("filament_change_length")?,
+            list("filament_change_length_nc")?,
+        );
+        let ramming_speed = (
+            list("filament_ramming_volumetric_speed")?,
+            list("filament_ramming_volumetric_speed_nc")?,
+        );
+        let ramming_travel = (
+            list("filament_ramming_travel_time")?,
+            list("filament_ramming_travel_time_nc")?,
+        );
+        let precool = (
+            list("filament_pre_cooling_temperature")?,
+            list("filament_pre_cooling_temperature_nc")?,
+        );
+        let pre_heating = flag("enable_pre_heating", false)?;
+        let cooling_rates: Vec<f32> = list("hotend_cooling_rate")?
+            .into_iter()
+            .map(|rate| rate.filter(|r| r.is_finite()).unwrap_or(0.0) as f32)
+            .collect();
+        let range_high = list("nozzle_temperature_range_high")?;
+        let interface_temps = list("filament_tower_interface_print_temp")?;
+        let run_in = list("filament_tower_interface_pre_extrusion_dist")?;
+        let extra_prime = list("filament_tower_interface_pre_extrusion_length")?;
+        let nozzle_diameters: Vec<f32> = nozzles.iter().map(|d| d.unwrap_or(0.4) as f32).collect();
+        let extruders = nozzle_diameters.len().max(1);
         let mut filaments = Vec::with_capacity(count);
         for index in 0..count {
             let material = types
@@ -411,6 +539,60 @@ impl Settings {
                 .unwrap_or_else(|| "PLA".to_owned());
             let is_support = flag_at(&support, index);
             let diameter = at(&diameters, index, 1.75) as f32;
+            let max_volumetric_speed = at(&volumetric, index, 2.0) as f32;
+            let area = std::f32::consts::PI / 4.0 * diameter * diameter;
+            // Nil or -1 rams at the filament's fastest.
+            let ram_speed = |values: &[Option<f64>]| {
+                let own = if values.is_empty() {
+                    -1.0
+                } else {
+                    values
+                        .get(index)
+                        .or(values.first())
+                        .copied()
+                        .flatten()
+                        .filter(|v| !v.is_nan())
+                        .unwrap_or(-1.0) as f32
+                };
+                let volume = if (own + 1.0).abs() < 1e-6 || own <= 0.0 {
+                    max_volumetric_speed
+                } else {
+                    own
+                };
+                if volume > 0.0 && area > 0.0 {
+                    volume / area
+                } else {
+                    0.0
+                }
+            };
+            let temperature = at(&temperatures, index, 0.0) as i32;
+            let first_layer_temperature = at(&first_temperatures, index, 0.0) as i32;
+            let targets = (
+                at(&precool.0, index, 0.0) as i32,
+                at(&precool.1, index, 0.0) as i32,
+            );
+            // `set_extruder`'s pre-cooling times, by extruder.
+            let seconds = |target: i32, from: i32| -> Vec<f32> {
+                (0..extruders)
+                    .map(|e| {
+                        let rate = cooling_rates.get(e).copied().unwrap_or(0.0);
+                        if !pre_heating || target == 0 || rate <= 0.0 {
+                            0.0
+                        } else {
+                            (from - target).max(0) as f32 / rate
+                        }
+                    })
+                    .collect()
+            };
+            let interface_temperature = {
+                let configured = at(&interface_temps, index, -1.0) as i32;
+                let t = if configured == -1 {
+                    at(&range_high, index, 0.0) as i32
+                } else {
+                    configured
+                };
+                if t > 0 { t } else { temperature }
+            };
             let curve_text = curves
                 .get(index)
                 .or(curves.first())
@@ -446,10 +628,10 @@ impl Settings {
                 },
                 prime_volume_nc: at(&prime_nc, index, 60.0) as f32,
                 diameter,
-                area: std::f32::consts::PI / 4.0 * diameter * diameter,
-                max_volumetric_speed: at(&volumetric, index, 2.0) as f32,
-                temperature: at(&temperatures, index, 0.0) as i32,
-                first_layer_temperature: at(&first_temperatures, index, 0.0) as i32,
+                area,
+                max_volumetric_speed,
+                temperature,
+                first_layer_temperature,
                 wipe_distance: at(&wipe, index, 1.0) as f32,
                 retract_length: at(&retract, index, 0.0) as f32,
                 retract_speed: at(&retract_speed, index, 0.0) as f32,
@@ -457,11 +639,47 @@ impl Settings {
                 speed_factor_curve,
                 // Nil or absent is none. Bambu's filament switcher adds 10 °C on
                 // printers of two kinds of extruder only
-                // (PrintConfig.cpp `filament_cooling_before_tower_at`), which
-                // this tower does not plan for yet.
+                // (PrintConfig.cpp `filament_cooling_before_tower_at`): not the
+                // H2D, whose two are alike; such a printer is refused
+                // ([`Settings::mixed_extruders`]).
                 cooling_before_tower: at(&cooling, index, 0.0) as f32,
+                extruder: 0,
+                change_length: (
+                    (at(&change_length.0, index, 0.0) as f32).max(0.0),
+                    (at(&change_length.1, index, 0.0) as f32).max(0.0),
+                ),
+                ramming_speed: (ram_speed(&ramming_speed.0), ram_speed(&ramming_speed.1)),
+                ramming_travel_time: (
+                    (at(&ramming_travel.0, index, 0.0) as f32).max(0.0),
+                    (at(&ramming_travel.1, index, 0.0) as f32).max(0.0),
+                ),
+                precool_target: (
+                    if pre_heating { targets.0 } else { 0 },
+                    if pre_heating { targets.1 } else { 0 },
+                ),
+                precool_seconds: (
+                    seconds(targets.0, temperature),
+                    seconds(targets.1, temperature),
+                ),
+                precool_seconds_first: (
+                    seconds(targets.0, first_layer_temperature),
+                    seconds(targets.1, first_layer_temperature),
+                ),
+                interface_temperature,
+                run_in_distance: (at(&run_in, index, 10.0) as f32).max(0.0),
+                extra_prime_length: (at(&extra_prime, index, 0.0) as f32).max(0.0),
             });
         }
+        let physical_extruders: Vec<usize> = list("physical_extruder_map")?
+            .into_iter()
+            .enumerate()
+            .map(|(e, p)| p.map_or(e, |p| p.max(0.0) as usize))
+            .collect();
+        let shared_bed = shared_printable_box(config);
+        let map: Vec<usize> = list("filament_map")?
+            .into_iter()
+            .map(|e| e.map_or(0, |e| (e as i64 - 1).max(0) as usize))
+            .collect();
 
         let interface_features = flag("enable_tower_interface_features", false)?
             && interface_features_supported(config)?;
@@ -469,7 +687,7 @@ impl Settings {
             && (flag("wipe_tower_interface_temp", false)?
                 || (flag("wipe_tower_interface_run_in", false)? && wall_gap)
                 || flag("wipe_tower_interface_extra_prime", false)?);
-        Ok(Self {
+        let mut settings = Self {
             x: placed("wipe_tower_x", 15.0)? as f32,
             y: placed("wipe_tower_y", 220.0)? as f32,
             width: number("prime_tower_width", 60.0)? as f32,
@@ -516,6 +734,12 @@ impl Settings {
                 .map(|height| height.unwrap_or(0.0))
                 .collect(),
             interface_features,
+            interface_cooldown: flag("enable_tower_interface_cooldown_during_tower", false)?,
+            side_scrape: flag("prime_tower_side_scrape", false)?,
+            mixed_extruders: flag("has_filament_switcher", false)?
+                && config
+                    .texts("extruder_type")
+                    .is_some_and(|types| types.windows(2).any(|pair| pair[0] != pair[1])),
             edge_interface,
             bambu: config
                 .text("printer_model")
@@ -524,9 +748,53 @@ impl Settings {
                 .is_some_and(|name| name.starts_with("Bambu Lab")),
             nozzles: nozzles.len().max(1),
             hotend_as_extruder: flag("handle_hotend_as_extruder", false)?,
+            nozzle_diameters,
+            physical_extruders,
+            shared_bed,
             filaments,
             notes,
-        })
+        };
+        settings.map_extruders(&map);
+        Ok(settings)
+    }
+
+    /// Each filament's extruder, from 0 (the grouping's `filament_map`);
+    /// the first for a filament the list does not name.
+    pub fn map_extruders(&mut self, extruders: &[usize]) {
+        let count = self.nozzle_diameters.len().max(1);
+        for (index, filament) in self.filaments.iter_mut().enumerate() {
+            filament.extruder = extruders
+                .get(index)
+                .copied()
+                .filter(|e| *e < count)
+                .unwrap_or(0);
+        }
+    }
+
+    /// The diameter of the nozzle `filament` prints from
+    /// (`nozzle_diameter_for_filament`).
+    pub fn nozzle_of(&self, filament: usize) -> f32 {
+        let extruder = self.filaments.get(filament).map_or(0, |f| f.extruder);
+        self.nozzle_diameters
+            .get(extruder)
+            .or(self.nozzle_diameters.first())
+            .copied()
+            .unwrap_or(self.nozzle_diameter)
+    }
+
+    /// The physical extruder a temperature line for `filament` names
+    /// (`reheat_extruder`): its own on a printer of more than one nozzle,
+    /// else the first `physical_extruder_map` entry.
+    pub fn physical_extruder(&self, filament: usize) -> usize {
+        if self.nozzle_diameters.len() > 1 {
+            let extruder = self.filaments.get(filament).map_or(0, |f| f.extruder);
+            return self
+                .physical_extruders
+                .get(extruder)
+                .copied()
+                .unwrap_or(extruder);
+        }
+        self.physical_extruders.first().copied().unwrap_or(0)
     }
 
     /// What the tower primes after a change to `filament`
@@ -695,7 +963,7 @@ mod tests {
         // Two nozzles (H2D) or rack hotends counted as extruders (H3C).
         assert!(on(r#", "nozzle_diameter": ["0.4", "0.4"]"#));
         assert!(on(r#", "handle_hotend_as_extruder": "1""#));
-        // And the tower says it is not done only there.
+        // And the tower follows it where it acts: no note either way.
         let said = |nozzles: &str| {
             let json = format!(
                 r#"{{"enable_prime_tower": "1", "printer_model": "Bambu Lab A1",
@@ -708,7 +976,7 @@ mod tests {
                 .any(|note| note.starts_with("enable_tower_interface_features"))
         };
         assert!(!said(r#"["0.4"]"#));
-        assert!(said(r#"["0.4", "0.4"]"#));
+        assert!(!said(r#"["0.4", "0.4"]"#));
     }
 
     #[test]

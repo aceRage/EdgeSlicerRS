@@ -34,6 +34,30 @@ pub struct TowerVisit {
     /// The change G-code may cool the nozzle before the purge, which then
     /// heats it back up (`reheats_after_cooling`).
     pub reheats_after_cooling: bool,
+    /// The change is on a contact layer of its block (`is_contact`): with
+    /// Bambu's interface features a prime tower interface.
+    pub is_contact: bool,
+    /// Onto another nozzle: the outgoing filament's ramming, laid before
+    /// the change (`nozzle_change_result`).
+    pub nozzle_change: Option<TowerRamming>,
+    /// Where the change G-code takes the head beside the tower on its way
+    /// back, in mm on the bed (`wipe_avoid_pos_x`: 3 mm right of the
+    /// tower's first layer, else left of it, within X 100 to 250, else
+    /// 110).
+    pub wipe_avoid_x: f64,
+}
+
+/// The ramming of the filament put away before a change onto another
+/// nozzle (WipeTower.cpp `ramming`, `NozzleChangeResult`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TowerRamming {
+    /// What the tower's writer wrote, in its frame.
+    pub gcode: String,
+    /// Where it starts and ends on the bed.
+    pub start: Point2,
+    pub end: Point2,
+    /// Where the nozzle wipes after it, on the bed.
+    pub wipe_path: Vec<Point2>,
 }
 
 /// A word's number in a G-code line.
@@ -76,7 +100,13 @@ impl Writer<'_> {
         for line in visit.gcode.lines() {
             match line {
                 "[filament_end_gcode]" => {
+                    if changes && let Some(ramming) = &visit.nozzle_change {
+                        self.bambu_ramming(ramming, visit.origin, index, low)?;
+                    }
                     if changes && let Some(template) = &self.all[from].filament_end_gcode {
+                        // Told which filament it ends (`append_tcr`).
+                        self.variables
+                            .set("filament_extruder_id", Value::Int(from as i64));
                         self.custom("filament_end_gcode", template)?;
                     }
                 }
@@ -105,6 +135,54 @@ impl Writer<'_> {
         }
         self.state.position = Some(visit.end);
         self.state.wipe_path = visit.wipe_path.clone();
+        Ok(())
+    }
+
+    /// The outgoing filament's ramming before a change onto another nozzle
+    /// (GCode.cpp `append_tcr`, from Bambu Studio 2.9.1): retracted at the
+    /// model, to the ramming's start, pushed back, laid at the first
+    /// layer's or the default acceleration, then the tool change's
+    /// retraction with a wipe back along the last ramming line.
+    fn bambu_ramming(
+        &mut self,
+        ramming: &TowerRamming,
+        origin: [f64; 2],
+        layer: usize,
+        low: Option<f64>,
+    ) -> Result<(), GcodeError> {
+        if self.state.primed {
+            self.retract(false)?;
+            // `GCode::retract`'s own lift: straight up.
+            if self.state.pending_lift.is_some() {
+                self.state.pending_lift = Some(crate::Lift::Normal);
+            }
+        }
+        self.tower_route(ramming.start, self.state.position)?;
+        self.travel(ramming.start, false, None)?;
+        if let Some(tower) = low {
+            self.lower_to_tower(tower)?;
+        }
+        if self.state.primed {
+            self.prime()?;
+        }
+        // The ramming rows are print moves: Bambu Studio's tower writer
+        // sets the acceleration round them (Edge, review S2/N5).
+        let s = self.settings;
+        if s.default_acceleration > 0.0 {
+            let acceleration = if layer == 0 && s.initial_layer_acceleration > 0.0 {
+                s.initial_layer_acceleration
+            } else {
+                s.default_acceleration
+            };
+            self.accelerate((acceleration + 0.5).floor())?;
+        }
+        for line in ramming.gcode.lines() {
+            self.tower_text(line, origin)?;
+        }
+        self.state.position = Some(ramming.end);
+        self.state.wipe_path = ramming.wipe_path.clone();
+        let toolchange = self.settings.retract_length_toolchange;
+        self.retract_by(toolchange, false)?;
         Ok(())
     }
 
@@ -153,19 +231,51 @@ impl Writer<'_> {
                 vec![Value::Float(0.0); list.len()],
             );
         }
+        // The head keeps clear of the tower's wall on its way back where
+        // the wall is left open (`wipe_avoid_perimeter`), beside the tower
+        // (`wipe_avoid_pos_x`); and with Bambu's interface features a
+        // change on a contact layer is a prime tower interface, which the
+        // change G-code purges for (`append_tcr`).
+        let interface = self.all[to].tower_interface;
+        let mut kept = Vec::new();
+        let mut set = |writer: &mut Self, name: &str, value: Value| {
+            kept.push((name.to_owned(), writer.variables.value(name)));
+            writer.variables.set(name, value);
+        };
+        set(self, "wipe_avoid_perimeter", Value::Bool(s.tower_wall_gap));
+        set(self, "wipe_avoid_pos_x", Value::Float(visit.wipe_avoid_x));
+        if interface.features {
+            set(
+                self,
+                "is_prime_tower_interface",
+                Value::Bool(visit.is_contact),
+            );
+            set(
+                self,
+                "filament_tower_interface_purge_volume",
+                Value::Float(interface.purge_volume),
+            );
+            set(
+                self,
+                "filament_tower_interface_print_temp",
+                Value::Int(interface.print_temperature as i64),
+            );
+        }
         self.state.after_change = Some(visit.change_start);
         let swapped = self.swap(Some(from as i64), to, Some(layer), z, toolchange_z, true);
         self.state.after_change = None;
+        for (name, value) in kept.into_iter().rev() {
+            match value {
+                Some(value) => self.variables.set(&name, value),
+                None => self.variables.remove(&name),
+            }
+        }
         if let Some(list) = cooling {
             self.variables
                 .set_list("filament_cooling_before_tower", list);
         }
         let swapped = swapped?;
         self.state.flushed.select(to, self.all);
-        if !s.single_nozzle {
-            self.state.parked[from] = (self.state.retracted, self.state.retracted_length);
-            (self.state.retracted, self.state.retracted_length) = self.state.parked[to];
-        }
         self.state.tool = to;
         self.state.tool_changes += 1;
         self.state.summary.tool_changes += 1;
@@ -177,8 +287,28 @@ impl Writer<'_> {
         // ("Move to start pos", `unretract`).
         self.settings = &self.all[to];
         self.travel(visit.change_start, false, None)?;
+        // A contact change with the interface features pushes out
+        // `filament_tower_interface_pre_extrusion_length` more at its start
+        // outside the tower.
+        let extra = if interface.features && visit.is_contact {
+            interface.pre_extrusion_length
+        } else {
+            0.0
+        };
         if self.state.primed {
+            if extra > 0.0 {
+                self.state.retracted = true;
+                self.state.retracted_length += extra;
+            }
             self.prime()?;
+        }
+        // Each nozzle keeps its own filament's retraction: the reference
+        // takes the new filament's up only after the travel and the push
+        // back, which are the outgoing one's (`append_tcr` asks the writer
+        // for the tool command last).
+        if !s.single_nozzle {
+            self.state.parked[from] = (self.state.retracted, self.state.retracted_length);
+            (self.state.retracted, self.state.retracted_length) = self.state.parked[to];
         }
         Ok(())
     }

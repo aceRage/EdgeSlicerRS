@@ -483,19 +483,15 @@ impl TowerSettings {
                         .to_owned(),
                 );
             }
+            // Bambu's own interface switch (`enable_tower_interface_features`)
+            // is followed where it acts, on printers of two nozzles
+            // (edge-tower `type1`); Edge's own options are not.
             for key in [
                 "wipe_tower_interface_temp",
                 "wipe_tower_interface_run_in",
                 "wipe_tower_interface_extra_prime",
-                "enable_tower_interface_features",
             ] {
-                // Bambu's own interface switch does nothing on a printer of
-                // one nozzle or the H2S (WipeTowerInterface.cpp
-                // `bambu_features_supported`).
-                if on(key)
-                    && (key != "enable_tower_interface_features"
-                        || type1::interface_features_supported(settings)?)
-                {
+                if on(key) {
                     unsupported.push(format!(
                         "{key} \"1\": tower interfaces are not done; a change between two kinds of \
                          filament is primed on the tower as any other"

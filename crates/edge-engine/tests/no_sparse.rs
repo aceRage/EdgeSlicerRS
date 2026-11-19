@@ -728,11 +728,11 @@ fn tool_change_on_wipe_tower_says_where_an_unrammed_tool_is_changed() {
     for (_, over, low) in at_tower {
         assert!(!over && !low, "changed over the tower");
     }
-    // Bambu's tower is not planned for printers of more than one nozzle
-    // yet, and says so.
+    // Bambu's tower is not planned for printers of more than two nozzles
+    // (a tool changer, here) yet, and says so.
     let refused = slice(&model, &set(r#", "wipe_tower_type": "type1""#, true)).unwrap_err();
     assert!(
-        refused.contains("more than one nozzle") && refused.contains("Type 2"),
+        refused.contains("4 nozzles") && refused.contains("Type 2"),
         "{refused}"
     );
     // Where the tool is rammed, and on one nozzle, the setting changes

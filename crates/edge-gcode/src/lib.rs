@@ -57,7 +57,7 @@ use edge_geom::{ExPolygon, Point2, scaled, unscaled};
 use edge_template::{TemplateError, Value, Variables, stream_double};
 use rayon::prelude::*;
 
-pub use bambu_tower::TowerVisit;
+pub use bambu_tower::{TowerRamming, TowerVisit};
 pub use calib::{
     AdvanceFirmware, Calibration, CalibrationKind, Corner, JerkForm, ShaperFirmware, StringingGrid,
 };
@@ -71,7 +71,8 @@ pub use seam::Seam;
 pub use seam_plan::{SeamMeasures, SeamMesh, SeamObject, SeamPart, SeamScene, measure_seams};
 pub use settings::{
     AccelerationForm, FinalPurge, Labelling, Lift, NozzleMap, ObjectLabel, ObjectRun, OverhangFan,
-    Plate, PrintSettings, PurgeDrop, Timelapse, WallDirection, WallOrder, gcode_template,
+    Plate, PrintSettings, PurgeDrop, Timelapse, TowerInterface, WallDirection, WallOrder,
+    gcode_template,
 };
 pub use spiral_vase::Spiral;
 
@@ -2331,13 +2332,14 @@ impl Writer<'_> {
         // Two nozzles (the H2D): a change within one nozzle flushes as on
         // a printer of one; onto the other, what that nozzle still holds
         // is flushed into it (GCode.cpp `set_extruder`,
-        // `cross_extruder_flush_volume`). On Bambu's tower the reference
-        // flushes what the tower planned, nothing onto the other nozzle
-        // (`append_tcr`, its "Phase 7" rule, which `set_extruder` has
-        // dropped); that is the tower's two-nozzle part, not done yet (the
-        // tower is refused on two nozzles).
+        // `cross_extruder_flush_volume`; Bambu Studio's `_make_wipe_tower`
+        // and `set_extruder` both). On Bambu's tower too: the reference
+        // flushes nothing there onto the other nozzle (`append_tcr`, its
+        // "Phase 7" rule, which its own `set_extruder` dropped as wrong:
+        // it tells the printer `M620.10 ... L0` going back to a nozzle that
+        // holds another colour), which is not followed.
         let flushed = match (nozzles, old) {
-            (Some(map), Some(old)) if !on_tower => self
+            (Some(map), Some(old)) => self
                 .state
                 .held
                 .cross_flush(map, old, to, new_settings)
@@ -2353,7 +2355,14 @@ impl Writer<'_> {
         // it is (`set_extruder`, `append_tcr2`).
         let flushed = if on_tower {
             let flushed = if new_settings.bambu {
-                f64::from((flushed as f32 - new_settings.grab_length as f32 * 2.4).max(0.0))
+                // The new filament's extruder's (its `filament_map`).
+                let grab = match nozzles {
+                    Some(map) => {
+                        (new_settings.grab_lengths.get(map.extruder(to)).copied()).unwrap_or(0.0)
+                    }
+                    None => new_settings.grab_length,
+                };
+                f64::from((flushed as f32 - grab as f32 * 2.4).max(0.0))
             } else {
                 flushed
             };

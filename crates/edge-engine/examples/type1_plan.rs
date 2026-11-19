@@ -68,6 +68,8 @@ fn layers_of(text: &str) -> (Vec<type1::LayerIn>, Option<usize>) {
                 old,
                 new: number,
                 purge_volume: 0.0,
+                // Read from a G-code file of one nozzle.
+                nozzle_change: None,
             });
         }
         if first_tool.is_none() {

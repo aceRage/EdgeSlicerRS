@@ -2649,6 +2649,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             &heights.all(),
             &tops,
             start,
+            nozzles.as_ref(),
         )?;
         bambu_visits = laid.visits;
         laid.tower

@@ -8,9 +8,9 @@
 //! The grouping itself (which nozzle) is worked out before the writer
 //! (edge-engine `grouping`) and handed over in [`Plate::nozzles`]. Not
 //! done here, and refused before: printers with a nozzle rack (H2C, H3C;
-//! the grouping refuses them), copies printed one after another (not
-//! grouped), and the prime tower (its two-nozzle parts are not done; the
-//! tower planner refuses it).
+//! the grouping refuses them) and copies printed one after another (not
+//! grouped). On Bambu's tower the ramming before a change onto the other
+//! nozzle is laid by `bambu_tower`.
 
 use edge_template::{Value, Variables};
 

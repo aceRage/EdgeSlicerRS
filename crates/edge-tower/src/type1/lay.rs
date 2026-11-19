@@ -14,7 +14,9 @@ use edge_clip::Join;
 use edge_geom::{ExPolygon, Polygon};
 
 use super::gaps::{GapPoint, cut_wall_gaps};
-use super::plan::{Box2, LayerType, Plan, PlanError};
+use super::plan::{
+    Box2, Change, LayerType, Plan, PlanError, nozzle_change_width, valid_last_layer,
+};
 use super::settings::Settings;
 use super::writer::{V2, Writer, fixed, scaled};
 
@@ -48,6 +50,22 @@ pub struct Visit {
     pub reheats_after_cooling: bool,
     pub is_contact: bool,
     pub is_finish_first: bool,
+    /// Onto another nozzle: the outgoing filament's ramming, laid before
+    /// the change (`nozzle_change_result`).
+    pub nozzle_change: Option<NozzleVisit>,
+}
+
+/// The ramming of the filament put away before a change onto another
+/// nozzle (`NozzleChangeResult`), in the tower's frame with the rib
+/// offset applied.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NozzleVisit {
+    pub gcode: String,
+    pub start_pos: V2,
+    pub end_pos: V2,
+    pub wipe_path: Vec<V2>,
+    /// The two nozzles are on different extruders.
+    pub extruder_change: bool,
 }
 
 /// `is_valid_gcode`: a line that is neither empty nor a comment.
@@ -63,6 +81,9 @@ struct BlockState {
     cur_depth: f32,
     finish_depth: Vec<f32>,
     last_filament_change: Option<usize>,
+    /// The filament last rammed in it on the layer
+    /// (`last_nozzle_change_id`).
+    last_nozzle_change: Option<usize>,
 }
 
 struct Layer<'a> {
@@ -633,6 +654,7 @@ impl Layer<'_> {
             reheats_after_cooling: false,
             is_contact,
             is_finish_first: is_finish,
+            nozzle_change: None,
             gcode: writer.gcode,
         }
     }
@@ -669,8 +691,313 @@ impl Layer<'_> {
         }
     }
 
-    /// `tool_change_new`, one nozzle.
-    fn tool_change(&mut self, new_tool: usize, solid: bool) -> Result<Visit, PlanError> {
+    /// The ramming gap of `filament`'s block (`get_block_gap_width` for a
+    /// nozzle change).
+    fn ramming_gap(&self, filament: usize) -> f32 {
+        let own = nozzle_change_width(self.settings.nozzle_of(filament));
+        self.plan
+            .gaps
+            .get(&self.category(filament))
+            .map_or(own, |gap| gap.1 + (own - self.plan.nozzle_change_width))
+    }
+
+    /// `is_valid_last_layer` on the layer being laid.
+    fn valid_last_layer(&self, tool: usize) -> bool {
+        valid_last_layer(
+            self.settings,
+            &self.plan.last_layers,
+            tool,
+            self.index,
+            self.z,
+        )
+    }
+
+    /// `ramming` (Bambu Studio 2.9.1's): before a change onto another
+    /// nozzle the outgoing filament rams its `filament_change_length` on
+    /// the tower, in its own category's block, ahead of what purges there
+    /// next; on a contact layer solid and at most 40 mm/s.
+    fn ramming(&mut self, old: usize, new: usize, planned: &Change, solid: bool) -> NozzleVisit {
+        let Some(nozzle) = planned.nozzle_change else {
+            return NozzleVisit::default();
+        };
+        let extruder_change = nozzle.extruder_change;
+        let Some(own) = self.settings.filaments.get(old).cloned() else {
+            return NozzleVisit::default();
+        };
+        let Some(block) = self.block_of(old) else {
+            return NozzleVisit::default();
+        };
+        self.cur_block = Some(block);
+        let pw = self.pw();
+        let nc_width = nozzle_change_width(self.settings.nozzle_of(old));
+        let x_offset = pw + (nc_width - pw) / 2.0;
+        let box_width = self.width() - 2.0 * x_offset;
+        let mut line_count = if box_width > EPSILON {
+            (planned.nozzle_change_length / box_width).ceil() as i32
+        } else {
+            0
+        };
+        let nc_depth = planned.nozzle_change_depth;
+        let area = self.settings.filaments.first().map_or(1.0, |f| f.area);
+        let flow_for = |height: f32| height * (nc_width - height * (1.0 - PI / 4.0)) / area;
+        let height = self.height;
+        let nz_flow = flow_for(height);
+        let mut writer = Writer::new(
+            height,
+            nc_width,
+            nz_flow,
+            old,
+            self.plan.rib_offset,
+            false,
+            self.y_shift,
+            self.max_e_speed.clone(),
+        );
+        let first_layer = self.is_first_layer();
+        let mut dy = if first_layer {
+            nc_width
+        } else {
+            self.plan.layers[self.index].extra_spacing * self.ramming_gap(old)
+        };
+        let cleaning = Box2::new(
+            x_offset,
+            self.blocks[block].cur_depth + (nc_width - pw) / 2.0,
+            box_width,
+            nc_depth,
+        );
+        writer.set_initial_position((cleaning.left, cleaning.bottom), self.width(), self.depth());
+        let marker = |start: bool| {
+            format!(
+                "; NOZZLE_CHANGE_{} OF{old} NF{new} ON{} NN{}\n",
+                if start { "START" } else { "END" },
+                nozzle.old_nozzle,
+                nozzle.new_nozzle
+            )
+        };
+        // A hotend change on one extruder tells the firmware, and cools.
+        let m632 = format!("M632 S{new} M N\n");
+        writer.append(&marker(true));
+        if !extruder_change {
+            writer.append(&m632);
+            if own.precool_target.1 != 0 {
+                writer.append(&format!(
+                    "M400\nM104 T{} S{} N0 C ;Wipe tower nozzle change pre cooling\nM106 S255\n",
+                    self.settings.physical_extruder(old),
+                    own.precool_target.1
+                ));
+            }
+            writer.append("M633\n");
+        }
+        if line_count > 0 {
+            let max_e_ramming = if extruder_change {
+                own.ramming_speed.0
+            } else {
+                own.ramming_speed.1
+            };
+            let mut speed = 60.0 * max_e_ramming / nz_flow;
+            if solid {
+                speed = speed.min(40.0 * 60.0);
+            }
+            let mut bridge_speed = (60.0 * max_e_ramming / flow_for(0.2)).min(speed);
+            let (xl, xr) = (cleaning.left, cleaning.right);
+            if solid {
+                dy = nc_width;
+                line_count = (EPSILON
+                    + (cleaning.top - cleaning.bottom + (nc_width - pw) / 2.0) / nc_width)
+                    .floor() as i32;
+            }
+            self.left_to_right = true;
+            let mut need_change_flow = false;
+            // An extruder change stretches the ramming over the time the
+            // nozzle takes to cool to its pre-cooling temperature.
+            let ramming_length = line_count as f32 * (xr - xl);
+            let seconds = |t: &[f32]| t.get(nozzle.old_extruder).copied().unwrap_or(0.0);
+            let (precool, precool_first) = if extruder_change {
+                (
+                    seconds(&own.precool_seconds.0),
+                    seconds(&own.precool_seconds_first.0),
+                )
+            } else {
+                (
+                    seconds(&own.precool_seconds.1),
+                    seconds(&own.precool_seconds_first.1),
+                )
+            };
+            let mut per_cooling = speed;
+            if extruder_change {
+                if first_layer && precool_first > EPSILON {
+                    per_cooling = ramming_length / precool_first * 60.0;
+                } else if precool > EPSILON {
+                    per_cooling = ramming_length / precool * 60.0;
+                }
+            }
+            speed = speed.min(per_cooling);
+            // On the first layer the rows go onto the plate: at most the
+            // first layer's speed (Edge's, review S2).
+            if first_layer {
+                speed = speed.min(self.settings.first_layer_speed * 60.0);
+            }
+            bridge_speed = bridge_speed.min(per_cooling).min(speed);
+            writer.set_e_speed_limit(max_e_ramming);
+            for i in 0.. {
+                if self.needs_bridge_flow(writer.y(), height) {
+                    writer.set_flow(flow_for(0.2));
+                    writer.height_tag(0.2);
+                    need_change_flow = true;
+                }
+                let y = writer.y();
+                let f = if need_change_flow {
+                    bridge_speed
+                } else {
+                    speed
+                };
+                writer.extrude((if self.left_to_right { xr } else { xl }, y), f);
+                if i == line_count - 1 {
+                    break;
+                }
+                if writer.y() + dy - cleaning.top + (nc_width + pw) / 2.0 > EPSILON {
+                    break;
+                }
+                if need_change_flow {
+                    writer.set_flow(nz_flow);
+                    writer.height_tag(height);
+                    need_change_flow = false;
+                }
+                let (x, y) = (writer.x(), writer.y());
+                writer.extrude((x, y + dy), speed);
+                self.left_to_right = !self.left_to_right;
+            }
+            if need_change_flow {
+                writer.height_tag(height);
+            }
+            writer.set_flow(nz_flow);
+            writer.set_e_speed_limit(0.0);
+            self.blocks[block].cur_depth += nc_depth;
+            self.blocks[block].last_nozzle_change = Some(old);
+            if !extruder_change {
+                writer.append(&m632);
+            }
+            let (travel_time, length) = if extruder_change {
+                (own.ramming_travel_time.0, own.change_length.0)
+            } else {
+                (own.ramming_travel_time.1, own.change_length.1)
+            };
+            if travel_time > EPSILON && length > EPSILON {
+                // Back over the ramming lines for the travel time
+                // (against oozing).
+                let mut left_to_right = !self.left_to_right;
+                speed *= 2.0;
+                let mut to_go = travel_time * speed / 60.0;
+                let along = line_count as f32 * (xr - xl - 2.0 * pw);
+                if along < to_go {
+                    speed *= along / to_go;
+                }
+                let (x, y) = (writer.x(), writer.y());
+                writer.travel((x, y + dy / 2.0), 0.0);
+                for i in 0.. {
+                    to_go -= xr - xl - 2.0 * pw;
+                    let short = if to_go < 0.0 { -to_go } else { 0.0 };
+                    let y = writer.y();
+                    if left_to_right {
+                        writer.travel((xr - pw - short, y), speed);
+                    } else {
+                        writer.travel((xl + pw + short, y), speed);
+                    }
+                    if to_go < EPSILON || i == line_count - 1 {
+                        break;
+                    }
+                    let (x, y) = (writer.x(), writer.y());
+                    writer.travel((x, y - dy), 0.0);
+                    left_to_right = !left_to_right;
+                }
+            } else {
+                // Wipe back along the last ramming line.
+                let at = writer.pos();
+                writer.add_wipe_point(at).add_wipe_point((
+                    if self.left_to_right {
+                        0.0
+                    } else {
+                        self.width()
+                    },
+                    at.1,
+                ));
+            }
+            if !extruder_change {
+                writer.append("M633\n");
+            }
+        }
+        writer.append(&marker(false));
+        NozzleVisit {
+            start_pos: writer.start_rotated(),
+            end_pos: writer.pos_rotated(),
+            wipe_path: writer.wipe_path.clone(),
+            extruder_change,
+            gcode: writer.gcode,
+        }
+    }
+
+    /// `contact_run_in_start`: with Bambu's interface features a contact
+    /// purge starts outside the tower, `filament_tower_interface_pre_extrusion_dist`
+    /// away from its middle along x, no further than the bed both nozzles
+    /// reach (`TowerInterface::clamp_to_bed`).
+    fn contact_run_in_start(&self, start: V2, tool: usize) -> V2 {
+        let left = start.0 < self.width() / 2.0;
+        let dir = if left { -1.0f32 } else { 1.0 };
+        let distance = self
+            .settings
+            .filaments
+            .get(tool)
+            .map_or(0.0, |f| f.run_in_distance);
+        let alpha = f64::from(self.settings.rotation) * std::f64::consts::PI / 180.0;
+        let shift = (
+            self.plan.rib_offset.0,
+            self.y_shift + self.plan.rib_offset.1,
+        );
+        let origin = self.plan.origin;
+        let to_bed = |p: V2| -> (f64, f64) {
+            let (x, y) = (f64::from(p.0 + shift.0), f64::from(p.1 + shift.1));
+            let (sin, cos) = alpha.sin_cos();
+            (
+                ((x * cos - y * sin) as f32 + origin.0) as f64,
+                ((x * sin + y * cos) as f32 + origin.1) as f64,
+            )
+        };
+        let along = match self.settings.shared_bed {
+            Some(bed) if distance > 0.0 => {
+                let b0 = to_bed(start);
+                let next = to_bed((start.0 + dir, start.1));
+                let step = (next.0 - b0.0, next.1 - b0.1);
+                let mut t = f64::from(distance);
+                let mut outside = false;
+                for (b, s, low, high) in [
+                    (b0.0, step.0, bed[0], bed[2]),
+                    (b0.1, step.1, bed[1], bed[3]),
+                ] {
+                    if b < low - 1e-4 || b > high + 1e-4 {
+                        outside = true;
+                        break;
+                    }
+                    if s > 1e-4 {
+                        t = t.min((high - b) / s);
+                    } else if s < -1e-4 {
+                        t = t.min((low - b) / s);
+                    }
+                }
+                if outside { 0.0 } else { t.max(0.0) as f32 }
+            }
+            _ => distance.max(0.0),
+        };
+        (start.0 + dir * along, start.1)
+    }
+
+    /// `tool_change_new`: onto another nozzle the outgoing filament's
+    /// ramming first, then the new filament's purge in its category's
+    /// block, from the corner the layer picks.
+    fn tool_change(
+        &mut self,
+        new_tool: usize,
+        solid: bool,
+        solid_nozzle_change: bool,
+    ) -> Result<Visit, PlanError> {
         let old_tool = self.current_tool;
         let planned = self.plan.layers[self.index]
             .changes
@@ -678,8 +1005,20 @@ impl Layer<'_> {
             .find(|change| change.new == new_tool)
             .copied();
         let wipe_length = planned.map_or(0.0, |c| c.wipe_length);
-        let wipe_depth = planned.map_or(0.0, |c| c.required_depth);
+        let wipe_depth = planned.map_or(0.0, |c| c.required_depth - c.nozzle_change_depth);
         let purge_volume = planned.map_or(0.0, |c| c.purge_volume);
+        // The ramming, unless the outgoing filament's extruder is past its
+        // printable height on its last layer.
+        let nozzle_change = match planned {
+            Some(change)
+                if change.nozzle_change.is_some()
+                    && old_tool < self.settings.filaments.len()
+                    && self.valid_last_layer(old_tool) =>
+            {
+                Some(self.ramming(old_tool, new_tool, &change, solid_nozzle_change))
+            }
+            _ => None,
+        };
         let block = self.block_of(new_tool).ok_or_else(|| {
             PlanError::Unsupported(format!("no block planned for filament {}", new_tool + 1))
         })?;
@@ -707,7 +1046,12 @@ impl Layer<'_> {
             material(new_tool)
         ));
         writer.append("M220 S100\n");
-        let initial = self.next_pos(&cleaning, wipe_length, new_tool, solid);
+        let mut initial = self.next_pos(&cleaning, wipe_length, new_tool, solid);
+        // With Bambu's interface features a contact purge starts outside
+        // the tower and runs in through the wall gap.
+        if self.settings.interface_features && solid {
+            initial = self.contact_run_in_start(initial, new_tool);
+        }
         writer.set_initial_position(initial, self.width(), self.depth());
         writer.append("; WIPE_TOWER_START\n");
         // `toolchange_Change`: the change itself is the printer's G-code.
@@ -720,7 +1064,17 @@ impl Layer<'_> {
         writer.append("G4 S0\n");
         self.current_tool = new_tool;
         let reheats = !first_layer && !solid;
-        self.wipe(&mut writer, &cleaning, wipe_length, solid, reheats);
+        let after_nozzle_change = nozzle_change
+            .as_ref()
+            .is_some_and(|nc| !nc.gcode.is_empty());
+        self.wipe(
+            &mut writer,
+            &cleaning,
+            wipe_length,
+            solid,
+            reheats,
+            after_nozzle_change,
+        );
         writer.append("; WIPE_TOWER_END\n");
         self.tool_changes += 1;
         self.blocks[block].cur_depth += wipe_depth;
@@ -729,6 +1083,7 @@ impl Layer<'_> {
         writer.append("G4 S0\nG92 E0\n; CP TOOLCHANGE END\n;------------------\n\n\n");
         let mut visit = self.visit(writer, old_tool, false, true, purge_volume, solid);
         visit.reheats_after_cooling = reheats;
+        visit.nozzle_change = nozzle_change;
         Ok(visit)
     }
 
@@ -753,6 +1108,7 @@ impl Layer<'_> {
         wipe_length: f32,
         solid: bool,
         reheat: bool,
+        after_nozzle_change: bool,
     ) {
         let tool = self.current_tool;
         let own = self.settings.filaments[tool.min(self.settings.filaments.len() - 1)].clone();
@@ -769,8 +1125,12 @@ impl Layer<'_> {
                 },
         );
         writer.append("; CP TOOLCHANGE WIPE\n");
+        // After a nozzle change the ramming's own width was the last one
+        // announced.
         if first_layer {
             writer.change_line_width(self.settings.first_layer_flow_ratio * pw);
+        } else if after_nozzle_change {
+            writer.change_line_width(pw);
         }
         let retract_length = own.retract_length;
         let retract_speed = own.retract_speed * 60.0;
@@ -809,7 +1169,8 @@ impl Layer<'_> {
             }
             if i == 0 && reheat && own.cooling_before_tower > EPSILON {
                 writer.append(&format!(
-                    "M104 T0 S{} N0 W ;Wipe tower reheat before wipe\n",
+                    "M104 T{} S{} N0 W ;Wipe tower reheat before wipe\n",
+                    self.settings.physical_extruder(tool),
                     own.temperature
                 ));
             }
@@ -886,7 +1247,7 @@ impl Layer<'_> {
             self.left_to_right = !self.left_to_right;
         }
         writer.set_flow(self.flow);
-        if first_layer {
+        if first_layer || after_nozzle_change {
             writer.change_line_width(pw);
         }
     }
@@ -1032,6 +1393,38 @@ impl Layer<'_> {
         let (left, right) = (fill.left, fill.right);
         writer.append(";--------------------\n; CP EMPTY GRID START\n");
         writer.comment_with_value(" layer #", self.layer_changes + 1);
+        // With Bambu's interface features a contact block no change purged
+        // into here starts outside the tower, waits for the interface
+        // temperature where that differs, and primes
+        // `filament_tower_interface_pre_extrusion_length` and 2 mm more
+        // before its first row runs in through the wall gap.
+        let own = self.settings.filaments[filament.min(self.settings.filaments.len() - 1)].clone();
+        let physical = self.settings.physical_extruder(filament);
+        let is_contact = self.settings.interface_features && kind == LayerType::Contact;
+        let interface_temp = is_contact && own.interface_temperature != own.temperature;
+        let mut initial = initial;
+        if is_contact && (cur - planned.start_depth).abs() < EPSILON {
+            initial = self.contact_run_in_start(initial, filament);
+            if interface_temp {
+                writer.append(&format!(
+                    "M109 T{physical} S{} N0 ;Wipe tower interface layer enter\n",
+                    own.interface_temperature
+                ));
+            }
+            writer.retract(-own.extra_prime_length - 2.0, 100.0);
+        }
+        let heating = own.temperature > own.interface_temperature;
+        let back = |writer: &mut Writer, comment: &str| {
+            writer.append(&format!(
+                "{}M104 T{physical} S{} N0 {} ;{comment}\n",
+                if heating { "" } else { "M400\n" },
+                own.temperature,
+                if heating { "W" } else { "C" }
+            ));
+        };
+        if interface_temp && self.settings.interface_cooldown {
+            back(&mut writer, "Wipe tower interface cool down during tower");
+        }
         writer.set_initial_position(initial, self.width(), self.depth());
         for i in 0..n {
             let y = writer.y();
@@ -1049,6 +1442,9 @@ impl Layer<'_> {
                 (x, y + spacing * if up_to_down { -1.0 } else { 1.0 }),
                 feedrate,
             );
+        }
+        if interface_temp && !self.settings.interface_cooldown {
+            back(&mut writer, "Wipe tower interface layer leave restore");
         }
         writer.append("; CP EMPTY GRID END\n;------------------\n\n\n\n\n\n\n");
         writer.append("; WIPE_TOWER_END\n");
@@ -1081,6 +1477,11 @@ impl Layer<'_> {
         out.initial_tool = first.initial_tool;
         out.new_tool = second.new_tool;
         out.is_contact = first.is_contact || second.is_contact;
+        // The nozzle change travels with whichever part carries one.
+        out.nozzle_change = first
+            .nozzle_change
+            .clone()
+            .or_else(|| second.nozzle_change.clone());
         if first.is_tool_change {
             out.is_tool_change = true;
             out.tool_change_start_pos = first.tool_change_start_pos;
@@ -1207,6 +1608,7 @@ pub fn lay(plan: &Plan, settings: &Settings) -> Result<Vec<Vec<Visit>>, PlanErro
                 cur_depth: b.start_depth,
                 finish_depth: vec![0.0; count],
                 last_filament_change: None,
+                last_nozzle_change: None,
             })
             .collect(),
         current_tool: plan.start_tool,
@@ -1228,6 +1630,7 @@ pub fn lay(plan: &Plan, settings: &Settings) -> Result<Vec<Vec<Visit>>, PlanErro
         for (block, planned) in state.blocks.iter_mut().zip(&plan.blocks) {
             block.cur_depth = planned.start_depth;
             block.last_filament_change = None;
+            block.last_nozzle_change = None;
         }
         state.index = index;
         state.z = layer.z;
@@ -1247,10 +1650,12 @@ pub fn lay(plan: &Plan, settings: &Settings) -> Result<Vec<Vec<Visit>>, PlanErro
             let mut found = None;
             for (i, change) in layer.changes.iter().enumerate() {
                 if i == 0 {
-                    if change.old == wall {
+                    let valid =
+                        valid_last_layer(settings, &plan.last_layers, change.old, index, layer.z);
+                    if change.old == wall && valid {
                         found = Some(wall);
                         break;
-                    } else if settings.category(change.old) == settings.category(wall) {
+                    } else if settings.category(change.old) == settings.category(wall) && valid {
                         candidate = Some(change.old);
                     }
                 }
@@ -1296,10 +1701,13 @@ pub fn lay(plan: &Plan, settings: &Settings) -> Result<Vec<Vec<Visit>>, PlanErro
             if wall_by_first {
                 finish = Some(state.finish_layer(!only_wall, false, false)?);
             }
-            let solid = state
-                .block_of(change.new)
-                .is_some_and(|b| plan.blocks[b].layer_types[index] == LayerType::Contact);
-            visits.push(state.tool_change(change.new, solid)?);
+            let contact = |filament: usize| {
+                state
+                    .block_of(filament)
+                    .is_some_and(|b| plan.blocks[b].layer_types[index] == LayerType::Contact)
+            };
+            let (solid, solid_nozzle_change) = (contact(change.new), contact(change.old));
+            visits.push(state.tool_change(change.new, solid, solid_nozzle_change)?);
             if !wall_by_first && Some(change.new) == wall_idx {
                 finish = Some(state.finish_layer(!only_wall, false, false)?);
                 insert_at = Some(i);
@@ -1318,7 +1726,9 @@ pub fn lay(plan: &Plan, settings: &Settings) -> Result<Vec<Vec<Visit>>, PlanErro
                     continue;
                 }
                 let kind = planned.layer_types[index];
-                let mut filament = state.blocks[b].last_filament_change;
+                let mut filament = state.blocks[b]
+                    .last_filament_change
+                    .or(state.blocks[b].last_nozzle_change);
                 if let Some(first) = layer.changes.first()
                     && filament.is_none()
                     && state.block_of(first.old) == Some(b)
@@ -1326,6 +1736,11 @@ pub fn lay(plan: &Plan, settings: &Settings) -> Result<Vec<Vec<Visit>>, PlanErro
                     filament = Some(first.old);
                 }
                 let filament = filament.unwrap_or(wall_idx);
+                // Not by an extruder on its last layer above its
+                // printable height.
+                if !state.valid_last_layer(filament) {
+                    continue;
+                }
                 let part = if kind != LayerType::Normal {
                     let part = state.finish_block_solid(b, filament, kind)?;
                     state.blocks[b].finish_depth[index] = planned.start_depth + planned.depth;
@@ -1396,6 +1811,7 @@ mod tests {
                     old: index % 2,
                     new: 1 - index % 2,
                     purge_volume: 100.0,
+                    nozzle_change: None,
                 }],
             })
             .collect()
@@ -1550,6 +1966,7 @@ mod tests {
             old,
             new,
             purge_volume: 0.0,
+            nozzle_change: None,
         };
         let input: Vec<LayerIn> = (0..20)
             .map(|index| LayerIn {
@@ -1579,6 +1996,61 @@ mod tests {
                 .iter()
                 .any(|v| v.gcode.contains("CP EMPTY GRID START"))
         );
+    }
+
+    #[test]
+    fn a_change_onto_the_other_nozzle_carries_the_ramming_and_reheats_its_own_nozzle() {
+        let s = Settings::from_settings(
+            &Config::from_json(&super::super::plan::tests::H2D_TWO.replace(
+                r#""nozzle_temperature""#,
+                r#""filament_cooling_before_tower": ["10", "10"], "nozzle_temperature""#,
+            ))
+            .unwrap(),
+            0,
+        )
+        .unwrap();
+        let planned = plan(&s, &super::super::plan::tests::across(layers(4)), 0).unwrap();
+        let visits = lay(&planned, &s).unwrap();
+        let change = visits[1].iter().find(|v| v.is_tool_change).unwrap();
+        let ramming = change.nozzle_change.as_ref().unwrap();
+        assert!(ramming.extruder_change);
+        // The markers round one ramming line at the ramming width and
+        // feed, onto the plate on the first layer at its speed.
+        assert!(
+            ramming
+                .gcode
+                .contains("; NOZZLE_CHANGE_START OF1 NF0 ON1 NN0\n")
+        );
+        assert!(ramming.gcode.contains("; LINE_WIDTH: 1.000000\n"));
+        assert_eq!(ramming.gcode.matches(" E").count(), 1, "{}", ramming.gcode);
+        assert!(
+            ramming
+                .gcode
+                .ends_with("; NOZZLE_CHANGE_END OF1 NF0 ON1 NN0\n")
+        );
+        assert_eq!(ramming.wipe_path.len(), 2);
+        // The purge announces its own width after it, and reheats the
+        // nozzle filament 0 prints from: physical extruder 1.
+        assert!(
+            change
+                .gcode
+                .contains("; CP TOOLCHANGE WIPE\n; LINE_WIDTH: 0.500000\n")
+        );
+        assert!(
+            change
+                .gcode
+                .contains("M104 T1 S220 N0 W ;Wipe tower reheat before wipe")
+        );
+        let first = visits[0].iter().find(|v| v.is_tool_change).unwrap();
+        let rows: Vec<&str> = first
+            .nozzle_change
+            .as_ref()
+            .unwrap()
+            .gcode
+            .lines()
+            .filter(|l| l.contains(" E"))
+            .collect();
+        assert!(rows[0].ends_with(" F3000"), "{rows:?}");
     }
 
     #[test]

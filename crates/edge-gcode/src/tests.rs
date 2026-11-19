@@ -4293,6 +4293,7 @@ fn bambus_tower_visit_is_written_where_the_tower_stands_with_the_change_in_its_p
         finish_first: true,
         tool_change: true,
         reheats_after_cooling: true,
+        ..TowerVisit::default()
     };
     let part = [wall(0.0, 0.0, 10.0, 0)];
     let first = one_layer(&part, &[0..1], &[])[0];
@@ -5586,6 +5587,154 @@ fn two_nozzles_change_between_and_within_them() {
     // The settings block lists the grouping's map, not the project's.
     assert!(text.contains("; filament_map = 1,2,1\n"), "{text}");
     assert!(text.contains("; filament_nozzle_map = 0,1,0\n"));
+}
+
+/// On Bambu's tower of a printer of two nozzles: a change onto the other
+/// nozzle rams the outgoing filament on the tower first (retracted at the
+/// model, to the ramming, pushed back, laid, then the change's own
+/// retraction with a wipe), and every change flushes as Bambu Studio does,
+/// what the incoming nozzle holds onto the other one, from the filament
+/// before it within one (not the reference's "nothing onto the other
+/// nozzle"); the change G-code keeps clear of the tower's wall and is told
+/// whether the change is an interface (GCode.cpp `append_tcr`).
+#[test]
+fn two_nozzles_on_bambus_tower_ram_before_a_change_onto_the_other() {
+    let at = |x: f64, y: f64| Point2::from_mm(x, y);
+    let mut settings = two_nozzles();
+    for s in &mut settings {
+        s.bambu_tower = true;
+        s.prime_tower = true;
+        s.retraction_length = 0.4;
+        s.retract_length_toolchange = 2.0;
+        s.default_acceleration = 10000.0;
+        s.wipe = true;
+        s.wipe_distance = 1.0;
+        s.initial_layer_acceleration = 500.0;
+        s.tower_interface = TowerInterface {
+            features: true,
+            purge_volume: 20.0,
+            print_temperature: 240.0,
+            pre_extrusion_length: 0.0,
+        };
+        s.change_filament_gcode = Some(
+            "; change [current_filament_id]>[next_filament_id] L[flush_length] avoid {wipe_avoid_perimeter} [wipe_avoid_pos_x] iface {is_prime_tower_interface} {filament_tower_interface_purge_volume}
+             T[next_filament_id] H[next_hotend]"
+                .into(),
+        );
+    }
+    let gcode = "; CP TOOLCHANGE START\n; WIPE_TOWER_START\n[filament_end_gcode]\n\
+                 [restore_layer_z_before_toolchange]\n[change_filament_gcode]\n\
+                 [deretraction_from_wipe_tower_generator]\n[filament_start_gcode]\nG4 S0\n\
+                 ; CP TOOLCHANGE WIPE\nG1 X9.000 Y2.000 E0.3000 F2000\n; CP TOOLCHANGE END\n";
+    let ramming = TowerRamming {
+        gcode: "; LINE_WIDTH: 1.000000\n; NOZZLE_CHANGE_START OF0 NF1 ON0 NN1\n\
+                G1 X40.000 Y1.000 E4.6555 F3000\n; NOZZLE_CHANGE_END OF0 NF1 ON0 NN1\n"
+            .into(),
+        start: at(101.0, 51.0),
+        end: at(140.0, 51.0),
+        wipe_path: vec![at(140.0, 51.0), at(100.0, 51.0)],
+    };
+    let visit = |nozzle_change: bool| TowerVisit {
+        gcode: gcode.into(),
+        origin: [100.0, 50.0],
+        start: at(108.0, 52.0),
+        change_start: at(108.0, 52.0),
+        end: at(109.0, 52.0),
+        tool_change: true,
+        is_contact: true,
+        wipe_avoid_x: 163.5,
+        nozzle_change: nozzle_change.then(|| ramming.clone()),
+        ..TowerVisit::default()
+    };
+    // 0 > 1 onto the second nozzle, 1 > 2 back onto the first, 2 > 0
+    // within it, 0 > 1 onto the second again.
+    let order = [0, 1, 2, 0, 1];
+    let crosses = [false, true, true, false, true];
+    let visits: Vec<[TowerVisit; 1]> = crosses.iter().map(|cross| [visit(*cross)]).collect();
+    let part = [wall(0.0, 0.0, 10.0, 0)];
+    let first = one_layer(&part, &[0..1], &[])[0];
+    let layers: Vec<Layer<'_>> = order
+        .iter()
+        .zip(&visits)
+        .enumerate()
+        .map(|(index, (filament, visits))| Layer {
+            z: 0.2 * (index + 1) as f64,
+            filament: *filament,
+            visits: if index == 0 { &[] } else { visits },
+            ..first
+        })
+        .collect();
+    let mut out = Vec::new();
+    write_tools(&mut out, &layers, &settings).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let changes: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("; change "))
+        .collect();
+    assert_eq!(changes.len(), 4, "{text}");
+    let area = PI * (1.75_f64 / 2.0).powi(2);
+    let flush = |line: &str| -> f64 {
+        line.split(" L")
+            .nth(1)
+            .unwrap()
+            .split(' ')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    // Onto the empty second nozzle nothing; back onto the first, which
+    // holds 0, 0 > 2's 200 mm³; within it 2 > 0's 300; onto the second,
+    // which holds 1 still, nothing.
+    assert_eq!(flush(changes[0]), 0.0, "{}", changes[0]);
+    assert!(
+        (flush(changes[1]) - 200.0 / area).abs() < 1e-2,
+        "{}",
+        changes[1]
+    );
+    assert!(
+        (flush(changes[2]) - 300.0 / area).abs() < 1e-2,
+        "{}",
+        changes[2]
+    );
+    assert_eq!(flush(changes[3]), 0.0, "{}", changes[3]);
+    // Kept clear of the tower's wall, beside it; an interface change.
+    assert!(
+        changes[0].contains("avoid true 163.5 iface true 20"),
+        "{}",
+        changes[0]
+    );
+    // The ramming before each change onto the other nozzle only, moved to
+    // the tower's place, then the change.
+    assert_eq!(text.matches("; NOZZLE_CHANGE_START").count(), 3);
+    let ram = text.find("G1 X140.000 Y51.000 E4.6555 F3000").expect(&text);
+    let change = text[ram..].find("; change 0>1").unwrap() + ram;
+    let between = &text[ram..change];
+    // The change's own retraction, 2 mm in all, with a wipe back along the
+    // ramming line, and no second one before the change G-code.
+    let pulled: f64 = between
+        .lines()
+        .filter(|l| l.starts_with("G1") && l.contains(" E-"))
+        .map(|l| {
+            l.split(" E-")
+                .nth(1)
+                .unwrap()
+                .split(' ')
+                .next()
+                .unwrap()
+                .parse::<f64>()
+                .unwrap()
+        })
+        .sum();
+    assert!((pulled - 2.0).abs() < 1e-4, "{between}");
+    assert!(between.contains("; WIPE_START"), "{between}");
+    // Before the ramming: retracted at the model, pushed back at its start,
+    // at the acceleration of a layer above the first.
+    let before = &text[..ram];
+    let start = before.rfind("G1 X101.000 Y51.000").expect(before);
+    assert!(before[start..].contains("G1 E0.40000"), "{before}");
+    let accel = before.rfind("M204 S").expect(before);
+    assert!(before[accel..].starts_with("M204 S10000\n"), "{before}");
 }
 
 /// The start G-code of a printer of two nozzles is given the map and, by
