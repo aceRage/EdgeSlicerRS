@@ -247,10 +247,19 @@ impl ExtrusionPath {
     /// one may be, which says nothing of the size of the area.
     pub const LOOPED: u32 = 1 << 31;
     /// The part number of a prime tower's wall, in one piece or cut by
-    /// the gaps a nozzle comes in through: laid as one, from the corner
-    /// nearest the nozzle round the way it is drawn, crossing each gap
-    /// with the filament pulled back (WipeTower2.cpp `generate_path`).
+    /// the gaps a nozzle comes in through: laid as one, in the order its
+    /// pieces are given, crossing each gap with the filament pulled back
+    /// (WipeTower2.cpp `generate_path`). The tower's lines are then all
+    /// laid in the order given, each from its first point, as the
+    /// reference's tower lays them (`finish_layer`).
     pub const TOWER_WALL: u32 = 1;
+    /// The part number of such a tower's frame and fill.
+    pub const TOWER_FILL: u32 = 2;
+    /// The part number of a loop of such a tower's brim.
+    pub const TOWER_BRIM: u32 = 3;
+    /// The part number of the way such a tower's writer goes between its
+    /// lines: travelled through, point by point, and not laid.
+    pub const TOWER_WAY: u32 = 4;
     /// Set on the part number of an area whose lines may be taken in any
     /// order but each only from its first point: a sparse grid, whose
     /// lines the reference marks as not to be turned (Fill.cpp

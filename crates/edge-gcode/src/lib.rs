@@ -3401,7 +3401,7 @@ impl Writer<'_> {
                 }
             }
             if let Some(wipe) = layer.wipe {
-                self.tower_wipe(wipe, low)?;
+                self.tower_wipe(wipe, low, layer.ram.is_some())?;
             }
             self.inner_wall = layer
                 .loops
@@ -4527,9 +4527,12 @@ impl Writer<'_> {
         Ok(())
     }
 
-    /// The tower's own lines (its frame, fill, wall and brim), nearest
-    /// first. `after_block` is whether the nozzle is on the tower already,
-    /// at the end of a change's block on it.
+    /// The tower's own lines (its frame, fill, wall and brim): nearest
+    /// first, or for the reference's own tower (WipeTower2.cpp), whose
+    /// lines carry the tower's part numbers ([`ExtrusionPath::TOWER_WALL`]),
+    /// in the order given, each begun where given, as its `finish_layer`
+    /// lays them. `after_block` is whether the nozzle is on the tower
+    /// already, at the end of a change's block on it.
     ///
     /// Once on the tower the nozzle goes from line to line as the
     /// reference's tower writes its moves (WipeTower2.cpp `finish_layer`,
@@ -4570,31 +4573,62 @@ impl Writer<'_> {
         } else {
             TowerWay::Onto
         };
+        // The reference's own tower (WipeTower2.cpp `finish_layer`) lays
+        // them in a fixed order, which the tower gives them in, each begun
+        // where given: the frame and fill (`TOWER_FILL`), the wall
+        // (`TOWER_WALL`) and the brim's loops (`TOWER_BRIM`).
+        let in_order = paths.iter().any(|path| {
+            [
+                ExtrusionPath::TOWER_FILL,
+                ExtrusionPath::TOWER_WALL,
+                ExtrusionPath::TOWER_BRIM,
+                ExtrusionPath::TOWER_WAY,
+            ]
+            .contains(&path.part)
+        });
         while !items.is_empty() {
             // Where each item may be started: an open line at either end,
             // a closed one or the wall at any corner.
-            let nearest = self.nearest(items.iter().map(|item| {
-                item.iter().flat_map(move |path| {
-                    let n = path.points.len();
-                    let open =
-                        !(item.len() > 1 || path.part == ExtrusionPath::TOWER_WALL || closed(path));
-                    let corners: &[Point2] = if open { &[] } else { &path.points[..n - 1] };
-                    let ends = if open {
-                        vec![path.points[0], path.points[n - 1]]
-                    } else {
-                        Vec::new()
-                    };
-                    corners.iter().copied().chain(ends)
-                })
-            }));
+            let nearest = if in_order {
+                0
+            } else {
+                self.nearest(items.iter().map(|item| {
+                    item.iter().flat_map(move |path| {
+                        let n = path.points.len();
+                        let open = !(item.len() > 1
+                            || path.part == ExtrusionPath::TOWER_WALL
+                            || closed(path));
+                        let corners: &[Point2] = if open { &[] } else { &path.points[..n - 1] };
+                        let ends = if open {
+                            vec![path.points[0], path.points[n - 1]]
+                        } else {
+                            Vec::new()
+                        };
+                        corners.iter().copied().chain(ends)
+                    })
+                }))
+            };
             let item = items.remove(nearest);
             let role = item[0].role;
             let flow = item[0].flow;
+            // The writer's way between the lines: travelled through.
+            if item[0].part == ExtrusionPath::TOWER_WAY {
+                for point in &item[0].points {
+                    self.tower_move(*point, way, low, role)?;
+                    way = TowerWay::Glide;
+                }
+                continue;
+            }
             // The runs to lay, each from where the last ended or across a gap.
             let mut runs: Vec<Vec<Point2>> = Vec::new();
             let at = self.state.position;
             let near = |point: Point2| at.map_or(0.0, |at| distance(at, point));
-            if item.len() == 1 && item[0].part != ExtrusionPath::TOWER_WALL && !closed(item[0]) {
+            if item[0].part == ExtrusionPath::TOWER_FILL {
+                runs.push(item[0].points.clone());
+            } else if item.len() == 1
+                && item[0].part != ExtrusionPath::TOWER_WALL
+                && !closed(item[0])
+            {
                 let mut points = item[0].points.clone();
                 if near(points[points.len() - 1]) < near(points[0]) {
                     points.reverse();
@@ -4606,9 +4640,14 @@ impl Writer<'_> {
                     .iter()
                     .flat_map(|path| path.points.windows(2).map(|pair| (pair[0], pair[1])))
                     .collect();
-                let first = (0..segments.len())
-                    .min_by(|a, b| near(segments[*a].0).total_cmp(&near(segments[*b].0)))
-                    .unwrap_or(0);
+                // In the reference's order each is begun where given.
+                let first = if in_order {
+                    0
+                } else {
+                    (0..segments.len())
+                        .min_by(|a, b| near(segments[*a].0).total_cmp(&near(segments[*b].0)))
+                        .unwrap_or(0)
+                };
                 for step in 0..segments.len() {
                     let (from, to) = segments[(first + step) % segments.len()];
                     match runs.last_mut() {
@@ -4695,10 +4734,40 @@ impl Writer<'_> {
     /// `extrude_explicit`). The filament is pulled back and pushed on
     /// again where the tower says, by its retraction length at its
     /// retraction speed and with nothing else in between.
-    fn tower_wipe(&mut self, wipe: TowerWipe<'_>, low: Option<f64>) -> io::Result<()> {
+    ///
+    /// On the reference's own tower (WipeTower2.cpp) the filament the
+    /// change pulled back is pushed on again where the nozzle is when the
+    /// change ends (`[deretraction_from_wipe_tower_generator]`): where the
+    /// ram left it (`rammed`), else where the unload left it, the block's
+    /// first move; the moves on to the first row are then made at the
+    /// speed that leaves in force, as its writer's travels name none.
+    fn tower_wipe(
+        &mut self,
+        wipe: TowerWipe<'_>,
+        low: Option<f64>,
+        rammed: bool,
+    ) -> io::Result<()> {
         let s = self.settings;
-        self.tower_route(wipe.start, self.state.position)?;
-        self.travel(wipe.start, false, Some(Role::PrimeTower))?;
+        let mut reprime = !s.bambu_tower && self.state.retracted;
+        let mut glide = false;
+        if reprime && rammed {
+            self.prime()?;
+            (reprime, glide) = (false, true);
+        }
+        if glide {
+            let length = self
+                .state
+                .position
+                .map_or(0.0, |at| distance(at, wipe.start));
+            let speed = match self.state.feedrate.abs() {
+                0.0 => s.travel_speed,
+                feedrate => feedrate / 60.0,
+            };
+            self.go(wipe.start, None, speed, length)?;
+        } else {
+            self.tower_route(wipe.start, self.state.position)?;
+            self.travel(wipe.start, false, Some(Role::PrimeTower))?;
+        }
         if let Some(tower) = low {
             self.lower_to_tower(tower)?;
         }
@@ -4726,8 +4795,21 @@ impl Writer<'_> {
                 }
                 TowerStroke::Move(to, speed) => {
                     let length = self.state.position.map_or(0.0, |at| distance(at, to));
-                    self.go(to, None, speed.unwrap_or(s.travel_speed), length)?;
+                    let in_force = match self.state.feedrate.abs() {
+                        0.0 => s.travel_speed,
+                        feedrate => feedrate / 60.0,
+                    };
+                    let speed = match speed {
+                        Some(speed) => speed,
+                        None if glide => in_force,
+                        None => s.travel_speed,
+                    };
+                    self.go(to, None, speed, length)?;
                     run.clear();
+                    if reprime {
+                        self.prime()?;
+                        (reprime, glide) = (false, true);
+                    }
                 }
                 TowerStroke::Retract | TowerStroke::Unretract if s.retraction_length > 0.0 => {
                     let sign = if *stroke == TowerStroke::Retract {
