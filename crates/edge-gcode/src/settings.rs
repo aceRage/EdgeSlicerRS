@@ -446,6 +446,10 @@ pub struct PrintSettings {
     /// The printer's timelapse G-code and where in a layer it goes
     /// (`time_lapse_gcode`; GCode.cpp `process_layer`).
     pub time_lapse: Option<(String, Timelapse)>,
+    /// The idle nozzle's pre-cooling and pre-heating of a Bambu Lab printer
+    /// of two nozzles (`enable_pre_heating`; GCode/PreCoolingInjector.cpp):
+    /// done where the plate's filaments are grouped onto its nozzles.
+    pub pre_heating: Option<crate::pre_heating::PreHeating>,
     /// How many tools the printer has.
     pub tools: usize,
     /// What is flushed going from filament i to filament j, in mm³
@@ -668,6 +672,7 @@ impl Default for PrintSettings {
             power_loss_recovery: None,
             scan_first_layer: false,
             time_lapse: None,
+            pre_heating: None,
             tools: 1,
             flush_volumes: Vec::new(),
             grab_length: 0.0,
@@ -1436,6 +1441,14 @@ impl PrintSettings {
                 }
             },
             scan_first_layer: settings.flag("scan_first_layer")?.unwrap_or(false),
+            pre_heating: crate::pre_heating::PreHeating::from_settings(
+                settings,
+                settings
+                    .text("printer_model")
+                    .filter(|model| !model.is_empty())
+                    .or(settings.text("printer_settings_id"))
+                    .is_some_and(|name| name.starts_with("Bambu Lab")),
+            )?,
             time_lapse: {
                 let bambu = settings
                     .text("printer_model")
@@ -1535,6 +1548,16 @@ impl PrintSettings {
             exhaust_fan: exhaust_fan(settings, index)?,
             unsupported,
         })
+    }
+}
+
+impl PrintSettings {
+    /// Whether the idle nozzle is pre-cooled and pre-heated: on a Bambu Lab
+    /// printer of two nozzles with `enable_pre_heating`, where the plate's
+    /// filaments were grouped onto the nozzles (PreCoolingInjector.cpp
+    /// `pre_cooling_active`).
+    pub(crate) fn pre_heats(&self) -> bool {
+        self.pre_heating.is_some() && self.plate.nozzles.is_some()
     }
 }
 

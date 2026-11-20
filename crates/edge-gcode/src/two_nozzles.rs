@@ -6,11 +6,11 @@
 //! `incoming_extruder_retracted_length`, `set_ec_retraction_placeholders`).
 //!
 //! The grouping itself (which nozzle) is worked out before the writer
-//! (edge-engine `grouping`) and handed over in [`Plate::nozzles`]. Not
-//! done here, and refused before: printers with a nozzle rack (H2C, H3C;
-//! the grouping refuses them) and copies printed one after another (not
-//! grouped). On Bambu's tower the ramming before a change onto the other
-//! nozzle is laid by `bambu_tower`.
+//! (edge-engine `grouping`; for copies printed one after another, the
+//! plate's own map) and handed over in [`Plate::nozzles`]. Not done here,
+//! and refused before: printers with a nozzle rack (H2C, H3C; the grouping
+//! refuses them). On Bambu's tower the ramming before a change onto the
+//! other nozzle is laid by `bambu_tower`.
 
 use edge_template::{Value, Variables};
 
@@ -28,8 +28,7 @@ pub(crate) fn check(s: &PrintSettings) -> Result<(), GcodeError> {
     if s.plate.nozzles.is_none() {
         return Err(GcodeError::Unsupported(
             "a Bambu Lab printer of two nozzles: which nozzle each filament prints from was not \
-             worked out for this plate (the filament grouping is not done for copies printed \
-             one after another), so the nozzle changes cannot be written"
+             worked out for this plate, so the nozzle changes cannot be written"
                 .into(),
         ));
     }
@@ -262,29 +261,18 @@ pub(crate) fn listed(plate: &Plate, key: &str) -> Option<String> {
 /// What the reference does on a Bambu Lab printer of two nozzles that is
 /// not done here, as notes on the print.
 ///
-/// - The idle nozzle's pre-cooling and pre-heating (`enable_pre_heating`;
-///   GCodeProcessor.cpp `plan_pre_cooling`, GCode/PreCoolingInjector.cpp,
-///   Bambu Studio's, placed by the time estimate): the reference cools the
-///   nozzle put away while the other prints (`M104 T.. S.. N0 C`) and heats
-///   it ahead of its turn (`M632`, `M104 T.. S.. N0 W`, `M633`). Here the
-///   nozzle put away keeps its temperature, and the change G-code heats the
-///   incoming one as it would anyway.
 /// - The timelapse picture (`time_lapse_gcode`): on two nozzles the
 ///   reference takes it with the nozzle that prints on the most layers,
 ///   from a safe spot its picker chooses (GCode.cpp `process_layer`,
 ///   `generate_timelapse_gcode`, GCode/TimelapsePosPicker.cpp); none is
 ///   taken here.
+///
+/// The idle nozzle's pre-cooling and pre-heating (`enable_pre_heating`)
+/// is done, by `pre_heating` once the file is timed.
 pub(crate) fn notes(
     settings: &edge_config::Settings,
 ) -> Result<Vec<String>, edge_config::ConfigError> {
     let mut notes = Vec::new();
-    if settings.flag("enable_pre_heating")? == Some(true) {
-        notes.push(
-            "enable_pre_heating: the nozzle put away is neither cooled while the other prints nor \
-             heated ahead of its turn (Bambu Studio's pre-cooling); it keeps its temperature"
-                .to_owned(),
-        );
-    }
     if crate::gcode_template(settings, "time_lapse_gcode").is_some() {
         notes.push(
             "time_lapse_gcode: no timelapse picture is taken on a printer of two nozzles (the \

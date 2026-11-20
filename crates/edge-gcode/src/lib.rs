@@ -29,6 +29,7 @@ mod inside;
 mod labels;
 mod overhang;
 mod pause;
+mod pre_heating;
 mod scarf;
 mod seam;
 mod seam_align;
@@ -66,6 +67,7 @@ pub use contour::Contours;
 pub use edge_avoid::{Detour, Slices};
 pub use fan_mover::FanTiming;
 pub use labels::label_outline;
+pub use pre_heating::PreHeating;
 pub use scarf::{Scarf, ScarfSeam};
 pub use seam::Seam;
 pub use seam_plan::{SeamMeasures, SeamMesh, SeamObject, SeamPart, SeamScene, measure_seams};
@@ -887,9 +889,11 @@ pub fn write_timed(
     // by then.
     let limits = settings[first].limits;
     let text = std::str::from_utf8(&whole).ok();
+    let mut timed_by_line: Option<Vec<f64>> = None;
     let timed = limits.zip(text).map(|(limits, text)| {
         let model = limits.own_model();
         let estimate = edge_time::estimate(text, &limits, model);
+        timed_by_line = Some(estimate.by_line.clone());
         let mut at = 0;
         let ends: Vec<usize> = text
             .split_inclusive('\n')
@@ -1029,6 +1033,24 @@ pub fn write_timed(
                 days_hours_minutes_seconds(before)
             ),
         ));
+    }
+    // The idle nozzle of a Bambu Lab printer of two nozzles cooled while
+    // the other prints and heated back in time for its turn
+    // (`enable_pre_heating`; GCodeProcessor.cpp `plan_pre_cooling`), by
+    // the file's time.
+    if let (Some((_, _, ends)), Some(text), Some(params), Some(map)) = (
+        &timed,
+        text,
+        settings[first].pre_heating.as_ref(),
+        settings[first].plate.nozzles.as_ref(),
+    ) && settings[first].pre_heats()
+    {
+        let by_line = timed_by_line.as_deref().unwrap_or_default();
+        for (line, lines) in pre_heating::plan(text, by_line, params, map) {
+            if let Some(end) = ends.get(line) {
+                slipped.push((*end, lines.concat()));
+            }
+        }
     }
     // Each cooldown taken out leaves the reference's note in its place.
     cut.sort_unstable();
@@ -1991,6 +2013,11 @@ impl Writer<'_> {
                         heat.push_str("M106 P2 S0 \n");
                     }
                     self.out.splice(at..at, heat.into_bytes());
+                }
+                // Where the idle nozzle's pre-cooling starts from
+                // (GCode.cpp `_do_export`: only where it is done).
+                if s.pre_heats() {
+                    writeln!(self.out, "{}", pre_heating::START_END)?;
                 }
                 self.state.primed = true;
             }
@@ -6738,6 +6765,10 @@ impl Writer<'_> {
         }
         if s.filament_end_gcode.is_some() || s.machine_end_gcode.is_some() {
             writeln!(self.out, "{}Custom", self.tags().feature)?;
+        }
+        // Where the idle nozzle's pre-cooling stops (GCode.cpp `_do_export`).
+        if s.pre_heats() {
+            writeln!(self.out, "{}", pre_heating::END_START)?;
         }
         if s.bambu && s.plate.nozzles.is_some() && !s.single_nozzle {
             // Two nozzles: every filament's end G-code in turn, each told

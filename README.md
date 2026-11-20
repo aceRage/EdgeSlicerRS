@@ -2069,8 +2069,21 @@ printer's (`filament_long_retractions_when_cut` and the rest, so the A1
 and X1 now pull the filament back before the cut, `M620.11 S1 … E-18`),
 a list of choices as its number (`z_hop_types[…] == 0`), and every
 number as a C++ stream writes it (six significant digits: `F523.843`).
-A Bambu Lab printer of two nozzles (H2D, H2C) is refused: which nozzle
-each filament prints with is Bambu Studio's grouping, not done. The time
+A Bambu Lab printer of two nozzles is sliced on the H2D (the filament
+grouping, `crates/edge-group`, and Bambu's tower on two nozzles); a nozzle
+rack (H2C, H3C) is refused. On the H2D: the idle nozzle is cooled after
+its use and heated back in time for its next (`enable_pre_heating`,
+`crates/edge-gcode/src/pre_heating.rs`, the reference's
+PreCoolingInjector, placed by the file's time); copies printed one after
+another take the plate's own `filament_map` (GCode.cpp `_do_export`,
+`group_by_plate_map`); a matrix to each nozzle (2 × n × n) is read per
+nozzle everywhere, where the reference reads it as one square. Refused:
+nozzles of two sizes, which the reference prints with a system process of
+each nozzle's size (EdgeSlicer's per-nozzle processes) and maybe merged
+layers. Not done: the timelapse picture on two nozzles (no picture is
+taken; the reference takes it with the most used nozzle, inline at the
+layer's farthest point or from a spot Bambu Studio's picker chooses,
+inside a tool change). The time
 estimate reads what the reference's does: `G28` as a move home, Bambu's
 `G29` as 260 s once, `M191` above 40 °C as 720 s, Bambu's own tool
 commands (`T1000`, `T255`) as nothing, and the waits of a Bambu Lab
