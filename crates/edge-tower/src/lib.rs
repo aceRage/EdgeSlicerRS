@@ -754,15 +754,20 @@ impl TowerSettings {
         let wide = line * ratio;
         let per_mm = |width: f64| height * (width - height * (1.0 - PI / 4.0));
         let across = (span - line - 2.0 * wide).max(line);
-        let (ram_length, ramming, first_wipe) = match ram {
+        let (ram_length, ramming, first_wipe, ramming32) = match ram {
             Some(ram) => {
                 let length = ram.volume / per_mm(wide);
                 let rows = (length / across).ceil().max(1.0);
                 // The new nozzle's first line finishes the ram's last row.
                 let over = length - (length / across).floor() * across;
-                (length, rows * wide * self.extra_spacing, across - over)
+                (
+                    length,
+                    rows * wide * self.extra_spacing,
+                    across - over,
+                    rows as f32 * wide as f32 * self.extra_spacing as f32,
+                )
             }
-            None => (0.0, 0.0, 0.0),
+            None => (0.0, 0.0, 0.0, 0.0),
         };
         let already = first_wipe * per_mm(line * self.extra_flow);
         let length = ((volume - already) / per_mm(line) / self.extra_flow).max(0.0);
@@ -772,6 +777,8 @@ impl TowerSettings {
             ramming,
             first_wipe,
             wiping: rows * line * self.row_step(first_layer),
+            ramming32,
+            wiping32: rows as f32 * line as f32 * self.row_step32(first_layer),
         }
     }
 
@@ -825,6 +832,15 @@ impl TowerSettings {
     }
 
     /// How far apart a block's rows are, in line widths.
+    /// [`Self::row_step`] in single precision (`wipe_planning_spacing`).
+    fn row_step32(&self, first_layer: bool) -> f32 {
+        if first_layer {
+            self.extra_flow as f32
+        } else {
+            (self.extra_spacing * self.extra_flow) as f32
+        }
+    }
+
     fn row_step(&self, first_layer: bool) -> f64 {
         if first_layer {
             self.extra_flow
@@ -845,11 +861,21 @@ struct Planned {
     first_wipe: f64,
     /// The depth the new nozzle's rows take.
     wiping: f64,
+    /// The same two depths as the reference works them out, in single
+    /// precision (WipeTower2.cpp `plan_toolchange`, `get_wipe_depth`).
+    ramming32: f32,
+    wiping32: f32,
 }
 
 impl Planned {
     fn depth(&self) -> f64 {
         self.ramming + self.wiping
+    }
+
+    /// `required_depth`: the ram's depth and the rows', in single
+    /// precision.
+    fn depth32(&self) -> f32 {
+        self.ramming32 + self.wiping32
     }
 }
 
@@ -1061,67 +1087,105 @@ pub(crate) fn least_depth(height: f64) -> f64 {
 /// A closed outline with every corner that turns between 30 and 150
 /// degrees replaced by an arc that leaves each side `ROUNDING` mm from
 /// the corner, or less on a short side (WipeTower2.cpp `rounding_polygon`).
-fn rounded(points: &[(f64, f64)]) -> Vec<(f64, f64)> {
+fn rounded(points: &[Point2]) -> Vec<Point2> {
     let count = points.len();
     if count < 3 {
         return points.to_vec();
     }
-    let tolerance = 30f64.to_radians().cos();
-    let mut out = Vec::with_capacity(count * 2);
+    let tolerance = (30.0 / 180.0 * PI).cos().abs();
+    let mm = |p: Point2| (p.x as f64 * 1e-6, p.y as f64 * 1e-6);
+    // `scaled` of a point or a length: truncated.
+    let truncated = |(x, y): (f64, f64)| Point2 {
+        x: (x / 1e-6) as i64,
+        y: (y / 1e-6) as i64,
+    };
+    let mut out: Vec<Point2> = Vec::with_capacity(count * 2);
     for i in 0..count {
         let (a, b, c) = (
-            points[(i + count - 1) % count],
-            points[i],
-            points[(i + 1) % count],
+            mm(points[(i + count - 1) % count]),
+            mm(points[i]),
+            mm(points[(i + 1) % count]),
         );
-        let (before, after) = ((b.0 - a.0).hypot(b.1 - a.1), (c.0 - b.0).hypot(c.1 - b.1));
+        let (before, after) = ((a.0 - b.0).hypot(a.1 - b.1), (b.0 - c.0).hypot(b.1 - c.1));
         if before == 0.0 || after == 0.0 {
-            out.push(b);
+            out.push(points[i]);
             continue;
         }
         let (ab, bc) = (
             ((b.0 - a.0) / before, (b.1 - a.1) / before),
             ((c.0 - b.0) / after, (c.1 - b.1) / after),
         );
-        let cos = (ab.0 * bc.0 + ab.1 * bc.1).clamp(-1.0, 1.0);
-        if cos.abs() >= tolerance {
-            out.push(b);
+        // `float cosangle`.
+        let cos = ((ab.0 * bc.0 + ab.1 * bc.1) as f32).clamp(-1.0, 1.0);
+        let ccw = ab.0 * bc.1 - ab.1 * bc.0 > 0.0;
+        if f64::from(cos.abs()) >= tolerance {
+            out.push(points[i]);
             continue;
         }
-        let left_turn = ab.0 * bc.1 - ab.1 * bc.0 > 0.0;
-        let reach = ROUNDING.min(before / 2.1).min(after / 2.1);
-        let from = (b.0 - ab.0 * reach, b.1 - ab.1 * reach);
-        let to = (b.0 + bc.0 * reach, b.1 + bc.1 * reach);
-        // The arc's middle lies on the corner's bisector.
-        let chord = (to.0 - from.0).hypot(to.1 - from.1);
-        let mut inward = (-(to.1 - from.1) / chord, (to.0 - from.0) / chord);
-        if !left_turn {
+        // `float real_rounding_dis`.
+        let reach = f64::from(ROUNDING.min(before / 2.1).min(after / 2.1) as f32);
+        let left = (b.0 - ab.0 * reach, b.1 - ab.1 * reach);
+        let right = (b.0 + bc.0 * reach, b.1 + bc.1 * reach);
+        let half_angle = cos.acos() * 0.5;
+        let (cx, cy) = (right.0 - left.0, right.1 - left.1);
+        let chord = (cx * cx + cy * cy).sqrt();
+        let mut inward = (-(cy / chord), cx / chord);
+        if !ccw {
             inward = (-inward.0, -inward.1);
         }
-        let away = reach / (cos.acos() / 2.0).sin();
+        // `dis` is worked in single precision: `real_rounding_dis` and
+        // `sin(half_angle)` are both singles.
+        let away = f64::from(reach as f32 / half_angle.sin());
         let middle = (b.0 + inward.0 * away, b.1 + inward.1 * away);
-        let radius = (from.0 - middle.0).hypot(from.1 - middle.1);
-        let start = (from.1 - middle.1).atan2(from.0 - middle.0);
-        let mut sweep = (to.1 - middle.1).atan2(to.0 - middle.0) - start;
-        if left_turn {
-            while sweep <= 0.0 {
-                sweep += 2.0 * PI;
+        let radius = (left.0 - middle.0).hypot(left.1 - middle.1);
+        // `ArcSegment(scaled(center), scaled(radius), scaled(left),
+        // scaled(right), ...)` (Circle.hpp / Circle.cpp).
+        let center = truncated(middle);
+        let radius = ((radius / 1e-6) as i64) as f64;
+        let (start, end) = (truncated(left), truncated(right));
+        let polar = |p: Point2| {
+            let angle = ((p.y - center.y) as f64).atan2((p.x - center.x) as f64);
+            if angle < 0.0 { 2.0 * PI + angle } else { angle }
+        };
+        let start_theta = polar(start);
+        let mut sweep = polar(end) - start_theta;
+        if sweep < 0.0 && ccw {
+            sweep += 2.0 * PI;
+        } else if sweep > 0.0 && !ccw {
+            sweep -= 2.0 * PI;
+        }
+        if radius != 0.0 && start != center && end != center && start != end {
+            for piece in 0..ARC_PIECES {
+                // `float cur_angle`.
+                // Fused, as the reference's build works it out.
+                let mut angle =
+                    f64::from(piece as f32 / ARC_PIECES as f32).mul_add(sweep, start_theta) as f32;
+                if f64::from(angle) > 2.0 * PI {
+                    angle = (f64::from(angle) - 2.0 * PI) as f32;
+                } else if angle < 0.0 {
+                    angle = (f64::from(angle) + 2.0 * PI) as f32;
+                }
+                out.push(Point2 {
+                    x: center.x + (radius * f64::from(angle.cos())).round() as i64,
+                    y: center.y + (radius * f64::from(angle.sin())).round() as i64,
+                });
             }
         } else {
-            while sweep >= 0.0 {
-                sweep -= 2.0 * PI;
+            // An arc of nothing: the reference leaves its angles at 0 and
+            // lays every one of its points on its start.
+            for _ in 0..ARC_PIECES {
+                out.push(Point2 {
+                    x: center.x + radius.round() as i64,
+                    y: center.y,
+                });
             }
         }
-        for piece in 0..ARC_PIECES {
-            let angle = start + sweep * piece as f64 / ARC_PIECES as f64;
-            out.push((
-                middle.0 + radius * angle.cos(),
-                middle.1 + radius * angle.sin(),
-            ));
-        }
-        out.push(to);
+        out.push(truncated(right));
     }
     out.dedup();
+    if out.len() > 1 && out.first() == out.last() {
+        out.pop();
+    }
     out
 }
 
@@ -1135,21 +1199,6 @@ fn region(points: &[(f64, f64)]) -> ExPolygon {
         },
         holes: Vec::new(),
     }
-}
-
-/// The outline of what several shapes cover together, in mm.
-fn outline_of(shapes: &[ExPolygon]) -> Result<Vec<(f64, f64)>, ClipError> {
-    Ok(edge_clip::union_ex(shapes)?
-        .first()
-        .map(|whole| {
-            whole
-                .contour
-                .points
-                .iter()
-                .map(|p| (unscaled(p.x), unscaled(p.y)))
-                .collect()
-        })
-        .unwrap_or_default())
 }
 
 /// Where a line across at `y` from the wall's left side (or its right)
@@ -1366,6 +1415,9 @@ struct Shape {
     height: f64,
     line: f64,
     wall: Wall,
+    /// What the busiest layer's tool changes take, as the reference sums
+    /// it, in single precision (`m_wipe_tower_depth` less the line).
+    blocks32: f32,
 }
 
 impl Shape {
@@ -1384,7 +1436,7 @@ impl Shape {
     /// `deep` is what that layer's blocks and those above it take, which
     /// may be less than the tower's: its box is then that much shallower
     /// and sits in the middle, while the ribs stay where they are.
-    fn wall(&self, z: f64, deep: f64) -> Result<Vec<(f64, f64)>, ClipError> {
+    fn wall(&self, z: f64, deep: f64, deep32: f32) -> Result<Vec<(f64, f64)>, ClipError> {
         // The tower's depth is what its blocks take and the wall's line.
         let (span, depth) = (self.span, self.blocks + self.line);
         let front = self.lift(deep);
@@ -1396,37 +1448,110 @@ impl Shape {
             rounded: round,
         } = self.wall
         else {
-            return Ok(plain.to_vec());
+            // `generate_rectange_polygon`: the box's corners in the layer's
+            // own frame, scaled from single precision and truncated.
+            let new_scale = |value: f64| unscaled((f64::from(value as f32) / 1e-6) as i64);
+            let (right, top) = (new_scale(span), new_scale(deep + self.line));
+            return Ok(vec![
+                (0.0, front),
+                (right, front),
+                (right, top + front),
+                (0.0, top + front),
+            ]);
         };
         // A rib is at least as long as the diagonal it lies on; a tower
         // too slight for its height gets its ribs lengthened, not its
-        // depth (`generate`).
-        let diagonal = span.hypot(depth);
-        let mut length = 0.0f64;
-        let least = least_depth(self.height);
-        if depth + 1e-4 < least {
-            length = least * std::f64::consts::SQRT_2;
+        // depth (`generate`). Worked as the reference works it, in single
+        // precision and in scaled integers truncated where it truncates,
+        // in the layer's own frame (the box at the front, the ribs moved
+        // back by the layer's y shift), so that the wall's points are the
+        // reference's to the unit: which end of a symmetric wall the writer
+        // begins at turns on them (`nearest_side`).
+        let line32 = self.line as f32;
+        let (span32, depth32) = (span as f32, self.blocks32 + line32);
+        let diagonal = (span32 * span32 + depth32 * depth32).sqrt();
+        let mut length = 0.0f32;
+        let least = least_depth(self.height) as f32;
+        if depth32 + 1e-4 < least {
+            length = least * 2f32.sqrt();
         }
-        let length = (length.max(diagonal) + extra).max(diagonal);
-        // Past each corner by half of what is over, less the higher up.
-        let past = (length - diagonal) / 2.0 * (self.height - z).abs() / self.height;
-        let half = width.min(depth.min(span) / 2.0) / 2.0;
+        let length = (length.max(diagonal) + extra as f32).max(diagonal);
+        let half = width.min(depth.min(span) / 2.0) as f32;
+        let new_scale = |value: f32| (f64::from(value) / 1e-6) as i64;
+        let scaled32 = |value: f32| (value / 1e-6f32) as i64;
+        let (sa, sb) = (new_scale(span32), new_scale(depth32));
+        let diagonal_length = ((sa as f64).powi(2) + (sb as f64).powi(2)).sqrt();
+        let past = (length - (diagonal_length * 1e-6) as f32).max(0.0) / 2.0;
+        let (top, z32) = (self.height as f32, z as f32);
+        let past = scaled32((top - z32).abs() / top * past) as f32;
+        let shift = if deep32 < self.blocks32 {
+            scaled32((depth32 - deep32 - line32) / 2.0)
+        } else {
+            scaled32(front as f32)
+        };
+        let half_width = scaled32(half) / 2;
         let mut shapes = Vec::with_capacity(3);
-        for (from, to) in [((0.0, 0.0), (span, depth)), ((span, 0.0), (0.0, depth))] {
-            let along = ((to.0 - from.0) / diagonal, (to.1 - from.1) / diagonal);
-            let across = (-along.1 * half, along.0 * half);
-            let (a, b) = (
-                (from.0 - along.0 * past, from.1 - along.1 * past),
-                (to.0 + along.0 * past, to.1 + along.1 * past),
+        for ((ax, ay), (bx, by)) in [((0, 0), (sa, sb)), ((sa, 0), (0, sb))] {
+            // `Line::extend`, `translate`, then `generate_rectange`.
+            let (dx, dy) = ((bx - ax) as f64, (by - ay) as f64);
+            let norm = dx.hypot(dy);
+            let (ox, oy) = (
+                (f64::from(past) * (dx / norm)) as i64,
+                (f64::from(past) * (dy / norm)) as i64,
             );
-            shapes.push(region(&[
-                (a.0 + across.0, a.1 + across.1),
-                (a.0 - across.0, a.1 - across.1),
-                (b.0 - across.0, b.1 - across.1),
-                (b.0 + across.0, b.1 + across.1),
-            ]));
+            let (ax, ay, bx, by) = (ax - ox, ay - oy - shift, bx + ox, by + oy - shift);
+            let (dx, dy) = ((bx - ax) as f64, (by - ay) as f64);
+            let norm = (dx * dx + dy * dy).sqrt();
+            let (ux, uy) = (dx / norm, dy / norm);
+            let (ox, oy) = (-uy * half_width as f64, ux * half_width as f64);
+            let corner = |x: i64, y: i64, sign: f64| Point2 {
+                x: (x as f64 + sign * ox).round() as i64,
+                y: (y as f64 + sign * oy).round() as i64,
+            };
+            shapes.push(ExPolygon {
+                contour: Polygon {
+                    points: vec![
+                        corner(ax, ay, 1.0),
+                        corner(ax, ay, -1.0),
+                        corner(bx, by, -1.0),
+                        corner(bx, by, 1.0),
+                    ],
+                },
+                holes: Vec::new(),
+            });
         }
-        shapes.push(region(&plain));
+        // The box, from the layer's own front (`wt_box`).
+        let box_depth = new_scale(deep32 + line32);
+        let boxed = ExPolygon {
+            contour: Polygon {
+                points: vec![
+                    Point2 { x: 0, y: 0 },
+                    Point2 { x: sa, y: 0 },
+                    Point2 {
+                        x: sa,
+                        y: box_depth,
+                    },
+                    Point2 { x: 0, y: box_depth },
+                ],
+            },
+            holes: Vec::new(),
+        };
+        shapes.push(boxed.clone());
+        let to_mm = |points: &[Point2]| -> Vec<(f64, f64)> {
+            points
+                .iter()
+                .map(|p| (unscaled(p.x), unscaled(p.y) + front))
+                .collect()
+        };
+        let union = |shapes: &[ExPolygon]| -> Result<Vec<Point2>, ClipError> {
+            let mut outline = edge_clip::union_ex(shapes)?
+                .into_iter()
+                .next()
+                .map(|whole| whole.contour.points)
+                .unwrap_or_default();
+            clipper_one_crossings(&mut outline, shapes);
+            Ok(outline)
+        };
         // Where a rib ends at the tower's corner (no length past it), the
         // corner lies on the rib's end and stays a point of the outline,
         // as ClipperLib leaves the reference's last union of the ribs and
@@ -1434,15 +1559,214 @@ impl Shape {
         // not a point, as the rounding's reach shows): its points are a
         // hair off the line, which Clipper2 here takes as in line and
         // drops.
-        let ribbed = outline_of(&shapes)?;
+        let ribbed = union(&shapes)?;
         if !round {
-            return Ok(with_corners(&ribbed, &plain));
+            return Ok(with_corners(&to_mm(&ribbed), &plain));
         }
-        Ok(with_corners(
-            &outline_of(&[region(&rounded(&ribbed)), region(&plain)])?,
-            &plain,
-        ))
+        let rounded = ExPolygon {
+            contour: Polygon {
+                points: rounded(&ribbed),
+            },
+            holes: Vec::new(),
+        };
+        let mut done = union(&[rounded, boxed])?;
+        clipper_one_box_corner(&mut done, (sa, box_depth));
+        Ok(with_corners(&to_mm(&done), &plain))
     }
+}
+
+/// Where two sides of `shapes` cross, the point of `outline` there put
+/// where ClipperLib, which the reference unites the ribs and the box
+/// with, puts it (clipper.cpp `IntersectPoint`, and `TopX` against a
+/// side along x): the crossing worked from each side's lower end and its
+/// slope in double precision and rounded half up. Clipper2, which this
+/// engine unites with, can land a unit off it, and the rounding that
+/// follows carries that to the wall's arcs.
+fn clipper_one_crossings(outline: &mut [Point2], shapes: &[ExPolygon]) {
+    // A side as ClipperLib keeps it: its end of greater y (`Bot`), the
+    // other (`Top`) and x per y (`Dx`), or none for one along x.
+    struct Side {
+        bot: Point2,
+        top: Point2,
+        dx: Option<f64>,
+    }
+    let round = |value: f64| (value + 0.5).floor() as i64;
+    let mut sides = Vec::new();
+    let mut corners = std::collections::HashSet::new();
+    for shape in shapes {
+        let points = &shape.contour.points;
+        for (index, a) in points.iter().enumerate() {
+            corners.insert((a.x, a.y));
+            let b = points[(index + 1) % points.len()];
+            let (bot, top) = if a.y >= b.y { (*a, b) } else { (b, *a) };
+            let dy = top.y - bot.y;
+            let dx = (dy != 0).then(|| (top.x - bot.x) as f64 / dy as f64);
+            sides.push(Side { bot, top, dx });
+        }
+    }
+    let top_x = |side: &Side, y: i64| match side.dx {
+        _ if y == side.top.y => side.top.x,
+        Some(dx) => side.bot.x + round(dx * (y - side.bot.y) as f64),
+        None => side.bot.x,
+    };
+    for point in outline.iter_mut() {
+        if corners.contains(&(point.x, point.y)) {
+            continue;
+        }
+        let near: Vec<&Side> = sides
+            .iter()
+            .filter(|side| {
+                let (dx, dy) = (
+                    (side.top.x - side.bot.x) as f64,
+                    (side.top.y - side.bot.y) as f64,
+                );
+                let length = dx.hypot(dy);
+                let off =
+                    ((point.x - side.bot.x) as f64 * dy - (point.y - side.bot.y) as f64 * dx).abs();
+                let along = (point.x - side.bot.x) as f64 * dx + (point.y - side.bot.y) as f64 * dy;
+                length > 0.0
+                    && off / length < 3.0
+                    && along > -3.0 * length
+                    && along < length * length + 3.0 * length
+            })
+            .collect();
+        let [one, two] = near[..] else { continue };
+        let (x, y) = match (one.dx, two.dx) {
+            (None, None) => continue,
+            (None, Some(_)) => (top_x(two, one.bot.y), one.bot.y),
+            (Some(_), None) => (top_x(one, two.bot.y), two.bot.y),
+            (Some(d1), Some(d2)) if d1 == d2 => continue,
+            (Some(d1), Some(d2)) if d1 == 0.0 || d2 == 0.0 => {
+                let (upright, other, d) = if d1 == 0.0 {
+                    (one, two, d2)
+                } else {
+                    (two, one, d1)
+                };
+                let x = upright.bot.x;
+                (
+                    x,
+                    round(x as f64 / d + other.bot.y as f64 - other.bot.x as f64 / d),
+                )
+            }
+            (Some(d1), Some(d2)) => {
+                let b1 = one.bot.x as f64 - one.bot.y as f64 * d1;
+                let b2 = two.bot.x as f64 - two.bot.y as f64 * d2;
+                let q = (b2 - b1) / (d1 - d2);
+                let x = if d1.abs() < d2.abs() {
+                    round(d1 * q + b1)
+                } else {
+                    round(d2 * q + b2)
+                };
+                (x, round(q))
+            }
+        };
+        if (x - point.x).abs() <= 2 && (y - point.y).abs() <= 2 {
+            *point = Point2 { x, y };
+        }
+    }
+}
+
+/// Where a side of the rounded ribs runs within a unit or two of a corner
+/// of the box (the ribs end at the box's corners), ClipperLib, uniting
+/// them, keeps three points there: where the side crosses the box's side
+/// along x, the corner, and where it crosses the box's side along y, each
+/// as ClipperLib works it out (clipper.cpp `TopX`, `IntersectPoint`
+/// against an upright side). Clipper2 keeps the first, a unit off, and the
+/// corner. Measured on cc1_four_rib_y's first layer at (28.5, 0): the
+/// reference's wall goes (28.499998, 0), (28.5, 0), (28.5, 0.000001);
+/// here it went (28.499998, 0), (28.5, 0) and missed a corner of the
+/// wall's line.
+fn clipper_one_box_corner(outline: &mut Vec<Point2>, (width, depth): (i64, i64)) {
+    let corner = |p: Point2| (p.x == 0 || p.x == width) && (p.y == 0 || p.y == depth);
+    let round = |value: f64| (value + 0.5).floor() as i64;
+    let mut index = 0;
+    while outline.len() >= 4 && index < outline.len() {
+        let count = outline.len();
+        let (n, c) = (outline[index], outline[(index + 1) % count]);
+        let (before, after) = (
+            outline[(index + count - 1) % count],
+            outline[(index + 2) % count],
+        );
+        index += 1;
+        if !corner(c) || n.y != c.y || n.x == c.x || (n.x - c.x).abs() > 2 || after.x == c.x {
+            continue;
+        }
+        // The rib's side, from `before` to `after`, as ClipperLib keeps it.
+        let (bot, top) = if before.y >= after.y {
+            (before, after)
+        } else {
+            (after, before)
+        };
+        if top.y == bot.y || top.x == bot.x {
+            continue;
+        }
+        let dx = (top.x - bot.x) as f64 / (top.y - bot.y) as f64;
+        let y = round(c.x as f64 / dx + bot.y as f64 - bot.x as f64 / dx);
+        if (y - c.y).abs() > 2 || y == c.y {
+            continue;
+        }
+        let x = if c.y == top.y {
+            top.x
+        } else {
+            bot.x + round(dx * (c.y - bot.y) as f64)
+        };
+        outline[index - 1] = Point2 { x, y: c.y };
+        outline.insert((index + 1) % (count + 1), Point2 { x: c.x, y });
+        index += 2;
+    }
+}
+
+/// `points` (a closed outline) with the points ClipperLib's offsetter
+/// leaves out when its shortest edge is `shortest` units (clipper.cpp
+/// `ClipperOffset::AddPath`): the trailing ones as near the first, then
+/// each one as near the last kept.
+fn without_short_edges(points: &[Point2], shortest: f64) -> Vec<Point2> {
+    let near = |a: Point2, b: Point2| {
+        let (dx, dy) = ((a.x - b.x) as f64, (a.y - b.y) as f64);
+        dx * dx + dy * dy < shortest * shortest
+    };
+    let Some(first) = points.first().copied() else {
+        return Vec::new();
+    };
+    let mut high = points.len() - 1;
+    while high > 0 && near(points[high], first) {
+        high -= 1;
+    }
+    let mut kept = vec![first];
+    for point in &points[1..=high] {
+        if !near(*point, kept[kept.len() - 1]) {
+            kept.push(*point);
+        }
+    }
+    kept
+}
+
+/// A side of the wall, from one point to the next, in mm.
+type Side = ((f64, f64), (f64, f64));
+
+/// Which of `sides` the wall begins with: the first whose start is nearest
+/// `from`, measured as the reference measures it (WipeTower2.cpp
+/// `generate_path`, `get_closet_idx`): in single precision, in the
+/// layer's own frame (`lift` mm lower than the one planned here), each
+/// start a scaled integer point unscaled to single precision, the
+/// distance squared, and only a strictly nearer start taking over. A rib
+/// wall is symmetric: the writer often stands as far from two starts in
+/// exact numbers, and which one is nearer is decided in single precision
+/// (cc1_two_rib, layer 0.6: (34.925, 223.925) to (35.286, 220.736) and
+/// to (38.114, 223.564)).
+fn nearest_side(sides: &[Side], from: (f64, f64), lift: f64) -> Option<usize> {
+    let anchor = (from.0 as f32, (from.1 - lift) as f32);
+    let unscaled = |value: f64| (scaled(value) as f32) * 1e-6f32;
+    let mut best: Option<(usize, f32)> = None;
+    for (index, (start, _)) in sides.iter().enumerate() {
+        let dx = unscaled(start.0) - anchor.0;
+        let dy = unscaled(start.1 - lift) - anchor.1;
+        let distance = dx * dx + dy * dy;
+        if best.is_none_or(|(_, least)| distance < least) {
+            best = Some((index, distance));
+        }
+    }
+    best.map(|(index, _)| index)
 }
 
 /// `outline` with each of `corners` that lies on one of its slanted sides,
@@ -1604,12 +1928,39 @@ pub fn plan_changes(
     if matches!(settings.wall, Wall::Ribs { .. }) {
         span = (((blocks_at(span) + line) * span).sqrt() / line).ceil() * line;
     }
+    // The same, summed as the reference sums them, in single precision
+    // (WipeTower2.cpp `toolchanges_depth`, `plan_tower`): the ribs are
+    // laid from these to the unit.
+    let used32 = |layer: usize| -> f32 {
+        changes[layer]
+            .iter()
+            .map(|change| {
+                settings
+                    .planned_by(
+                        span,
+                        heights[layer],
+                        layer == 0,
+                        change.ram,
+                        change.volume,
+                        settings.ram_ratio(change.old),
+                    )
+                    .depth32()
+            })
+            .fold(0.0f32, |sum, depth| sum + depth)
+    };
+    let mut deep32 = vec![0.0f32; last + 1];
+    let mut most32 = 0.0f32;
+    for layer in (0..=last).rev() {
+        most32 = most32.max(used32(layer));
+        deep32[layer] = most32;
+    }
     let shape = Shape {
         span,
         blocks: blocks_at(span),
         height: heights[..=last].iter().sum(),
         line,
         wall: settings.wall,
+        blocks32: most32,
     };
     // A layer is as deep as its own tool changes and those of the layers
     // above it need, and no deeper (`plan_tower`).
@@ -1639,7 +1990,7 @@ pub fn plan_changes(
     // The tower stands where the wall of its first layer, ribs and all,
     // turned as it is laid, has its corner on the place set
     // (`set_rib_offset`).
-    let first_wall = shape.wall(heights[0], deep[0])?;
+    let first_wall = shape.wall(heights[0], deep[0], deep32[0])?;
     let corner = first_wall
         .iter()
         .map(|p| turn(turned(0), *p))
@@ -2098,7 +2449,7 @@ pub fn plan_changes(
 
         // The wall, its line's middle on the outline, left open where a
         // nozzle comes in.
-        let wall = shape.wall(top, blocks)?;
+        let wall = shape.wall(top, blocks, deep32[layer])?;
         let closed = |outline: &[(f64, f64)]| -> Vec<Point2> {
             outline
                 .iter()
@@ -2140,22 +2491,30 @@ pub fn plan_changes(
         // Begun at the side whose start is nearest the writer, and round
         // from there (`generate_path`); the writer then ends where the
         // side before it ends.
+        // A wall cut open is handed on through single precision
+        // (WipeTower2.cpp `remove_points_from_polygon`: each point
+        // unscaled to a single and scaled back, truncated), which moves
+        // some of its points by a unit.
+        let wall = if gaps.is_empty() {
+            wall
+        } else {
+            let through = |value: f64| {
+                let single = (scaled(value) as f64 * 1e-6) as f32;
+                unscaled((single / 1e-6f32) as i64)
+            };
+            wall.iter()
+                .map(|(x, y)| (through(*x), through(*y - lift) + lift))
+                .collect()
+        };
         let pieces = if gaps.is_empty() {
             vec![wall.iter().chain(wall.first()).copied().collect()]
         } else {
             opened(&wall, &gaps, GAP_HALF * line)
         };
-        let from = writer_at;
         let mut sides: Vec<((f64, f64), (f64, f64))> = (pieces.iter())
             .flat_map(|piece| piece.windows(2).map(|pair| (pair[0], pair[1])))
             .collect();
-        if let Some(first) = (0..sides.len()).min_by(|a, b| {
-            let away = |side: usize| {
-                let (start, _) = sides[side];
-                (start.0 - from.0).hypot(start.1 - from.1)
-            };
-            away(*a).total_cmp(&away(*b))
-        }) {
+        if let Some(first) = nearest_side(&sides, writer_at, lift) {
             sides.rotate_left(first);
         }
         let mut runs: Vec<Vec<(f64, f64)>> = Vec::new();
@@ -2165,8 +2524,16 @@ pub fn plan_changes(
                 _ => runs.push(vec![*a, *b]),
             }
         }
+        // The writer is handed each point unscaled to single precision
+        // (`generate_path`: `unscaled<float>`, the integer as a single
+        // times the scaling factor as a single).
+        let single = |value: f64| f64::from((scaled(value) as f32) * 1e-6f32);
         for run in &runs {
-            finish.push(wall_path(run.iter().map(|(x, y)| place(*x, *y)).collect()));
+            finish.push(wall_path(
+                run.iter()
+                    .map(|(x, y)| place(single(*x), single(*y - lift) + lift))
+                    .collect(),
+            ));
         }
         if let Some(end) = runs.last().and_then(|run| run.last()) {
             writer_at = *end;
@@ -2208,6 +2575,17 @@ pub fn plan_changes(
         let base = with_gap_ends(&wall, &gaps, GAP_HALF * line);
         let mut ring = vec![region(&base)];
         for _ in 0..loops {
+            // ClipperLib's offsetter, as the reference sets it up, first
+            // drops every point nearer the last one kept than 0.005 of
+            // the offset (clipper.cpp `ClipperOffset::AddPath` with
+            // `ShortestEdgeLength`, ClipperUtils.cpp): a wall point a unit
+            // from the box's corner would otherwise grow into a notch.
+            for region in &mut ring {
+                region.contour.points = without_short_edges(
+                    &region.contour.points,
+                    f64::from(spacing as f32) / 1e-6 * 0.005,
+                );
+            }
             ring = edge_clip::offset_keeping_points(&ring, scaled(spacing), Join::MITER)?;
             ring.truncate(1);
             let Some(outer) = ring.first() else { break };
@@ -3251,22 +3629,205 @@ mod tests {
     }
 
     #[test]
+    fn the_wall_begins_at_the_start_nearest_in_single_precision() {
+        // cc1_two_rib's first layer: the writer at (0.5, 16.5) stands as far
+        // from the two ends of a rib, in exact numbers, to within 4e-6 mm²;
+        // the reference (WipeTower2.cpp `generate_path`) measures in single
+        // precision and begins at (-2.839211, 17.010784).
+        let sides = [
+            ((-0.010785, 19.839212), (-2.839211, 17.010784)),
+            ((-2.839211, 17.010784), (-2.945810, 16.895468)),
+        ];
+        assert_eq!(nearest_side(&sides, (0.5, 16.5), 0.0), Some(1));
+        // The same a layer higher, in a frame 1.5 mm up.
+        let lifted = sides.map(|(a, b)| ((a.0, a.1 + 1.5), (b.0, b.1 + 1.5)));
+        assert_eq!(nearest_side(&lifted, (0.5, 18.0), 1.5), Some(1));
+        // Of two starts exactly as far, the first.
+        let even = [((1.0, 0.0), (0.0, 1.0)), ((0.0, 1.0), (1.0, 0.0))];
+        assert_eq!(nearest_side(&even, (0.0, 0.0), 0.0), Some(0));
+    }
+
+    #[test]
+    fn the_rib_corners_round_as_the_reference_rounds_them() {
+        // cc1_two_rib's first layer: the union of the ribs and the box, and
+        // the first points of what the reference's `rounding_polygon` made
+        // of it (read from the pinned build).
+        let union: Vec<Point2> = [
+            (21253426, 1403428),
+            (17000000, 5656854),
+            (17000000, 11343146),
+            (21253426, 15596572),
+            (15596572, 21253426),
+            (11343146, 17000000),
+            (5656854, 17000000),
+            (1403428, 21253426),
+            (-4253426, 15596572),
+            (0, 11343146),
+            (0, 5656854),
+            (-4253426, 1403428),
+            (1403428, -4253426),
+            (5656854, 0),
+            (11343146, 0),
+            (15596572, -4253426),
+        ]
+        .map(|(x, y)| Point2 { x, y })
+        .to_vec();
+        let round = rounded(&union);
+        let expected = [
+            (19839211, -10784),
+            (19945810, 104533),
+            (20043032, 227859),
+            (20130278, 358432),
+            (20207010, 495447),
+            (20272756, 638062),
+            (20327110, 785394),
+            (20369737, 936538),
+            (20400374, 1090559),
+            (20418832, 1246510),
+            (20424997, 1403428),
+            (20418832, 1560347),
+        ];
+        let got: Vec<(i64, i64)> = round
+            .iter()
+            .take(expected.len())
+            .map(|p| (p.x, p.y))
+            .collect();
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn crossings_are_put_where_clipper_one_puts_them() {
+        // cc1_four_rib_y: a rib's side crosses the box's right side at
+        // y = 23293308.88, which ClipperLib rounds up.
+        let rib = |points: [(i64, i64); 4]| ExPolygon {
+            contour: Polygon {
+                points: points.map(|(x, y)| Point2 { x, y }).to_vec(),
+            },
+            holes: Vec::new(),
+        };
+        let shapes = [
+            rib([
+                (-2852914, 2803726),
+                (2852914, -2803726),
+                (31352914, 26196274),
+                (25647086, 31803726),
+            ]),
+            rib([
+                (25647086, -2803726),
+                (31352914, 2803726),
+                (2852914, 31803726),
+                (-2852914, 26196274),
+            ]),
+            rib([(0, 0), (28500000, 0), (28500000, 29000000), (0, 29000000)]),
+        ];
+        let mut outline = vec![
+            Point2 {
+                x: 31352914,
+                y: 2803726,
+            },
+            Point2 {
+                x: 28500000,
+                y: 5706691,
+            },
+            Point2 {
+                x: 28500000,
+                y: 23293308,
+            },
+            Point2 {
+                x: 31352914,
+                y: 26196274,
+            },
+        ];
+        clipper_one_crossings(&mut outline, &shapes);
+        assert_eq!(
+            outline[2],
+            Point2 {
+                x: 28500000,
+                y: 23293309
+            }
+        );
+        assert_eq!(
+            outline[1],
+            Point2 {
+                x: 28500000,
+                y: 5706691
+            }
+        );
+    }
+
+    #[test]
+    fn a_side_past_a_box_corner_keeps_three_points_there() {
+        // cc1_four_rib_y's first layer at (28.5, 0), as the reference's
+        // union has it (its wall, through single precision, then reads
+        // (28.499998, 0), (28.5, 0), (28.5, 0.000001)).
+        let mut outline: Vec<Point2> = [
+            (26982193, -1491637),
+            (28499999, 0),
+            (28500000, 0),
+            (29970549, 1445195),
+            (28500000, 20000000),
+            (0, 29000000),
+        ]
+        .map(|(x, y)| Point2 { x, y })
+        .to_vec();
+        clipper_one_box_corner(&mut outline, (28500000, 29000000));
+        let got: Vec<(i64, i64)> = outline.iter().take(5).map(|p| (p.x, p.y)).collect();
+        assert_eq!(
+            got,
+            [
+                (26982193, -1491637),
+                (28499999, 0),
+                (28500000, 0),
+                (28500000, 1),
+                (29970549, 1445195)
+            ]
+        );
+    }
+
+    #[test]
+    fn the_offsetter_drops_points_nearer_than_its_shortest_edge() {
+        let points: Vec<Point2> = [
+            (0, 0),
+            (1000, 0),
+            (1001, 1),
+            (1000, 1000),
+            (0, 1000),
+            (0, 1),
+        ]
+        .map(|(x, y)| Point2 { x, y })
+        .to_vec();
+        let kept: Vec<(i64, i64)> = without_short_edges(&points, 2.0)
+            .iter()
+            .map(|p| (p.x, p.y))
+            .collect();
+        assert_eq!(kept, [(0, 0), (1000, 0), (1000, 1000), (0, 1000)]);
+    }
+
+    #[test]
     fn corners_are_rounded_to_arcs_that_stay_inside_them() {
+        // In scaled integers, as the reference rounds them.
+        let rounded = |points: &[(f64, f64)]| -> Vec<(f64, f64)> {
+            let points: Vec<Point2> = points
+                .iter()
+                .map(|(x, y)| Point2::from_mm(*x, *y))
+                .collect();
+            super::rounded(&points)
+                .iter()
+                .map(|p| (unscaled(p.x), unscaled(p.y)))
+                .collect()
+        };
+        let near =
+            |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() < 2e-6 && (a.1 - b.1).abs() < 2e-6;
         let square = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
         let round = rounded(&square);
         // Each corner becomes twenty pieces of arc and its far end.
         assert_eq!(round.len(), 4 * (ARC_PIECES + 1));
         for (x, y) in &round {
-            assert!((-1e-9..=10.0 + 1e-9).contains(x) && (-1e-9..=10.0 + 1e-9).contains(y));
+            assert!((-2e-6..=10.0 + 2e-6).contains(x) && (-2e-6..=10.0 + 2e-6).contains(y));
         }
         // The arc leaves each side 2 mm from the corner and is a
         // quarter of a circle of that radius.
-        assert!(
-            round.contains(&(8.0, 0.0))
-                || round
-                    .iter()
-                    .any(|p| (p.0 - 8.0).abs() < 1e-9 && p.1.abs() < 1e-9)
-        );
+        assert!(round.iter().any(|p| near(*p, (8.0, 0.0))));
         let nearest = round
             .iter()
             .map(|(x, y)| (10.0 - x).hypot(*y))
@@ -3278,10 +3839,10 @@ mod tests {
         // A side too short for that is rounded by less.
         let sliver = [(0.0, 0.0), (10.0, 0.0), (10.0, 1.05), (0.0, 1.05)];
         let round = rounded(&sliver);
-        assert!(round.iter().all(|(_, y)| (-1e-9..=1.05 + 1e-9).contains(y)));
+        assert!(round.iter().all(|(_, y)| (-2e-6..=1.05 + 2e-6).contains(y)));
         // A corner that barely turns is left alone.
         let blunt = [(0.0, 0.0), (5.0, -0.1), (10.0, 0.0), (5.0, 10.0)];
-        assert!(rounded(&blunt).contains(&(5.0, -0.1)));
+        assert!(rounded(&blunt).iter().any(|p| near(*p, (5.0, -0.1))));
     }
 
     #[test]
@@ -3304,6 +3865,7 @@ mod tests {
             height: 0.4,
             line: 0.5,
             wall: settings.wall,
+            blocks32: settings.block_depth(span, 0.2, false) as f32,
         };
         let diagonal = span.hypot(shape.blocks);
         // The first of two layers has half of what a rib has over the
