@@ -2164,14 +2164,12 @@ mod tests {
         }));
         let planned = plan(&s, &input, 0).unwrap();
         let visits = lay(&planned, &s).unwrap();
-        let grid = |layer: usize| {
-            visits[layer]
+        for (layer, visits) in visits.iter().enumerate().skip(2) {
+            assert!(!visits.is_empty(), "layer {layer} lays its wall");
+            let grid = visits
                 .iter()
-                .any(|v| v.gcode.contains("CP EMPTY GRID START"))
-        };
-        for layer in 2..5 {
-            assert!(!visits[layer].is_empty(), "layer {layer} lays its wall");
-            assert!(!grid(layer), "layer {layer} has no fill");
+                .any(|v| v.gcode.contains("CP EMPTY GRID START"));
+            assert!(!grid, "layer {layer} has no fill");
         }
     }
 }
