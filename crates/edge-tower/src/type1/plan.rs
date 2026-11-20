@@ -1605,6 +1605,51 @@ impl Plan {
         Ok([local[0] + dx, local[1] + dy, local[2] + dx, local[3] + dy])
     }
 
+    /// The ground the reference's tower mesh stands on, which its
+    /// timelapse picker keeps the photo's spot clear of (Print.cpp
+    /// `_make_wipe_tower`, `WipeTowerData::construct_mesh`:
+    /// `wipe_tower_mesh_data->bottom`): the first layer's ribbed wall
+    /// moved to start at the tower's corner, or the tower's width and
+    /// depth from it, grown by the brim as laid (whole loops and half a
+    /// spacing, `m_wipe_tower_brim_width_real`). In the tower's frame from
+    /// its set corner: min x, min y, max x, max y in mm.
+    pub fn mesh_bottom(&self) -> Result<[f64; 4], ClipError> {
+        let first = self.first_layer.min(self.layers.len().saturating_sub(1));
+        let height = self.layers.get(first).map_or(0.2, |layer| layer.height);
+        let spacing = self.line_width - height * (1.0 - PI / 4.0);
+        let loops = self.brim_loops(first);
+        let brim = if loops > 0 {
+            loops as f32 * spacing + spacing / 2.0
+        } else {
+            0.0
+        };
+        let ring: Vec<(f64, f64)> = match (self.ribs, self.layers.get(first)) {
+            (Some(ribs), Some(layer)) => {
+                let area = self.wall_box(first);
+                let ring = self.rib_wall(&ribs, &area, self.y_shifts[first], layer.z)?;
+                let [left, bottom, _, _] = bounds(ring.iter().copied());
+                ring.iter().map(|(x, y)| (x - left, y - bottom)).collect()
+            }
+            _ => {
+                let (width, depth) = (f64::from(self.width), f64::from(self.depth));
+                vec![(0.0, 0.0), (width, 0.0), (width, depth), (0.0, depth)]
+            }
+        };
+        if brim <= 0.0 {
+            return Ok(bounds(ring.into_iter()));
+        }
+        let grown = edge_clip::offset(&[region(&ring)], scaled(f64::from(brim)), Join::MITER)?;
+        Ok(match grown.first() {
+            Some(next) => bounds(
+                next.contour
+                    .points
+                    .iter()
+                    .map(|p| (unscaled(p.x), unscaled(p.y))),
+            ),
+            None => bounds(ring.into_iter()),
+        })
+    }
+
     /// The footprint the reference reports (`get_footprint_size`): the
     /// box round the first layer's ribbed wall, or the tower's width and
     /// depth.

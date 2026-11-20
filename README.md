@@ -2080,10 +2080,8 @@ another take the plate's own `filament_map` (GCode.cpp `_do_export`,
 nozzle everywhere, where the reference reads it as one square. Refused:
 nozzles of two sizes, which the reference prints with a system process of
 each nozzle's size (EdgeSlicer's per-nozzle processes) and maybe merged
-layers. Not done: the timelapse picture on two nozzles (no picture is
-taken; the reference takes it with the most used nozzle, inline at the
-layer's farthest point or from a spot Bambu Studio's picker chooses,
-inside a tool change). The time
+layers. The timelapse picture on two nozzles is taken as the reference
+takes it (`crates/edge-gcode/src/timelapse.rs`, below). The time
 estimate reads what the reference's does: `G28` as a move home, Bambu's
 `G29` as 260 s once, `M191` above 40 °C as 720 s, Bambu's own tool
 commands (`T1000`, `T255`) as nothing, and the waits of a Bambu Lab
@@ -2105,8 +2103,9 @@ and fixed values the reference gives where Bambu Studio works them out
 check for obstacles under the bed is never written), listed in a note
 where the start G-code uses them. The spot Bambu Studio's picker chooses
 for a timelapse (`has_timelapse_safe_pos`, `timelapse_pos_x`/`_y`) is
-not given, nor `clear_to_x0` printing object by object, so a template
-that needs them is refused. A printer whose `extruder_variant_list`
+not given on one nozzle, where no Bambu template reads it, nor
+`clear_to_x0` printing object by object, so a template that needs them
+is refused there; on two nozzles they are given (below). A printer whose `extruder_variant_list`
 names more than one variant (H2S, P2S) has its first filament marked
 after the start G-code (`;VT0 H-1`), as the reference's grouping does.
 A setting the reference declares as a decimal reads as one in a template
@@ -2145,10 +2144,46 @@ outer wall's point, or with none the sparse, solid and top fill's or the
 support's), with nothing pulled back and the template told
 `timelapse_inline_photo` and `farthest_point_timelapse_enabled`; on a
 layer with nothing to measure from, before anything is laid; and where
-no move gets there, at the layer's end. The two-nozzle half (the picture
-from a safe spot with the other nozzle when the farthest point is not
-the photo nozzle's) goes with those printers, refused here, and nothing
-of it needs the prime tower. On the H2S and P2S PLA cubes all 100
+no move gets there, at the layer's end. Nothing of it needs the prime
+tower.
+
+On a Bambu Lab printer of two nozzles (the H2D, 2026-11-19;
+`crates/edge-gcode/src/timelapse.rs`, GCode.cpp `process_layer`,
+`append_tcr`, `generate_timelapse_gcode`, GCode/TimelapsePosPicker.cpp,
+Bambu Studio's picker) the photo is taken by the extruder that prints on
+the most layers (the later of two used as much; each copy's own,
+printing object by object), once a layer: inline at the farthest point
+when that nozzle prints it; where the other nozzle prints it, parked
+with that nozzle active, inside the change from the photo nozzle onto it
+(after the change G-code, before the travel to the tower) or before a
+change away from it (on the tower before its visit, or before the change
+without one); in a timelapse without a farthest point, before a change
+away from the photo nozzle; and at the layer's end where none was taken.
+A smooth timelapse with its tower takes it as each layer starts, at one
+spot for the whole print. The template is told the photo and active
+nozzles (`most_used_physical_extruder_id`, `curr_physical_extruder_id`),
+`timelapse_inline_photo`, `clear_to_x0` and the spot: the picker keeps
+it off the objects' boxes grown by `extruder_clearance_max_radius`
+(whole or half), out of the cone from the camera at the bed's origin to
+each object, off the tower's mesh ground (`Plan::mesh_bottom`) and on
+the active nozzle's `extruder_printable_area`, nearest the farthest
+point, in whole millimetres; below the gap between the two
+`extruder_printable_height`s, with both nozzles used, a photo nozzle
+that cannot be lifted and the other one active, there is none (0, 0) and
+the template parks the head itself. A layer whose photo was placed
+before a change still gets one inside a later change from the photo
+nozzle, as in Bambu Studio (the reference's `inserted_this_layer`): the
+reference's m2b_plate_manual has four such layers, and so has ours. Not
+as the reference: printing object by object the height gap is kept, as
+in Bambu Studio, where the reference sets up its picker before its
+by-object grouping and so never has the gap there (GCode.cpp 3965,
+`m_timelapse_pos_picker.init`, against 4026, `set_nozzle_group_result`):
+on a by-object print of filaments 2 and 1 (work/tower/tl `tl_seq_21`)
+it places all 40 photos taken with the liftable nozzle active at
+(262, 109) and (262, 225) while the layer is below the 5 mm gap, where
+the photo nozzle, which hangs lower, can meet the printed parts; here
+there is no spot then and the template parks the head itself.
+Everything else of those photos matches when the gap is left out. On the H2S and P2S PLA cubes all 100
 pictures now come after the same move as the reference's (none did:
 they were taken as each layer started), and the template lines that
 differ fell from 2615 to 514 (H2S) and from 2520 to 513 (P2S), what is

@@ -3357,6 +3357,9 @@ fn object_labels(
             identify: label.identify,
             centre,
             hull: edge_gcode::label_outline(corners, tolerance),
+            bounds: mesh.bounds().map_or([0.0; 6], |(lo, hi)| {
+                [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]].map(f64::from)
+            }),
         });
     }
     Ok(out)
@@ -3624,6 +3627,7 @@ impl Sliced {
             print.final_purge = final_purge.clone();
             print.tower_envelope = self.tower.envelope;
             print.tower_footprint = self.tower.footprint;
+            print.tower_mesh_bottom = self.tower.mesh_bottom;
             print.own_heights = self.below.is_some();
         }
         if let Some(params) = &self.calibration {

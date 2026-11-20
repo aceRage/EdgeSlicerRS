@@ -4425,6 +4425,7 @@ fn copy_at(name: &str, object: usize, identify: u32, x: f64) -> ObjectLabel {
         hull: [(x, 0.0), (x + 10.0, 0.0), (x + 10.0, 10.0), (x, 10.0)]
             .map(|(x, y)| Point2::from_mm(x, y))
             .to_vec(),
+        bounds: [x, 0.0, 0.0, x + 10.0, 10.0, 10.0],
     }
 }
 
@@ -5760,10 +5761,10 @@ fn two_nozzles_start_names_each_extruders_first_filament() {
     assert!(text.contains("; map 121 first 1,0 model 1,2"), "{text}");
 }
 
-/// Notes for what is not done on two nozzles: the timelapse picture. The
-/// idle nozzle's pre-cooling and pre-heating is done, and not noted.
+/// Two nozzles: the timelapse picture is taken (`timelapse`) and the idle
+/// nozzle's pre-cooling and pre-heating done, neither noted.
 #[test]
-fn two_nozzles_say_what_is_not_done() {
+fn two_nozzles_say_nothing_of_the_timelapse() {
     let settings = edge_config::Settings::from_json(
         r#"{"printer_model": "Bambu Lab H2D", "nozzle_diameter": ["0.4", "0.4"],
             "enable_pre_heating": "1", "time_lapse_gcode": "M971 S11"}"#,
@@ -5772,16 +5773,146 @@ fn two_nozzles_say_what_is_not_done() {
     let print = PrintSettings::for_filament(&settings, 0).unwrap();
     let said = print.unsupported.join("\n");
     assert!(!said.contains("enable_pre_heating"), "{said}");
-    assert!(said.contains("time_lapse_gcode"), "{said}");
+    assert!(!said.contains("time_lapse_gcode"), "{said}");
     assert!(print.pre_heating.is_some());
-    // And no second nozzle, no note.
-    let one = edge_config::Settings::from_json(
-        r#"{"printer_model": "Bambu Lab A1", "nozzle_diameter": ["0.4"],
-            "enable_pre_heating": "1", "time_lapse_gcode": "M971 S11"}"#,
-    )
-    .unwrap();
-    let print = PrintSettings::for_filament(&one, 0).unwrap();
-    assert!(!print.unsupported.join("\n").contains("enable_pre_heating"));
+    assert_eq!(print.time_lapse.unwrap().1, crate::Timelapse::TwoNozzles);
+}
+
+/// Two nozzles with their photo template, filaments 0 and 2 on the first
+/// extruder and 1 on the second; with `farthest` a farthest-point timelapse.
+fn photographed(farthest: bool) -> [PrintSettings; 3] {
+    let mut settings = two_nozzles();
+    let template = "; PHOTO e[most_used_physical_extruder_id] c[curr_physical_extruder_id] \
+                    inline {timelapse_inline_photo} safe {has_timelapse_safe_pos} \
+                    at [timelapse_pos_x],[timelapse_pos_y] far {farthest_point_timelapse_enabled}";
+    for s in &mut settings {
+        s.time_lapse = Some((template.into(), Timelapse::TwoNozzles));
+        s.bed_outline = vec![[0.0, 0.0], [350.0, 0.0], [350.0, 320.0], [0.0, 320.0]];
+        s.variables.set_list(
+            "nozzle_diameter",
+            vec![Value::text("0.4"), Value::text("0.4")],
+        );
+        s.variables.set("timelapse_type", Value::text("0"));
+        s.variables.set(
+            "farthest_point_timelapse",
+            Value::text(if farthest { "1" } else { "0" }),
+        );
+        s.variables
+            .set("extruder_clearance_max_radius", Value::text("96"));
+        s.plate.labels = vec![ObjectLabel {
+            name: "cube".into(),
+            bounds: [0.0, 0.0, 0.0, 30.0, 10.0, 1.0],
+            ..ObjectLabel::default()
+        }];
+    }
+    settings
+}
+
+/// Two nozzles (GCode.cpp `process_layer`, `generate_timelapse_gcode`): the
+/// nozzle printing on the most layers takes one photo a layer, here the
+/// second (physical 0), the later of two used as much. Without a farthest
+/// point and without a tower: before a change away from the photo nozzle,
+/// else at the layer's end, parked at a safe spot clear of the object.
+#[test]
+fn two_nozzles_take_a_photo_a_layer() {
+    let (text, _) = in_filaments(&[&[0, 1], &[0, 1]], &photographed(false));
+    let photos: Vec<(usize, &str)> = text
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.starts_with("; PHOTO"))
+        .collect();
+    assert_eq!(photos.len(), 2, "{text}");
+    for (_, photo) in &photos {
+        assert!(
+            photo.starts_with("; PHOTO e0 c0 inline false safe true at "),
+            "{photo}"
+        );
+        let at: Vec<f64> = photo
+            .split(" at ")
+            .nth(1)
+            .unwrap()
+            .split(' ')
+            .next()
+            .unwrap()
+            .split(',')
+            .map(|n| n.parse().unwrap())
+            .collect();
+        assert!(at[0] >= 30.0 + 47.0 || at[1] >= 10.0 + 47.0, "{photo}");
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    // The first layer: filament 1 (the photo nozzle) is last, so at the
+    // layer's end, before the next layer starts.
+    let next_layer = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| **l == "; CHANGE_LAYER")
+        .nth(1)
+        .unwrap()
+        .0;
+    assert!(photos[0].0 < next_layer);
+    assert!(
+        !lines[photos[0].0..next_layer]
+            .iter()
+            .any(|l| l.starts_with("; change "))
+    );
+    // The second: before the change away from it, onto filament 0.
+    let change = lines[photos[1].0..]
+        .iter()
+        .position(|l| l.starts_with("; change "))
+        .unwrap();
+    assert!(
+        lines[photos[1].0 + change].starts_with("; change 1>0"),
+        "{text}"
+    );
+    assert!(photos[1].0 > next_layer);
+}
+
+/// With a farthest-point timelapse: the photo nozzle printing the point
+/// farthest from the camera takes the photo there in passing, the head
+/// left where it is; where the other nozzle prints it, the photo is
+/// parked with that nozzle active, before the change away from it.
+#[test]
+fn two_nozzles_take_the_photo_at_the_farthest_point() {
+    let (text, _) = in_filaments(&[&[1, 0], &[1, 0]], &photographed(true));
+    let photos: Vec<&str> = text.lines().filter(|l| l.starts_with("; PHOTO")).collect();
+    assert_eq!(photos.len(), 2, "{text}");
+    for photo in &photos {
+        assert_eq!(
+            *photo,
+            "; PHOTO e0 c0 inline true safe false at 0,0 far true"
+        );
+    }
+    // In passing, right after the wall's line reaching the corner.
+    let lines: Vec<&str> = text.lines().collect();
+    let at = lines.iter().position(|l| l.starts_with("; PHOTO")).unwrap();
+    assert!(
+        lines[at - 1].starts_with("G1 X10.000 Y10.000 E"),
+        "{}",
+        lines[at - 1]
+    );
+    // The wall in filament 0, the other nozzle: before the change onto 1.
+    let (text, _) = in_filaments(&[&[0, 1], &[0, 1]], &photographed(true));
+    let lines: Vec<&str> = text.lines().collect();
+    let photos: Vec<usize> = (0..lines.len())
+        .filter(|i| lines[*i].starts_with("; PHOTO"))
+        .collect();
+    assert_eq!(photos.len(), 2, "{text}");
+    for at in photos {
+        assert!(
+            lines[at].starts_with("; PHOTO e0 c1 inline false safe true"),
+            "{}",
+            lines[at]
+        );
+        let change = lines[at..]
+            .iter()
+            .position(|l| l.starts_with("; change "))
+            .unwrap();
+        assert!(
+            lines[at + change].starts_with("; change 0>1"),
+            "{}",
+            lines[at + change]
+        );
+    }
 }
 
 /// Without the grouping's answer a printer of two nozzles is refused.

@@ -409,11 +409,17 @@ mod mass_tests {
 /// of the sparse, solid and top fill and the support. None on a layer
 /// with none of these. The first of equally far points.
 pub(crate) fn farthest_point(parts: &[crate::Layer<'_>]) -> Option<edge_geom::Point2> {
+    farthest_point_of(parts).map(|(point, _)| point)
+}
+
+/// [`farthest_point`] and the filament that prints it, the part's.
+pub(crate) fn farthest_point_of(parts: &[crate::Layer<'_>]) -> Option<(edge_geom::Point2, usize)> {
     use edge_extrusion::Role;
-    fn farther(best: &mut Option<(i128, edge_geom::Point2)>, point: edge_geom::Point2) {
+    type Best = Option<(i128, edge_geom::Point2, usize)>;
+    fn farther(best: &mut Best, point: edge_geom::Point2, filament: usize) {
         let squared = i128::from(point.x).pow(2) + i128::from(point.y).pow(2);
-        if squared > 0 && best.is_none_or(|(most, _)| squared > most) {
-            *best = Some((squared, point));
+        if squared > 0 && best.is_none_or(|(most, _, _)| squared > most) {
+            *best = Some((squared, point, filament));
         }
     }
     let mut walls = None;
@@ -425,7 +431,7 @@ pub(crate) fn farthest_point(parts: &[crate::Layer<'_>]) -> Option<edge_geom::Po
             .filter(|wall| wall.role == Role::ExternalPerimeter)
         {
             for point in &wall.polygon.points {
-                farther(&mut walls, *point);
+                farther(&mut walls, *point, part.filament);
             }
         }
         let fill = part.paths.iter().filter(|path| {
@@ -440,9 +446,9 @@ pub(crate) fn farthest_point(parts: &[crate::Layer<'_>]) -> Option<edge_geom::Po
             .filter(|path| matches!(path.role, Role::Support | Role::SupportInterface));
         for path in fill.chain(support) {
             for point in &path.points {
-                farther(&mut rest, *point);
+                farther(&mut rest, *point, part.filament);
             }
         }
     }
-    walls.or(rest).map(|(_, point)| point)
+    walls.or(rest).map(|(_, point, filament)| (point, filament))
 }

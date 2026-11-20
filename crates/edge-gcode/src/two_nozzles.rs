@@ -258,31 +258,6 @@ pub(crate) fn listed(plate: &Plate, key: &str) -> Option<String> {
     }
 }
 
-/// What the reference does on a Bambu Lab printer of two nozzles that is
-/// not done here, as notes on the print.
-///
-/// - The timelapse picture (`time_lapse_gcode`): on two nozzles the
-///   reference takes it with the nozzle that prints on the most layers,
-///   from a safe spot its picker chooses (GCode.cpp `process_layer`,
-///   `generate_timelapse_gcode`, GCode/TimelapsePosPicker.cpp); none is
-///   taken here.
-///
-/// The idle nozzle's pre-cooling and pre-heating (`enable_pre_heating`)
-/// is done, by `pre_heating` once the file is timed.
-pub(crate) fn notes(
-    settings: &edge_config::Settings,
-) -> Result<Vec<String>, edge_config::ConfigError> {
-    let mut notes = Vec::new();
-    if crate::gcode_template(settings, "time_lapse_gcode").is_some() {
-        notes.push(
-            "time_lapse_gcode: no timelapse picture is taken on a printer of two nozzles (the \
-             photo nozzle and the safe spot the reference picks are not done)"
-                .to_owned(),
-        );
-    }
-    Ok(notes)
-}
-
 /// Whether `key` is one of the idle-nozzle pre-heating settings and the
 /// printer pre-heats: the reference lists them in the file's settings only
 /// then (GCode.cpp `append_full_config`, `dump_pre_heating_keys`).

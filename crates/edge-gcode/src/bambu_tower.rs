@@ -280,8 +280,32 @@ impl Writer<'_> {
         self.state.tool_changes += 1;
         self.state.summary.tool_changes += 1;
         self.out.extend_from_slice(crate::RESUME_FAN_MARK);
+        // Two nozzles, the farthest point the other nozzle's: the photo
+        // just after the change from the photo nozzle onto it, from the
+        // safe spot, before the travel to the tower (GCode.cpp
+        // `append_tcr`, "case B"); after the tool command where the
+        // template does not change the tool itself. Unless one was taken in
+        // passing or here this layer (`inserted_this_layer`): a photo
+        // placed before an earlier change does not count, so such a layer
+        // gets two, as in Bambu Studio's `append_tcr`.
+        let case_b = self.photos.as_ref().is_some_and(|photos| {
+            let photo = photos.photo_extruder(self.current_run);
+            photos.farthest
+                && !photos.far_on_photo_head
+                && !photos.inserted
+                && photos.physical(photos.map.extruder(from)) == photos.physical(photo)
+                && photos.physical(photos.map.extruder(to)) != photos.physical(photo)
+        });
+        if case_b && swapped.templated {
+            self.nozzle_photo(z, Some(to), false)?;
+            self.inserted_photo();
+        }
         if let Some(command) = swapped.command {
             self.out.extend_from_slice(command.as_bytes());
+        }
+        if case_b && !swapped.templated {
+            self.nozzle_photo(z, Some(to), false)?;
+            self.inserted_photo();
         }
         // To where the purge starts, and the filament pushed back
         // ("Move to start pos", `unretract`).
