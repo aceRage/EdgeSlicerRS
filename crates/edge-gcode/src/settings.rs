@@ -2026,8 +2026,7 @@ fn labelling(settings: &Settings) -> Result<Option<Labelling>, ConfigError> {
 }
 
 /// Where in a layer the printer's timelapse G-code goes (GCode.cpp
-/// `process_layer`). A smooth timelapse's tower is not done (a note says
-/// so where set).
+/// `process_layer`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Timelapse {
     /// As the layer starts, after the layer change. On a Bambu Lab
@@ -2039,7 +2038,9 @@ pub enum Timelapse {
     /// middle of the layer (`need_insert_timelapse_gcode_for_traditional`):
     /// before the first tool's work on the prime tower where the layer has
     /// any, else once the first island with fill has its walls, else at the
-    /// layer's end; retracted first, the height put back after.
+    /// layer's end; retracted first, the height put back after. With a
+    /// smooth timelapse's tower on the plate the tower takes the timelapse
+    /// and the picture goes as the layer starts, not pulled back first.
     Traditional,
     /// A Bambu Lab printer of two nozzles, which takes its picture with the
     /// nozzle that prints on the most layers: at the layer's farthest

@@ -1635,6 +1635,14 @@ pub fn lay(plan: &Plan, settings: &Settings) -> Result<Vec<Vec<Visit>>, PlanErro
         max_e_speed,
     };
     let wall = wall_filament(plan, settings);
+    // A smooth timelapse plans every layer, and a layer above the last
+    // tool change (none in it or above it, `wipe_tower_partitions` 0) is
+    // laid without its fill: only the wall goes up there (Print.cpp
+    // `_make_wipe_tower`, `set_last_layer_extruder_fill(false)`).
+    let last_change = plan
+        .layers
+        .iter()
+        .rposition(|layer| !layer.changes.is_empty());
     let mut result = Vec::with_capacity(count);
     for index in 0..count {
         let layer = &plan.layers[index];
@@ -1696,7 +1704,8 @@ pub fn lay(plan: &Plan, settings: &Settings) -> Result<Vec<Vec<Visit>>, PlanErro
                 if only_wall {
                     timelapse_wall = Some(state.only_wall()?);
                 }
-                finish = Some(state.finish_layer(!only_wall, true, true)?);
+                let extruder_fill = !only_wall || last_change.is_some_and(|last| index <= last);
+                finish = Some(state.finish_layer(!only_wall, extruder_fill, true)?);
                 for (block, planned) in state.blocks.iter_mut().zip(&plan.blocks) {
                     block.finish_depth[index] = planned.start_depth;
                 }
@@ -2138,6 +2147,31 @@ mod tests {
             assert_eq!(layer.len(), 2, "the wall, then the change");
             assert!(!layer[0].is_tool_change && layer[1].is_tool_change);
             assert!(layer[0].gcode.contains("; WIPE_TOWER_START"));
+        }
+    }
+
+    #[test]
+    fn a_smooth_timelapse_lays_only_the_wall_above_the_last_change() {
+        // Print.cpp `_make_wipe_tower`: a layer above the last tool change
+        // has no fill (`set_last_layer_extruder_fill(false)`); one at or
+        // below it keeps its fill.
+        let s = settings(r#", "timelapse_type": "1""#);
+        let mut input = layers(2);
+        input.extend((2..5).map(|index| LayerIn {
+            z: 0.2 * (index + 1) as f32,
+            height: 0.2,
+            changes: Vec::new(),
+        }));
+        let planned = plan(&s, &input, 0).unwrap();
+        let visits = lay(&planned, &s).unwrap();
+        let grid = |layer: usize| {
+            visits[layer]
+                .iter()
+                .any(|v| v.gcode.contains("CP EMPTY GRID START"))
+        };
+        for layer in 2..5 {
+            assert!(!visits[layer].is_empty(), "layer {layer} lays its wall");
+            assert!(!grid(layer), "layer {layer} has no fill");
         }
     }
 }
