@@ -1553,12 +1553,13 @@ impl Shape {
             Ok(outline)
         };
         // Where a rib ends at the tower's corner (no length past it), the
-        // corner lies on the rib's end and stays a point of the outline,
-        // as ClipperLib leaves the reference's last union of the ribs and
-        // the box (`support_rib_wall_polygon`; before the rounding it is
-        // not a point, as the rounding's reach shows): its points are a
-        // hair off the line, which Clipper2 here takes as in line and
-        // drops.
+        // corner lies on the rib's end. Unrounded, it stays a point of the
+        // outline, as ClipperLib leaves it. Rounded, the last union keeps
+        // it only where a rounded side passes it a unit or two off and
+        // ClipperLib's crossings are put back (`clipper_one_box_corner`);
+        // putting every such corner back as well added one the reference
+        // does not have (cc1_four_rib_y, (0, 0)), and the brim's loops
+        // grown from it a point more.
         let ribbed = union(&shapes)?;
         if !round {
             return Ok(with_corners(&to_mm(&ribbed), &plain));
@@ -1578,7 +1579,7 @@ impl Shape {
                 y: box_depth,
             },
         );
-        Ok(with_corners(&to_mm(&done), &plain))
+        Ok(to_mm(&done))
     }
 }
 
@@ -2586,6 +2587,7 @@ pub fn plan_changes(
                 .collect()
         };
         let mut gaps = Vec::new();
+        let mut first_gap_left = None;
         for (block, (from_left, y, corner)) in tower.layers[layer].changes.iter_mut().zip(&ways_in)
         {
             // The nozzle comes in through the gap to a point level with
@@ -2597,6 +2599,7 @@ pub fn plan_changes(
                 let side = if *from_left { 0.0 } else { span };
                 if let Some((along, _)) = crossing(&wall, *from_left, side, *y + lift) {
                     gaps.push(along);
+                    first_gap_left.get_or_insert(*from_left);
                     let inward = 1.5 * line;
                     let x = if *from_left { inward } else { span - inward };
                     block.enter = vec![place(x, *y + lift)];
@@ -2700,7 +2703,37 @@ pub fn plan_changes(
         // returns `insert_skip_polygon`). Where such a point lies on a
         // slanted stretch it stays a corner of the loops, all but in
         // line with its neighbours.
-        let base = with_gap_ends(&wall, &gaps, GAP_HALF * line);
+        let mut base = with_gap_ends(&wall, &gaps, GAP_HALF * line);
+        // Begun, as the reference begins the outline it cuts the gaps into
+        // and grows the loops from, at the wall's point nearest the corner
+        // of its bounds on the far side from the first gap
+        // (WipeTower2.cpp `remove_points_from_polygon`: `anchor_point`,
+        // `closest_point_index`, `split_at_index`): where two points lie
+        // nearer each other than the offsetter's shortest edge, which one
+        // it keeps turns on where the outline begins.
+        if let Some(left) = first_gap_left {
+            let units = |p: &(f64, f64)| (scaled(p.0), scaled(p.1 - lift));
+            let points: Vec<(i64, i64)> = wall.iter().map(units).collect();
+            let low_x = points.iter().map(|p| p.0).min().unwrap_or(0);
+            let high_x = points.iter().map(|p| p.0).max().unwrap_or(0);
+            let low_y = points.iter().map(|p| p.1).min().unwrap_or(0);
+            let anchor = (if left { high_x } else { low_x }, low_y);
+            let away = |p: (i64, i64)| {
+                let (dx, dy) = ((p.0 - anchor.0) as f64, (p.1 - anchor.1) as f64);
+                dx * dx + dy * dy
+            };
+            let mut nearest: Option<((i64, i64), f64)> = None;
+            for point in &points {
+                if nearest.is_none_or(|(_, least)| away(*point) < least) {
+                    nearest = Some((*point, away(*point)));
+                }
+            }
+            if let Some(start) =
+                nearest.and_then(|(start, _)| base.iter().position(|p| units(p) == start))
+            {
+                base.rotate_left(start);
+            }
+        }
         let mut ring = vec![region(&base)];
         for _ in 0..loops {
             // Grown as ClipperLib grows it for the reference (see
@@ -3921,6 +3954,31 @@ mod tests {
                 (29970549, 1445195)
             ]
         );
+    }
+
+    #[test]
+    fn a_rounded_rib_through_a_box_corner_keeps_only_clipper_one_s_points() {
+        // cc1_four_rib_y's first layer: ribs with no length past the box's
+        // corners. The reference's wall keeps (28.5, 0) with its two
+        // crossings, as ClipperLib unites it, and has no point at (0, 0).
+        let shape = Shape {
+            span: 28.5,
+            blocks: 28.5,
+            height: 6.0,
+            line: 0.5,
+            wall: Wall::Ribs {
+                width: 8.0,
+                extra: 0.0,
+                rounded: true,
+            },
+            blocks32: 28.5,
+        };
+        let wall = shape.wall(6.0, 28.5, 28.5).unwrap();
+        let has = |x: f64, y: f64| {
+            wall.iter()
+                .any(|p| (p.0 - x).abs() < 1e-9 && (p.1 - y).abs() < 1e-9)
+        };
+        assert!(!has(0.0, 0.0), "{wall:?}");
     }
 
     #[test]
