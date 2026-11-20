@@ -510,18 +510,29 @@ impl Layer<'_> {
         let loops = self.plan.brim_loops(self.index);
         if loops > 0 && self.plan.ribs.is_some() {
             for _ in 0..loops {
-                let grown = edge_clip::offset(
-                    &[ExPolygon {
-                        contour: without_short_edges(&outer, spacing),
-                        holes: Vec::new(),
-                    }],
-                    edge_geom::scaled(f64::from(spacing)),
-                    Join::MITER,
-                )?;
-                let Some(next) = grown.into_iter().next() else {
-                    break;
+                // Grown as ClipperLib grows it for the reference
+                // (`clipper_one_offset`), else as Clipper2 does.
+                // `scaled(spacing)`: a single over the scaling factor,
+                // truncated, handed on as the offset.
+                let delta = (spacing / 1e-6f32) as i64 as f64;
+                let next = match crate::clipper_one_offset(&outer.points, delta, 3.0) {
+                    Some(points) => Polygon { points },
+                    None => {
+                        let grown = edge_clip::offset(
+                            &[ExPolygon {
+                                contour: without_short_edges(&outer, spacing),
+                                holes: Vec::new(),
+                            }],
+                            edge_geom::scaled(f64::from(spacing)),
+                            Join::MITER,
+                        )?;
+                        let Some(next) = grown.into_iter().next() else {
+                            break;
+                        };
+                        next.contour
+                    }
                 };
-                outer = next.contour;
+                outer = next;
                 writer.polygon(&outer, feedrate, true);
             }
         } else if loops > 0 {

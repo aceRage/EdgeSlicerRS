@@ -1570,7 +1570,14 @@ impl Shape {
             holes: Vec::new(),
         };
         let mut done = union(&[rounded, boxed])?;
-        clipper_one_box_corner(&mut done, (sa, box_depth));
+        clipper_one_box_corner(
+            &mut done,
+            Point2 { x: 0, y: 0 },
+            Point2 {
+                x: sa,
+                y: box_depth,
+            },
+        );
         Ok(with_corners(&to_mm(&done), &plain))
     }
 }
@@ -1582,7 +1589,7 @@ impl Shape {
 /// slope in double precision and rounded half up. Clipper2, which this
 /// engine unites with, can land a unit off it, and the rounding that
 /// follows carries that to the wall's arcs.
-fn clipper_one_crossings(outline: &mut [Point2], shapes: &[ExPolygon]) {
+pub(crate) fn clipper_one_crossings(outline: &mut [Point2], shapes: &[ExPolygon]) {
     // A side as ClipperLib keeps it: its end of greater y (`Bot`), the
     // other (`Top`) and x per y (`Dx`), or none for one along x.
     struct Side {
@@ -1676,26 +1683,34 @@ fn clipper_one_crossings(outline: &mut [Point2], shapes: &[ExPolygon]) {
 /// reference's wall goes (28.499998, 0), (28.5, 0), (28.5, 0.000001);
 /// here it went (28.499998, 0), (28.5, 0) and missed a corner of the
 /// wall's line.
-fn clipper_one_box_corner(outline: &mut Vec<Point2>, (width, depth): (i64, i64)) {
-    let corner = |p: Point2| (p.x == 0 || p.x == width) && (p.y == 0 || p.y == depth);
+pub(crate) fn clipper_one_box_corner(outline: &mut Vec<Point2>, low: Point2, high: Point2) {
+    let corner = |p: Point2| (p.x == low.x || p.x == high.x) && (p.y == low.y || p.y == high.y);
     let round = |value: f64| (value + 0.5).floor() as i64;
     let mut index = 0;
     while outline.len() >= 4 && index < outline.len() {
         let count = outline.len();
-        let (n, c) = (outline[index], outline[(index + 1) % count]);
-        let (before, after) = (
-            outline[(index + count - 1) % count],
-            outline[(index + 2) % count],
-        );
+        let here = index;
+        let at =
+            |offset: isize| outline[(here as isize + offset).rem_euclid(count as isize) as usize];
+        let c = at(0);
         index += 1;
-        if !corner(c) || n.y != c.y || n.x == c.x || (n.x - c.x).abs() > 2 || after.x == c.x {
+        if !corner(c) {
             continue;
         }
-        // The rib's side, from `before` to `after`, as ClipperLib keeps it.
-        let (bot, top) = if before.y >= after.y {
-            (before, after)
+        // The near crossing on the side along x, before the corner or
+        // after it, and the rib's side through it from the points beyond.
+        let near = |n: Point2| n.y == c.y && n.x != c.x && (n.x - c.x).abs() <= 2;
+        let (n_at, far_a, far_b, v_after) = if near(at(-1)) && at(1).x != c.x {
+            (-1, at(-2), at(1), true)
+        } else if near(at(1)) && at(-1).x != c.x {
+            (1, at(-1), at(2), false)
         } else {
-            (after, before)
+            continue;
+        };
+        let (bot, top) = if far_a.y >= far_b.y {
+            (far_a, far_b)
+        } else {
+            (far_b, far_a)
         };
         if top.y == bot.y || top.x == bot.x {
             continue;
@@ -1710,8 +1725,15 @@ fn clipper_one_box_corner(outline: &mut Vec<Point2>, (width, depth): (i64, i64))
         } else {
             bot.x + round(dx * (c.y - bot.y) as f64)
         };
-        outline[index - 1] = Point2 { x, y: c.y };
-        outline.insert((index + 1) % (count + 1), Point2 { x: c.x, y });
+        let n_index = (here as isize + n_at).rem_euclid(count as isize) as usize;
+        outline[n_index] = Point2 { x, y: c.y };
+        let c_index = here;
+        let v = Point2 { x: c.x, y };
+        if v_after {
+            outline.insert(c_index + 1, v);
+        } else {
+            outline.insert(c_index, v);
+        }
         index += 2;
     }
 }
@@ -1739,6 +1761,112 @@ fn without_short_edges(points: &[Point2], shortest: f64) -> Vec<Point2> {
         }
     }
     kept
+}
+
+/// A closed outline grown by `delta` units with mitred corners, as the
+/// reference grows the tower's brim loops: ClipperLib's offsetter
+/// (clipper.cpp `ClipperOffset::AddPath` with ClipperUtils.cpp's shortest
+/// edge, `DoOffset`, `OffsetPoint`, `DoMiter`, `DoSquare`) lays the raw
+/// outline, each point rounded half up, and unites it with a positive
+/// winding; the crossings that union makes are put where ClipperLib puts
+/// them. Clipper2's own offset joins nearly straight corners and inner
+/// corners otherwise, and its loops came out a few hundredths of a
+/// millimetre off the reference's at such corners. Only a
+/// counter-clockwise outline grown outward is done this way; anything
+/// else gets `None`.
+pub(crate) fn clipper_one_offset(
+    points: &[Point2],
+    delta: f64,
+    miter_limit: f64,
+) -> Option<Vec<Point2>> {
+    let source = without_short_edges(points, (delta * 0.005).abs());
+    let count = source.len();
+    let area: i128 = (0..count)
+        .map(|i| {
+            let (a, b) = (source[i], source[(i + 1) % count]);
+            i128::from(a.x) * i128::from(b.y) - i128::from(b.x) * i128::from(a.y)
+        })
+        .sum();
+    if count < 3 || area < 0 || delta <= 0.0 {
+        return None;
+    }
+    let round = |value: f64| (value + 0.5).floor() as i64;
+    let normal = |a: Point2, b: Point2| {
+        if a == b {
+            return (0.0, 0.0);
+        }
+        let (dx, dy) = ((b.x - a.x) as f64, (b.y - a.y) as f64);
+        let f = 1.0 / (dx * dx + dy * dy).sqrt();
+        (dy * f, -(dx * f))
+    };
+    let normals: Vec<(f64, f64)> = (0..count)
+        .map(|j| normal(source[j], source[(j + 1) % count]))
+        .collect();
+    let limit = if miter_limit > 2.0 {
+        2.0 / (miter_limit * miter_limit)
+    } else {
+        0.5
+    };
+    let mut raw = Vec::with_capacity(count * 2);
+    let mut k = count - 1;
+    for j in 0..count {
+        let (nk, nj, at) = (normals[k], normals[j], source[j]);
+        let along = |n: (f64, f64)| Point2 {
+            x: round(at.x as f64 + n.0 * delta),
+            y: round(at.y as f64 + n.1 * delta),
+        };
+        let mut sin = nk.0 * nj.1 - nj.0 * nk.1;
+        let cos = nk.0 * nj.0 + nj.1 * nk.1;
+        if (sin * delta).abs() < 1.0 {
+            if cos > 0.0 {
+                raw.push(along(nk));
+                k = j;
+                continue;
+            }
+        } else {
+            sin = sin.clamp(-1.0, 1.0);
+        }
+        if sin * delta < 0.0 {
+            raw.push(along(nk));
+            raw.push(at);
+            raw.push(along(nj));
+        } else {
+            let r = 1.0 + (nj.0 * nk.0 + nj.1 * nk.1);
+            if r >= limit {
+                let q = delta / r;
+                raw.push(Point2 {
+                    x: round(at.x as f64 + (nk.0 + nj.0) * q),
+                    y: round(at.y as f64 + (nk.1 + nj.1) * q),
+                });
+            } else {
+                let dx = (sin.atan2(nk.0 * nj.0 + nk.1 * nj.1) / 4.0).tan();
+                raw.push(Point2 {
+                    x: round(at.x as f64 + delta * (nk.0 - nk.1 * dx)),
+                    y: round(at.y as f64 + delta * (nk.1 + nk.0 * dx)),
+                });
+                raw.push(Point2 {
+                    x: round(at.x as f64 + delta * (nj.0 + nj.1 * dx)),
+                    y: round(at.y as f64 + delta * (nj.1 - nj.0 * dx)),
+                });
+            }
+        }
+        k = j;
+    }
+    let path = Polygon { points: raw };
+    let mut grown = edge_clip::union_positive([&path])
+        .ok()?
+        .into_iter()
+        .next()?
+        .contour
+        .points;
+    clipper_one_crossings(
+        &mut grown,
+        &[ExPolygon {
+            contour: path,
+            holes: Vec::new(),
+        }],
+    );
+    Some(grown)
 }
 
 /// A side of the wall, from one point to the next, in mm.
@@ -2575,18 +2703,22 @@ pub fn plan_changes(
         let base = with_gap_ends(&wall, &gaps, GAP_HALF * line);
         let mut ring = vec![region(&base)];
         for _ in 0..loops {
-            // ClipperLib's offsetter, as the reference sets it up, first
-            // drops every point nearer the last one kept than 0.005 of
-            // the offset (clipper.cpp `ClipperOffset::AddPath` with
-            // `ShortestEdgeLength`, ClipperUtils.cpp): a wall point a unit
-            // from the box's corner would otherwise grow into a notch.
-            for region in &mut ring {
-                region.contour.points = without_short_edges(
-                    &region.contour.points,
-                    f64::from(spacing as f32) / 1e-6 * 0.005,
-                );
-            }
-            ring = edge_clip::offset_keeping_points(&ring, scaled(spacing), Join::MITER)?;
+            // Grown as ClipperLib grows it for the reference (see
+            // `clipper_one_offset`, which first drops points nearer the
+            // last one kept than 0.005 of the offset: a wall point a unit
+            // from the box's corner would otherwise grow into a notch).
+            // `scale_(spacing)`, handed on as a single.
+            let delta = f64::from((f64::from(spacing as f32) / 1e-6) as f32);
+            let grown = ring
+                .first()
+                .and_then(|region| clipper_one_offset(&region.contour.points, delta, 3.0));
+            ring = match grown {
+                Some(points) => vec![ExPolygon {
+                    contour: Polygon { points },
+                    holes: Vec::new(),
+                }],
+                None => edge_clip::offset_keeping_points(&ring, scaled(spacing), Join::MITER)?,
+            };
             ring.truncate(1);
             let Some(outer) = ring.first() else { break };
             // Points as ClipperLib leaves them, which the reference offsets
@@ -3770,7 +3902,14 @@ mod tests {
         ]
         .map(|(x, y)| Point2 { x, y })
         .to_vec();
-        clipper_one_box_corner(&mut outline, (28500000, 29000000));
+        clipper_one_box_corner(
+            &mut outline,
+            Point2 { x: 0, y: 0 },
+            Point2 {
+                x: 28500000,
+                y: 29000000,
+            },
+        );
         let got: Vec<(i64, i64)> = outline.iter().take(5).map(|p| (p.x, p.y)).collect();
         assert_eq!(
             got,
@@ -3782,6 +3921,50 @@ mod tests {
                 (29970549, 1445195)
             ]
         );
+    }
+
+    #[test]
+    fn brim_loops_grow_as_clipper_one_grows_them() {
+        let square: Vec<Point2> = [(0, 0), (1000000, 0), (1000000, 1000000), (0, 1000000)]
+            .map(|(x, y)| Point2 { x, y })
+            .to_vec();
+        let mut grown = clipper_one_offset(&square, 400000.0, 3.0).unwrap();
+        grown.sort_by_key(|p| (p.x, p.y));
+        // Mitred: the square's corners pushed out along both sides.
+        assert_eq!(
+            grown,
+            [
+                (-400000, -400000),
+                (-400000, 1400000),
+                (1400000, -400000),
+                (1400000, 1400000)
+            ]
+            .map(|(x, y)| Point2 { x, y })
+        );
+        // An inner corner: ClipperLib lays both offset ends and the corner
+        // and the union cuts the loop off where the two sides cross.
+        let notched: Vec<Point2> = [
+            (0, 0),
+            (2000000, 0),
+            (2000000, 2000000),
+            (1000000, 2000000),
+            (1000000, 1000000),
+            (0, 1000000),
+        ]
+        .map(|(x, y)| Point2 { x, y })
+        .to_vec();
+        let grown = clipper_one_offset(&notched, 100000.0, 3.0).unwrap();
+        assert!(
+            grown.contains(&Point2 {
+                x: 900000,
+                y: 1100000
+            }),
+            "{grown:?}"
+        );
+        // Clockwise, or shrinking: not done here.
+        let reversed: Vec<Point2> = square.iter().rev().copied().collect();
+        assert!(clipper_one_offset(&reversed, 400000.0, 3.0).is_none());
+        assert!(clipper_one_offset(&square, -400000.0, 3.0).is_none());
     }
 
     #[test]

@@ -1771,7 +1771,10 @@ fn rib_polygon(
             .map(|r| r.contour.points)
             .unwrap_or_default()
     };
-    let ribbed = first(edge_clip::union_ex(&shapes)?);
+    // Crossings where ClipperLib, which the reference unites with, puts
+    // them (see `clipper_one_crossings`).
+    let mut ribbed = first(edge_clip::union_ex(&shapes)?);
+    crate::clipper_one_crossings(&mut ribbed, &shapes);
     if !ribs.fillet {
         return Ok(ribbed);
     }
@@ -1783,10 +1786,12 @@ fn rib_polygon(
         pt(scaled_f32(area.right), scaled_f32(area.top)),
         pt(scaled_f32(area.left), scaled_f32(area.top)),
     ]);
-    Ok(first(edge_clip::union_ex(&[
-        area_of(rounding_polygon(&ribbed)),
-        plain,
-    ])?))
+    let (low, high) = (plain.contour.points[0], plain.contour.points[2]);
+    let shapes = [area_of(rounding_polygon(&ribbed)), plain];
+    let mut wall = first(edge_clip::union_ex(&shapes)?);
+    crate::clipper_one_crossings(&mut wall, &shapes);
+    crate::clipper_one_box_corner(&mut wall, low, high);
+    Ok(wall)
 }
 
 /// WipeTower.cpp `rounding_polygon`: every corner turning between 30 and
@@ -1827,7 +1832,8 @@ fn rounding_polygon(points: &[edge_geom::Point2]) -> Vec<edge_geom::Point2> {
             if !ccw {
                 dir = (-dir.0, -dir.1);
             }
-            let away = f64::from(reach) / f64::from(half_angle.sin());
+            // `dis`: a single over a single, as the pinned build works it.
+            let away = f64::from(reach / half_angle.sin());
             let center = (b.0 + dir.0 * away, b.1 + dir.1 * away);
             let radius = (left.0 - center.0).hypot(left.1 - center.1);
             // `ArcSegment` on the scaled centre, radius and ends.
@@ -1850,11 +1856,14 @@ fn rounding_polygon(points: &[edge_geom::Point2]) -> Vec<edge_geom::Point2> {
                 angle -= 2.0 * std::f64::consts::PI;
             }
             for j in 0..PIECES {
-                let mut cur = (start + f64::from(j as f32 / PIECES as f32) * angle) as f32;
-                if cur > 2.0 * std::f32::consts::PI {
-                    cur -= 2.0 * std::f32::consts::PI;
+                // The angle fused (fmadd) and taken to a single, wrapped
+                // in double precision, as the pinned build works it.
+                let mut cur = f64::from(j as f32 / PIECES as f32).mul_add(angle, start) as f32;
+                let tau = 2.0 * std::f64::consts::PI;
+                if f64::from(cur) > tau {
+                    cur = (f64::from(cur) - tau) as f32;
                 } else if cur < 0.0 {
-                    cur += 2.0 * std::f32::consts::PI;
+                    cur = (f64::from(cur) + tau) as f32;
                 }
                 out.push(pt(
                     c_u.x + (r_u * f64::from(cur.cos())).round() as i64,
@@ -1885,6 +1894,84 @@ pub(crate) mod tests {
     use edge_config::Settings as Config;
 
     use super::*;
+
+    #[test]
+    fn the_ribs_are_united_and_rounded_as_the_reference_does_it() {
+        // a1_two_rib's first layer: the ribs and the box as the reference
+        // unites them (ClipperLib rounds the crossing at y = 5588293.6 up),
+        // and the first points of its `rounding_polygon` (both read from
+        // the pinned build).
+        let rib = |points: [(i64, i64); 4]| area_of(points.map(|(x, y)| pt(x, y)).to_vec());
+        let shapes = [
+            rib([
+                (-2793295, 2863128),
+                (2793295, -2863128),
+                (23293295, 17136872),
+                (17706705, 22863128),
+            ]),
+            rib([
+                (17706705, -2863128),
+                (23293295, 2863128),
+                (2793295, 22863128),
+                (-2793295, 17136872),
+            ]),
+            rib([(0, 0), (20500000, 0), (20500000, 20000000), (0, 20000000)]),
+        ];
+        let mut union = shapes_union(&shapes);
+        crate::clipper_one_crossings(&mut union, &shapes);
+        assert!(union.contains(&pt(20500000, 5588294)), "{union:?}");
+        assert!(union.contains(&pt(0, 5588294)), "{union:?}");
+        let reference = [
+            (23293295, 2863128),
+            (20500000, 5588294),
+            (20500000, 14411706),
+            (23293295, 17136872),
+            (17706705, 22863128),
+            (14771999, 20000000),
+            (5728001, 20000000),
+            (2793295, 22863128),
+            (-2793295, 17136872),
+            (0, 14411706),
+            (0, 5588294),
+            (-2793295, 2863128),
+            (2793295, -2863128),
+            (5728001, 0),
+            (14771999, 0),
+            (17706705, -2863128),
+        ]
+        .map(|(x, y)| pt(x, y));
+        let round: Vec<(i64, i64)> = rounding_polygon(&reference)
+            .iter()
+            .take(12)
+            .map(|p| (p.x, p.y))
+            .collect();
+        assert_eq!(
+            round,
+            [
+                (21995597, 1532987),
+                (22093312, 1641349),
+                (22182225, 1757044),
+                (22261786, 1879358),
+                (22331506, 2007537),
+                (22390953, 2140792),
+                (22439763, 2278299),
+                (22477633, 2419213),
+                (22504330, 2562663),
+                (22519690, 2707766),
+                (22523618, 2853626),
+                (22516090, 2999344),
+            ]
+        );
+    }
+
+    fn shapes_union(shapes: &[ExPolygon]) -> Vec<edge_geom::Point2> {
+        edge_clip::union_ex(shapes)
+            .unwrap()
+            .into_iter()
+            .next()
+            .map(|r| r.contour.points)
+            .unwrap_or_default()
+    }
 
     fn settings(json: &str) -> Settings {
         Settings::from_settings(&Config::from_json(json).unwrap(), 0).unwrap()

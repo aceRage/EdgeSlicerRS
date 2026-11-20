@@ -5,7 +5,22 @@
 
 use edge_geom::{Point2, Polygon};
 
-use super::writer::{V2, scaled, unscaled};
+use super::writer::V2;
+
+/// `unscale(p).cast<float>()`: the integer times the scaling factor in
+/// double precision, then a single.
+fn unscaled(p: Point2) -> V2 {
+    ((p.x as f64 * 1e-6) as f32, (p.y as f64 * 1e-6) as f32)
+}
+
+/// `scaled(Vec2f)`: a single over the scaling factor as a single,
+/// truncated (Point.hpp, `(v / SCALING_FACTOR).cast<coord_t>()`).
+fn scaled(p: V2) -> Point2 {
+    Point2 {
+        x: (p.0 / 1e-6f32) as i64,
+        y: (p.1 / 1e-6f32) as i64,
+    }
+}
 
 /// libslic3r's `EPSILON`.
 const EPSILON: f32 = 1e-4;
