@@ -1002,6 +1002,10 @@ pub struct Tower {
     /// for a tower whose wall has gaps (`wipe_tower_wall_gap`) and is not
     /// Bambu Lab's, whose nozzle goes in straight, as there.
     pub envelope: Option<[f64; 4]>,
+    /// Bambu Lab's tower: the ground its mesh stands on as the reference
+    /// works it out (type1 `Plan::mesh_bottom`), on the bed; the
+    /// timelapse photo's spot is kept clear of it.
+    pub mesh_bottom: Option<[f64; 4]>,
 }
 
 /// The last filament unloaded over the tower once the print is done
@@ -1560,6 +1564,7 @@ pub fn plan_changes(
         layers: vec![TowerLayer::default(); count],
         footprint: None,
         envelope: None,
+        mesh_bottom: None,
     };
     let Some(last) = changes.iter().rposition(|changes| !changes.is_empty()) else {
         return Ok(tower);

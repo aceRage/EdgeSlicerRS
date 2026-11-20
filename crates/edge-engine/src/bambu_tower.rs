@@ -96,6 +96,7 @@ pub(crate) fn plan(
         layers: vec![TowerLayer::default(); count],
         footprint: None,
         envelope: None,
+        mesh_bottom: None,
     };
     let mut visits = vec![Vec::new(); count];
     let Some(mut last) = changes.iter().rposition(|layer| !layer.is_empty()) else {
@@ -172,6 +173,9 @@ pub(crate) fn plan(
     // 3 mm right of the tower's first layer, brim included, else 3 mm left
     // of it, within X 100 to 250 (Bambu's numbers for its 350 mm beds),
     // else X 110.
+    let [a, b, c, d] = planned.mesh_bottom()?;
+    let (x, y) = (f64::from(t1.x), f64::from(t1.y));
+    tower.mesh_bottom = Some([x + a, y + b, x + c, y + d]);
     let wipe_avoid_x = {
         let (width, _) = planned.footprint();
         // The brim as laid: whole loops and half a spacing

@@ -219,6 +219,10 @@ pub struct PrintSettings {
     /// (`edge_tower::Tower::footprint`): min x, min y, max x, max y in mm.
     /// Set by the pipeline; none for no tower.
     pub tower_footprint: Option<[f64; 4]>,
+    /// Bambu Lab's tower: the ground its mesh stands on as the reference
+    /// works it out, which the timelapse photo's spot is kept clear of
+    /// (`timelapse`); else [`Self::tower_footprint`] is.
+    pub tower_mesh_bottom: Option<[f64; 4]>,
     /// The minimum layer time a layer is paused to make up, in seconds
     /// (`min_layer_time_pause`, `pause.rs`); 0 for none. And where the head
     /// waits meanwhile.
@@ -579,6 +583,7 @@ impl Default for PrintSettings {
             bed_exclusions: Vec::new(),
             printable_height: 0.0,
             tower_footprint: None,
+            tower_mesh_bottom: None,
             min_layer_time_pause: 0.0,
             pause_park: crate::pause::Park::Away,
             tower_envelope: None,
@@ -980,9 +985,6 @@ impl PrintSettings {
             .filter(|model| !model.is_empty())
             .or(settings.text("printer_settings_id"))
             .is_some_and(|name| name.starts_with("Bambu Lab"));
-        if bambu && settings.texts("nozzle_diameter").map_or(1, <[String]>::len) == 2 {
-            unsupported.extend(crate::two_nozzles::notes(settings)?);
-        }
         Ok(Self {
             outer_wall_speed: number("outer_wall_speed", defaults.outer_wall_speed)?,
             inner_wall_speed: number("inner_wall_speed", defaults.inner_wall_speed)?,
@@ -1198,6 +1200,7 @@ impl PrintSettings {
             bed_exclusions,
             printable_height: settings.float("printable_height")?.unwrap_or(0.0),
             tower_footprint: None,
+            tower_mesh_bottom: None,
             min_layer_time_pause: settings.float("min_layer_time_pause")?.unwrap_or(0.0),
             pause_park,
             tower_envelope: None,
@@ -2039,7 +2042,10 @@ pub enum Timelapse {
     /// layer's end; retracted first, the height put back after.
     Traditional,
     /// A Bambu Lab printer of two nozzles, which takes its picture with the
-    /// nozzle that prints most; not done, and refused.
+    /// nozzle that prints on the most layers: at the layer's farthest
+    /// point in passing, else parked at a safe spot inside a change or
+    /// before one, else at the layer's end; with a smooth timelapse's
+    /// tower, as the layer starts (`timelapse`).
     TwoNozzles,
 }
 
@@ -2165,6 +2171,10 @@ pub struct ObjectLabel {
     /// `exclude_object_tolerance` and rounded to 0.1 mm
     /// (`PrintInstance::get_convex_hull_2d`).
     pub hull: Vec<Point2>,
+    /// Its box on the plate, in mm: min x, y, z, then max x, y, z (the
+    /// copy's mesh; `PrintInstance::get_bounding_box`), which the
+    /// timelapse photo's spot is kept clear of (`timelapse`).
+    pub bounds: [f64; 6],
 }
 
 /// A template as the reference reads it from a preset: a backslash makes

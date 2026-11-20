@@ -38,6 +38,7 @@ mod settings;
 mod simplify;
 mod small_area;
 mod spiral_vase;
+mod timelapse;
 mod two_nozzles;
 mod unsupported;
 mod wipe;
@@ -108,6 +109,13 @@ pub enum GcodeError {
         reach: [f64; 4],
         bed: [f64; 4],
     },
+}
+
+/// What the timelapse photo's spot picker could not work out.
+fn spot_error(error: edge_clip::ClipError) -> GcodeError {
+    GcodeError::Unsupported(format!(
+        "time_lapse_gcode: the safe spot for the timelapse photo could not be worked out ({error})"
+    ))
 }
 
 /// A filament rammed on the prime tower before its tool is put away
@@ -639,6 +647,14 @@ pub fn write_timed(
         variables.set(format!("travel_point_{}_y", index + 1), Value::Float(y));
     }
 
+    // The photos on two nozzles: the photo extruder and the safe spot's picker.
+    let photos = match &settings[first].time_lapse {
+        Some((_, Timelapse::TwoNozzles)) => {
+            timelapse::photos(&variables, &settings[first], layers, &groups, &own)
+                .map_err(spot_error)?
+        }
+        _ => None,
+    };
     let mut writer = Writer {
         out: Vec::new(),
         all: settings,
@@ -747,6 +763,7 @@ pub fn write_timed(
         object_layer: None,
         current_run: None,
         pause_target: 0.0,
+        photos,
     };
     let several = layers.iter().any(|layer| layer.filament > 0);
     writer.preamble(several)?;
@@ -1486,6 +1503,9 @@ struct Writer<'a> {
     /// Printing object by object: the run of [`Plate::by_object`] being
     /// written.
     current_run: Option<usize>,
+    /// The timelapse photos of a Bambu Lab printer of two nozzles
+    /// (`timelapse`); none elsewhere.
+    photos: Option<timelapse::Photos>,
     /// The minimum layer time the layer being laid is paused to make up,
     /// in seconds (`pause.rs`); 0 where it is not paused.
     pause_target: f64,
@@ -3141,6 +3161,15 @@ impl Writer<'_> {
         }
         self.variables.set("layer_num", Value::Int(index as i64));
         self.state.pictured = false;
+        // Two nozzles, a smooth timelapse with its tower: the photo as the
+        // layer starts, at the one spot for the whole print (GCode.cpp
+        // `process_layer`, `!need_insert_timelapse_gcode_for_traditional`).
+        if self.photos.as_ref().is_some_and(|photos| !photos.placed) {
+            if s.retract_when_changing_layer {
+                self.retract(false)?;
+            }
+            self.nozzle_photo(layer.z, None, false)?;
+        }
         if let Some((_, Timelapse::LayerStart { .. })) = &s.time_lapse {
             // A farthest-point picture waits until the layer's farthest
             // point is known ([`Self::body`]).
@@ -3470,7 +3499,40 @@ impl Writer<'_> {
                 self.timelapse(parts[0].z)?;
             }
         }
+        // Two nozzles: the layer's farthest point and the nozzle printing
+        // it (GCode.cpp `compute_farthest_point`); the photo nozzle takes
+        // it there in passing ([`Self::lay`]), else the photo is placed
+        // with the other nozzle active.
+        if let Some(photos) = self.photos.as_mut() {
+            photos.far = None;
+            photos.far_on_photo_head = false;
+            photos.inserted = false;
+            if photos.farthest {
+                let found = bambu_vars::farthest_point_of(parts);
+                let photo = photos.photo_extruder(self.current_run);
+                photos.far = found.map(|(point, _)| point);
+                photos.far_on_photo_head =
+                    found.is_some_and(|(_, filament)| photos.map.extruder(filament) == photo);
+                self.state.farthest = photos.far.filter(|_| photos.far_on_photo_head);
+            }
+        }
         for (offset, layer) in parts.iter().enumerate() {
+            // Two nozzles: before a change away from a nozzle that may take
+            // the photo (`timelapse_head_ok`), on the tower before its
+            // visit, without one before the change (GCode.cpp
+            // `process_layer`).
+            if let Some(photos) = &self.photos
+                && photos.placed
+                && !photos.inline()
+                && !self.state.pictured
+                && photos.head_ok(self.state.tool, self.current_run)
+                && (!layer.visits.is_empty()
+                    || !layer.tower.is_empty()
+                    || layer.wipe.is_some()
+                    || layer.filament != self.state.tool)
+            {
+                self.placed_photo(layer.z, false)?;
+            }
             if traditional
                 && !self.state.pictured
                 && (!layer.tower.is_empty() || layer.wipe.is_some() || !layer.visits.is_empty())
@@ -3668,6 +3730,20 @@ impl Writer<'_> {
         }
         if self.pause_target > 0.0 {
             self.pause_block()?;
+        }
+        // Two nozzles: the photo missed at the farthest point, and any
+        // photo not yet taken, at the layer's end (GCode.cpp `process_layer`).
+        if let Some(photos) = &self.photos
+            && !parts.is_empty()
+        {
+            let (inline, placed) = (photos.inline(), photos.placed);
+            if inline && !self.state.pictured {
+                self.placed_photo(parts[0].z, true)?;
+            }
+            if placed && !self.state.pictured {
+                self.placed_photo(parts[0].z, false)?;
+            }
+            self.state.farthest = None;
         }
         if traditional && !towered_layer && !self.state.pictured {
             self.timelapse(parts[0].z)?;
@@ -3908,6 +3984,122 @@ impl Writer<'_> {
         self.variables
             .set("timelapse_inline_photo", Value::Bool(false));
         self.after_timelapse(&text?, z, true)
+    }
+
+    /// A timelapse photo on two nozzles (GCode.cpp
+    /// `generate_timelapse_gcode`, Bambu Studio's): the template told
+    /// which nozzle takes the photo, which is active (`filament`'s, else
+    /// the one in use) and, unless the photo is taken in passing
+    /// (`inline`), the safe spot the picker finds for it; the nozzle put
+    /// back to its height where the template leaves it elsewhere. A
+    /// parked photo moves the head (the firmware does, `M9711`), so where
+    /// it is after is not known.
+    fn nozzle_photo(
+        &mut self,
+        z: f64,
+        filament: Option<usize>,
+        inline: bool,
+    ) -> Result<(), GcodeError> {
+        let s = self.settings;
+        let (Some((template, _)), Some(photos)) = (&s.time_lapse, self.photos.as_mut()) else {
+            return Ok(());
+        };
+        self.state.pictured = true;
+        self.state.farthest = None;
+        let filament = filament.unwrap_or(self.state.tool);
+        let run = self.current_run;
+        let photo = photos.photo_extruder(run);
+        let active = photos.map.extruder(filament);
+        let at = (self.state.position)
+            .or_else(|| self.state.left_at.map(|[x, y]| Point2::from_mm(x, y)))
+            .unwrap_or_default();
+        let printed = run.filter(|_| photos.run_objects.len() > 1).map(|run| {
+            let mut printed: Vec<usize> = Vec::new();
+            for object in &photos.run_objects[..=run.min(photos.run_objects.len() - 1)] {
+                if printed.last() != Some(object) {
+                    printed.push(*object);
+                }
+            }
+            printed
+        });
+        let ask = timelapse::Ask {
+            at,
+            z,
+            photo,
+            active,
+            printed,
+            // With a farthest-point timelapse, the layer's farthest
+            // point, (0, 0) where it has none, as there.
+            farthest: photos.farthest.then(|| photos.far.unwrap_or_default()),
+        };
+        let spot = if inline {
+            [0, 0]
+        } else {
+            photos.picker.pick(&ask).map_err(spot_error)?
+        };
+        let clear = photos.picker.clear_to_x0(&ask).map_err(spot_error)?;
+        let values = [
+            ("layer_z", Value::Float(z)),
+            (
+                "most_used_physical_extruder_id",
+                Value::Int(photos.physical(photo) as i64),
+            ),
+            (
+                "curr_physical_extruder_id",
+                Value::Int(photos.physical(active) as i64),
+            ),
+            ("timelapse_pos_x", Value::Int(spot[0])),
+            ("timelapse_pos_y", Value::Int(spot[1])),
+            ("has_timelapse_safe_pos", Value::Bool(spot != [0, 0])),
+            ("timelapse_inline_photo", Value::Bool(inline)),
+            (
+                "farthest_point_timelapse_enabled",
+                Value::Bool(photos.farthest),
+            ),
+            ("clear_to_x0", Value::Bool(clear)),
+        ];
+        // Given to this template alone, as the reference hands it a config
+        // of its own; the active filament's lists.
+        let kept: Vec<(&str, Option<Value>)> = (values.iter())
+            .map(|(name, _)| (*name, self.variables.value(name)))
+            .collect();
+        for (name, value) in values {
+            self.variables.set(name, value);
+        }
+        self.variables.set_extruder(Some(filament as i64));
+        let text = self.custom("time_lapse_gcode", template);
+        self.variables.set_extruder(None);
+        for (name, value) in kept {
+            match value {
+                Some(value) => self.variables.set(name, value),
+                None => self.variables.remove(name),
+            }
+        }
+        let text = text?;
+        if !inline {
+            self.state.position = None;
+        }
+        self.after_timelapse(&text, z + self.z_offset, true)
+    }
+
+    /// Marks the layer's photo on two nozzles as taken in passing or
+    /// inside a change (`inserted_this_layer`).
+    fn inserted_photo(&mut self) {
+        if let Some(photos) = self.photos.as_mut() {
+            photos.inserted = true;
+        }
+    }
+
+    /// The photo on two nozzles placed before a change, or at the layer's
+    /// end: the filament pulled back and the head lifted
+    /// (`retract(..., NormalLift)`, always there, or as at a layer change
+    /// with `layer_change`), the copy done left first.
+    fn placed_photo(&mut self, z: f64, layer_change: bool) -> Result<(), GcodeError> {
+        if !layer_change || self.settings.retract_when_changing_layer {
+            self.retract(false)?;
+        }
+        self.flush_labels()?;
+        self.nozzle_photo(z, None, false)
     }
 
     /// What follows the timelapse G-code: its time, and the nozzle put
@@ -6471,8 +6663,21 @@ impl Writer<'_> {
             .farthest
             .is_some_and(|farthest| distance(to, farthest) < 0.5)
         {
-            self.inline_timelapse()
-                .map_err(|error| io::Error::other(error.to_string()))?;
+            let taken = match &self.photos {
+                // Two nozzles: only while the photo nozzle prints, the
+                // other being elsewhere (`check_and_insert_inline_timelapse`).
+                Some(photos) => (photos.map.extruder(self.state.tool)
+                    == photos.photo_extruder(self.current_run))
+                .then(|| {
+                    let taken = self.nozzle_photo(self.state.z - self.z_offset, None, true);
+                    self.inserted_photo();
+                    taken
+                }),
+                None => Some(self.inline_timelapse()),
+            };
+            if let Some(taken) = taken {
+                taken.map_err(|error| io::Error::other(error.to_string()))?;
+            }
         }
         Ok(())
     }

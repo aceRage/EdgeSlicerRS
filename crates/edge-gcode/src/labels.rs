@@ -335,6 +335,7 @@ mod tests {
                 Point2::from_mm(x + 5.0, y + 5.0),
                 Point2::from_mm(x - 5.0, y + 5.0),
             ],
+            bounds: [x - 5.0, y - 5.0, 0.0, x + 5.0, y + 5.0, 10.0],
         }
     }
 

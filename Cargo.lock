@@ -444,6 +444,7 @@ version = "0.0.0"
 dependencies = [
  "edge-3mf",
  "edge-avoid",
+ "edge-clip",
  "edge-config",
  "edge-contour",
  "edge-extrusion",
