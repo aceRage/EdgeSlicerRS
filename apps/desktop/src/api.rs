@@ -2093,6 +2093,12 @@ impl Session {
         // is not there is said at once.
         let basis = self.basis(&choices, Some(&file))?;
         let mut overrides = settings::overrides(&choices, &basis);
+        // Nozzles of two sizes print each with a process of its own size,
+        // picked from these profiles (edge-engine `nozzle_process`).
+        overrides.profiles = lock(&self.state)
+            .library
+            .as_ref()
+            .map(|library| library.dir().to_path_buf());
         // The ironing flow test named after its filament (`calib.rs`).
         let file = self.name_ironing_tests(
             id,

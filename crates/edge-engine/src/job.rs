@@ -43,6 +43,10 @@ pub struct Overrides {
     /// The calibration the project was made for, which the slice changes
     /// from layer to layer ([`crate::calib`]); none for any other print.
     pub calibration: Option<crate::calib::CalibParams>,
+    /// Where the vendor profiles are (the reference's `resources/profiles`):
+    /// on a printer with nozzles of two sizes each nozzle prints with a
+    /// process of its own size, picked from them (`crate::nozzle_process`).
+    pub profiles: Option<std::path::PathBuf>,
 }
 
 /// A slicing setting's value and where it came from.
@@ -374,6 +378,15 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
         }
         settings.overlay(&loaded.plate_settings);
     }
+    // Nozzles of two sizes: what each nozzle and filament prints with, from
+    // a process of the nozzle's own size. Before the reference's defaults
+    // fill the rest in, as the reference's command line fills its config
+    // from the project's settings alone: a per-nozzle setting the project
+    // does not hold is not laid out per nozzle.
+    remarks.extend(crate::nozzle_process::fill(
+        &mut settings,
+        overrides.profiles.as_deref(),
+    )?);
     // What a printer's profile leaves unsaid is as the reference has it
     // by default, so a model sliced with named presets comes out as the
     // same model in a project would.
