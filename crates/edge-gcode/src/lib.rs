@@ -3173,6 +3173,14 @@ impl Writer<'_> {
             }
             self.nozzle_photo(layer.z, None, false)?;
         }
+        // A bed-slinger with a smooth timelapse's tower takes its picture
+        // as the layer starts, with no pull back (GCode.cpp
+        // `process_layer`: `need_insert_timelapse_gcode_for_traditional`
+        // is off once the tower takes the timelapse, and the i3 branch
+        // after `change_layer`).
+        if self.smooth_on_tower() {
+            self.timelapse(layer.z)?;
+        }
         if let Some((_, Timelapse::LayerStart { .. })) = &s.time_lapse {
             // A farthest-point picture waits until the layer's farthest
             // point is known ([`Self::body`]).
@@ -3490,7 +3498,8 @@ impl Writer<'_> {
         let towered_layer = parts
             .iter()
             .any(|part| !part.tower.is_empty() || part.wipe.is_some() || !part.visits.is_empty());
-        let traditional = matches!(&self.settings.time_lapse, Some((_, Timelapse::Traditional)));
+        let traditional = matches!(&self.settings.time_lapse, Some((_, Timelapse::Traditional)))
+            && !self.smooth_on_tower();
         // A farthest-point picture is taken the moment the nozzle gets
         // there ([`Self::lay`]); on a layer with nothing to measure from,
         // before anything is laid (GCode.cpp `process_layer`).
@@ -3927,7 +3936,11 @@ impl Writer<'_> {
             Timelapse::LayerStart { bambu } => *bambu,
             Timelapse::Traditional => true,
         };
-        if bambu && (*place == Timelapse::Traditional || s.retract_when_changing_layer) {
+        let at_layer_start = *place == Timelapse::Traditional && self.smooth_on_tower();
+        if bambu
+            && !at_layer_start
+            && (*place == Timelapse::Traditional || s.retract_when_changing_layer)
+        {
             self.retract(false)?;
         }
         // The copy just done is not part of the picture's moves.
@@ -3940,6 +3953,20 @@ impl Writer<'_> {
             self.state.position = None;
         }
         Ok(())
+    }
+
+    /// A bed-slinger's timelapse taken by a smooth timelapse's tower
+    /// (`timelapse_type` smooth, a prime tower on the plate): the picture
+    /// goes at the layer's start instead of in the middle of the layer
+    /// (GCode.cpp `process_layer`, `WipeTowerIntegration::
+    /// enable_timelapse_print`).
+    fn smooth_on_tower(&self) -> bool {
+        matches!(&self.settings.time_lapse, Some((_, Timelapse::Traditional)))
+            && self.settings.tower_footprint.is_some()
+            && self
+                .variables
+                .value("timelapse_type")
+                .is_some_and(|kind| matches!(kind.to_string().trim(), "1" | "smooth"))
     }
 
     /// Whether the printer takes its timelapse picture where each layer

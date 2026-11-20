@@ -4156,6 +4156,35 @@ fn a_bed_slingers_timelapse_goes_between_walls_and_fill() {
 }
 
 #[test]
+fn a_bed_slinger_with_a_smooth_timelapse_tower_takes_its_picture_as_the_layer_starts() {
+    // GCode.cpp `process_layer`: with the tower taking the timelapse
+    // (`timelapse_type` smooth), an i3 printer's picture goes right after
+    // the layer change, before its layer change G-code, with no pull back.
+    let mut settings = PrintSettings {
+        time_lapse: Some(("; TIMELAPSE {layer_num}".into(), Timelapse::Traditional)),
+        layer_change_gcode: Some("; LAYER CHANGE".into()),
+        tower_footprint: Some([10.0, 10.0, 20.0, 20.0]),
+        ..bambu(&[("start", "PRINT_START")])
+    };
+    settings.variables.set("timelapse_type", Value::text("1"));
+    let text = printed(2, &settings);
+    let second = text.split("; CHANGE_LAYER").nth(2).unwrap();
+    let (picture, change) = (
+        second.find("; TIMELAPSE 1").unwrap(),
+        second.find("; LAYER CHANGE").unwrap(),
+    );
+    assert!(picture < change, "{second}");
+    // Only the layer change's own pull back comes before it.
+    assert_eq!(second[..picture].matches(" E-").count(), 1, "{second}");
+    assert_eq!(second.matches("; TIMELAPSE").count(), 1);
+    // Without the tower it stays between the walls and the fill.
+    settings.tower_footprint = None;
+    let text = printed(2, &settings);
+    let second = text.split("; CHANGE_LAYER").nth(2).unwrap();
+    assert!(second.find("; TIMELAPSE 1").unwrap() > second.find("; LAYER CHANGE").unwrap());
+}
+
+#[test]
 fn coordinates_are_taken_back_by_the_extruder_offset() {
     let plain = printed(1, &basic());
     let offset = printed(

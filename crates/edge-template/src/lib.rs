@@ -216,8 +216,13 @@ fn expand_over(
                 }
                 // A number as the reference writes a setting's value out
                 // (Config.hpp `ConfigOptionFloat::serialize`, a stream's
-                // six significant digits).
-                out.push_str(&read(overlay, name).map_err(fail)?.brief());
+                // six significant digits), and a switch as 1 or 0
+                // (`ConfigOptionBool::serialize`: the A2L's timelapse
+                // G-code writes `clear_to_x0 = [clear_to_x0]`).
+                match read(overlay, name).map_err(fail)? {
+                    expression::Value::Bool(value) => out.push_str(if value { "1" } else { "0" }),
+                    value => out.push_str(&value.brief()),
+                }
             }
         } else {
             let trimmed = body.trim();
@@ -339,6 +344,17 @@ mod tests {
 
     fn expanded(template: &str) -> String {
         expand(template, &variables()).unwrap()
+    }
+
+    #[test]
+    fn a_switch_in_brackets_is_written_as_the_reference_writes_a_setting() {
+        // ConfigOptionBool::serialize: 1 or 0 (the A2L's timelapse G-code,
+        // `clear_to_x0 = [clear_to_x0]`); in braces it stays a word.
+        let mut variables = variables();
+        variables.set("clear_to_x0", Value::Bool(true));
+        variables.set("spiral", Value::Bool(false));
+        assert_eq!(expand("[clear_to_x0] [spiral]", &variables).unwrap(), "1 0");
+        assert_eq!(expand("{clear_to_x0}", &variables).unwrap(), "true");
     }
 
     #[test]
