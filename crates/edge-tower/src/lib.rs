@@ -1617,12 +1617,45 @@ pub(crate) fn clipper_one_crossings(outline: &mut [Point2], shapes: &[ExPolygon]
         Some(dx) => side.bot.x + round(dx * (y - side.bot.y) as f64),
         None => side.bot.x,
     };
-    for point in outline.iter_mut() {
-        if corners.contains(&(point.x, point.y)) {
-            continue;
+    // Most points are corners of the shapes; the rest are crossings. Few
+    // of them look through every side; many, through the sides in the
+    // millimetre cells their bounds cover.
+    let crossing: Vec<usize> = (0..outline.len())
+        .filter(|index| !corners.contains(&(outline[*index].x, outline[*index].y)))
+        .collect();
+    const CELL: i64 = 1_000_000;
+    let cell = |value: i64| value.div_euclid(CELL);
+    let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> =
+        std::collections::HashMap::new();
+    let everything: Vec<usize> = (0..sides.len()).collect();
+    let indexed = crossing.len() * sides.len() > 20_000;
+    if indexed {
+        for (index, side) in sides.iter().enumerate() {
+            let (low_x, high_x) = (
+                side.bot.x.min(side.top.x) - 3,
+                side.bot.x.max(side.top.x) + 3,
+            );
+            let (low_y, high_y) = (side.top.y - 3, side.bot.y + 3);
+            for x in cell(low_x)..=cell(high_x) {
+                for y in cell(low_y)..=cell(high_y) {
+                    grid.entry((x, y)).or_default().push(index);
+                }
+            }
         }
-        let near: Vec<&Side> = sides
+    }
+    for at in crossing {
+        let point = &mut outline[at];
+        let candidates = if indexed {
+            match grid.get(&(cell(point.x), cell(point.y))) {
+                Some(candidates) => candidates,
+                None => continue,
+            }
+        } else {
+            &everything
+        };
+        let near: Vec<&Side> = candidates
             .iter()
+            .map(|index| &sides[*index])
             .filter(|side| {
                 let (dx, dy) = (
                     (side.top.x - side.bot.x) as f64,
