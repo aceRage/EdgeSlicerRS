@@ -2209,7 +2209,18 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             })
             .collect()
     };
+    // Nozzles of two sizes with every filament on one of them: the tower is
+    // laid as on a printer of that size alone (`crate::nozzle_process::tower_view`).
+    // Where it stands, and how big it is estimated to be before it is
+    // planned, stays the plate's first nozzle's, as the reference's
+    // estimate takes it (measured: h2_mix_four_2, its brim estimated
+    // 0.686 mm wide, the 0.4 nozzle's).
+    let tower_view = crate::nozzle_process::tower_view(&settings)?;
+    let tower_source: &Settings = tower_view.as_ref().unwrap_or(&settings);
     let mut tower_settings = TowerSettings::from_settings(&settings, plate)?;
+    if tower_settings.enabled && used.len() > 1 {
+        crate::nozzle_process::check_tower(&settings)?;
+    }
     let mut tower_moved: Option<String> = None;
     // A tower whose saved place no longer fits it is moved onto the bed
     // as the reference's command line moves it before slicing
@@ -2684,6 +2695,17 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // Bambu's tower (WipeTower.cpp) is planned and laid by edge-tower's
     // `type1` and written as its visits; the other by `plan_changes`.
     let mut bambu_visits: Vec<Vec<edge_gcode::TowerVisit>> = Vec::new();
+    // The tower as it is laid: of the nozzle size the filaments print from
+    // (`tower_view`), where it stands.
+    let laid_settings = match &tower_view {
+        Some(view) => {
+            let mut own = TowerSettings::from_settings(view, plate)?;
+            (own.x, own.y) = (tower_settings.x, tower_settings.y);
+            own
+        }
+        None => tower_settings.clone(),
+    };
+    tower_settings = laid_settings;
     let mut tower = if tower_settings.bambu_tower && tower_settings.enabled {
         let tops: Vec<f64> = (0..layers.len())
             .map(|index| heights.top_of(index))
@@ -2692,7 +2714,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             .and_then(|order| order.first())
             .map_or(0, |filament| tools[*filament] - 1);
         let laid = crate::bambu_tower::plan(
-            &settings,
+            tower_source,
             plate,
             &tower_settings,
             &rams,

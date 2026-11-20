@@ -1271,6 +1271,64 @@ pub(crate) fn check_merging(
     Ok(())
 }
 
+/// The diameter of the nozzle each filament prints from, on a printer
+/// whose nozzles differ in size; none on any other.
+fn filament_sizes(settings: &Settings) -> Result<Option<Vec<f64>>, Failure> {
+    let Some(diameters) = mixed(settings)? else {
+        return Ok(None);
+    };
+    Ok(Some(
+        (extruders_of(settings, 2).into_iter())
+            .map(|extruder| diameters[extruder])
+            .collect(),
+    ))
+}
+
+/// Refuses the prime tower where the plate's filaments are set to nozzles
+/// of two sizes: the reference then lays each filament's purge at its own
+/// nozzle's width over a structure of the smallest (WipeTower.cpp
+/// `tool_line_width`, `set_extruder`) and plans the tower as each nozzle's
+/// own ladder of layers (`set_multi_diameter_print`, `merged_fill_active`,
+/// WipeTower.cpp l.4510-5500), which is not done.
+pub(crate) fn check_tower(settings: &Settings) -> Result<(), Failure> {
+    let Some(sizes) = filament_sizes(settings)? else {
+        return Ok(());
+    };
+    if sizes.iter().any(|size| (size - sizes[0]).abs() > 1e-6) {
+        return Err(format!(
+            "nozzles of two sizes: with filaments set to both the {} and the {} mm nozzle the \
+             prime tower is laid at each nozzle's own width and planned as each nozzle's own \
+             layers, which is not done yet; turn the prime tower off, or set every filament to \
+             one nozzle; no G-code was written",
+            size_text(sizes.iter().copied().fold(f64::INFINITY, f64::min)),
+            size_text(sizes.iter().copied().fold(0.0, f64::max)),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// What the prime tower reads, where every filament is set to one nozzle
+/// of a printer whose nozzles differ in size: the settings with both
+/// nozzles of that size, as each of the tower's widths is of the nozzle of
+/// the filament it is for (WipeTower.cpp `set_extruder`,
+/// `nozzle_diameter_for_filament`). None where the settings serve as they
+/// are.
+pub(crate) fn tower_view(settings: &Settings) -> Result<Option<Settings>, Failure> {
+    let Some(sizes) = filament_sizes(settings)? else {
+        return Ok(None);
+    };
+    let Some(size) = sizes.first().copied() else {
+        return Ok(None);
+    };
+    if sizes.iter().any(|other| (other - size).abs() > 1e-6) {
+        return Ok(None);
+    }
+    let mut view = settings.clone();
+    view.insert("nozzle_diameter", Value::Many(vec![size_text(size); 2]));
+    Ok(Some(view))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1489,5 +1547,22 @@ mod tests {
         let picked = pick(&candidates, 0.2, "0.20mm Strength @BBL H2D").unwrap();
         assert_eq!(picked, "0.30mm Strength @BBL H2D 0.6 nozzle");
         assert_eq!(quality_word("0.20mm Standard @BBL H2D"), "Standard");
+    }
+
+    /// The tower: laid as on a printer of the one size every filament is
+    /// set to (work/tower/mix, h2_mix_four_2: 100 % of the reference's
+    /// tower lines), refused with filaments on both sizes.
+    #[test]
+    fn the_tower_takes_the_one_size_the_filaments_print_from() {
+        let both = h2d("0.6", ["1", "2"]);
+        let said = check_tower(&both).unwrap_err().to_string();
+        assert!(said.contains("turn the prime tower off"), "{said}");
+        assert!(tower_view(&both).unwrap().is_none());
+        let right = h2d("0.6", ["2", "2"]);
+        check_tower(&right).unwrap();
+        let view = tower_view(&right).unwrap().unwrap();
+        assert_eq!(view.texts("nozzle_diameter").unwrap(), ["0.6", "0.6"]);
+        // Nozzles of one size: nothing to do.
+        assert!(tower_view(&h2d("0.4", ["1", "2"])).unwrap().is_none());
     }
 }
