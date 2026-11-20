@@ -79,29 +79,10 @@ fn volume_type(name: &str) -> Result<VolumeType, Failure> {
 fn machine(settings: &Settings) -> Result<Machine, Failure> {
     let diameters = numbers(settings, "nozzle_diameter")?;
     let extruders = diameters.len();
-    // Two nozzles of different sizes: the reference does not print the
-    // second size with the plate's process. EdgeSlicer picks a system
-    // process of each nozzle's size for it and takes that nozzle's line
-    // widths, region settings and speeds from it (its per-nozzle
-    // processes: NozzleProcess.cpp, PresetBundle.cpp
-    // `auto_nozzle_process_in`, Snapmaker_Orca.cpp l.4094-4171; on an H2D
-    // 0.4 + 0.6 every 0.6 width is 0.62 mm), and with filaments on both
-    // sizes it may merge layers into slabs per nozzle
-    // (AdaptiveLayerMerge.cpp). Neither is done here, and slicing with the
-    // plate's widths would put 0.42 mm lines through a 0.6 mm nozzle.
-    if let Some(pair) = diameters
-        .windows(2)
-        .find(|pair| (pair[0] - pair[1]).abs() > 1e-6)
-    {
-        return Err(format!(
-            "nozzles of two sizes ({} and {} mm): printing each nozzle with a process of its own \
-             size, as the reference does, is not done yet; use nozzles of one size; no G-code \
-             was written",
-            diameter_text(pair[0]),
-            diameter_text(pair[1])
-        )
-        .into());
-    }
+    // Two nozzles of different sizes print each with a process of its own
+    // size (`crate::nozzle_process`), which needs the filament map before
+    // the walls are laid: only a map set by hand comes this far
+    // (`nozzle_process::fill` refuses the others).
     let rack = |key: &str| {
         (settings.texts(key)).is_some_and(|texts| texts.iter().any(|t| !t.trim().is_empty()))
     };
@@ -597,22 +578,24 @@ mod tests {
         assert_eq!(nozzle_map(&settings, &grouping).nozzles, [0, 0]);
     }
 
-    /// Nozzles of two sizes are refused, tower or none: the reference
-    /// prints the second size with a process of its own (work/tower/h2,
-    /// h2_mix_12_nt: every 0.6 mm nozzle width 0.62 mm).
+    /// Nozzles of two sizes with a map set by hand group as the map says
+    /// (`crate::nozzle_process` gives each nozzle its own size's process).
     #[test]
-    fn nozzles_of_two_sizes_are_refused() {
+    fn nozzles_of_two_sizes_keep_the_map_set_by_hand() {
         let mut mixed = h2d();
         mixed.insert(
             "nozzle_diameter",
             edge_config::Value::Many(vec!["0.4".into(), "0.6".into()]),
         );
-        let said = group(&mixed, vec![vec![0, 1]], &[], None, false)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            said.contains("nozzles of two sizes (0.4 and 0.6 mm)"),
-            "{said}"
+        mixed.insert(
+            "filament_map_mode",
+            edge_config::Value::One("Manual".into()),
         );
+        mixed.insert(
+            "filament_map",
+            edge_config::Value::Many(vec!["2".into(), "1".into()]),
+        );
+        let grouped = group(&mixed, vec![vec![0, 1]], &[], None, false).unwrap();
+        assert_eq!(grouped.grouping.unwrap().filament_map, [2, 1]);
     }
 }

@@ -787,6 +787,18 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     )?;
     let all_bodies = bodies.len();
     let mut regions = crate::regions::Regions::default();
+    // Nozzles of two sizes: each filament's regions print with its
+    // nozzle's process (`crate::nozzle_process`).
+    if let Some(nozzle) = crate::nozzle_process::filament_overrides(&settings)? {
+        if !painted.is_empty() {
+            return Err(
+                "nozzles of two sizes: colour painted on a part is not laid with the \
+                        process of each colour's nozzle yet; no G-code was written"
+                    .into(),
+            );
+        }
+        regions.set_nozzles(nozzle);
+    }
     let mut own_set: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
         Default::default();
     #[allow(clippy::too_many_arguments)]
@@ -883,7 +895,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                         crate::regions::part_overrides(&settings, object, volume, own_set);
                     regions.key(&settings, body.filament, &overrides)
                 }
-                None => body.filament,
+                None => regions.key(&settings, body.filament, &Default::default()),
             })
             .collect();
         let borrowed: Vec<edge_slice::Body<'_>> = bodies
@@ -1229,6 +1241,9 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 .collect::<Result<_, String>>()?
         };
         let used: Vec<usize> = keys.iter().map(|key| regions.filament(*key)).collect();
+        // Nozzles of two sizes where the reference would lay the larger
+        // one's layers as slabs: refused (`crate::nozzle_process`).
+        crate::nozzle_process::check_merging(&settings, &used, &used, layer_height)?;
         // The settings of the stages worked out region by region: the
         // plate's for a filament's own region.
         let walls_override = |mut own: crate::regions::StageSettings| {
@@ -2194,7 +2209,18 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             })
             .collect()
     };
+    // Nozzles of two sizes with every filament on one of them: the tower is
+    // laid as on a printer of that size alone (`crate::nozzle_process::tower_view`).
+    // Where it stands, and how big it is estimated to be before it is
+    // planned, stays the plate's first nozzle's, as the reference's
+    // estimate takes it (measured: h2_mix_four_2, its brim estimated
+    // 0.686 mm wide, the 0.4 nozzle's).
+    let tower_view = crate::nozzle_process::tower_view(&settings)?;
+    let tower_source: &Settings = tower_view.as_ref().unwrap_or(&settings);
     let mut tower_settings = TowerSettings::from_settings(&settings, plate)?;
+    if tower_settings.enabled && used.len() > 1 {
+        crate::nozzle_process::check_tower(&settings)?;
+    }
     let mut tower_moved: Option<String> = None;
     // A tower whose saved place no longer fits it is moved onto the bed
     // as the reference's command line moves it before slicing
@@ -2669,6 +2695,17 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // Bambu's tower (WipeTower.cpp) is planned and laid by edge-tower's
     // `type1` and written as its visits; the other by `plan_changes`.
     let mut bambu_visits: Vec<Vec<edge_gcode::TowerVisit>> = Vec::new();
+    // The tower as it is laid: of the nozzle size the filaments print from
+    // (`tower_view`), where it stands.
+    let laid_settings = match &tower_view {
+        Some(view) => {
+            let mut own = TowerSettings::from_settings(view, plate)?;
+            (own.x, own.y) = (tower_settings.x, tower_settings.y);
+            own
+        }
+        None => tower_settings.clone(),
+    };
+    tower_settings = laid_settings;
     let mut tower = if tower_settings.bambu_tower && tower_settings.enabled {
         let tops: Vec<f64> = (0..layers.len())
             .map(|index| heights.top_of(index))
@@ -2677,7 +2714,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
             .and_then(|order| order.first())
             .map_or(0, |filament| tools[*filament] - 1);
         let laid = crate::bambu_tower::plan(
-            &settings,
+            tower_source,
             plate,
             &tower_settings,
             &rams,
@@ -2866,6 +2903,17 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         .flat_map(|ground| ground.contour.points.iter().copied())
         .collect();
     let brim = edge_adhesion::brim(&footings, &tower_ground, &adhesion, first_layer_height)?;
+    // Nozzles of two sizes: brim and skirt are laid at the plate's first
+    // layer width, where the reference takes that of the filament that lays
+    // them (Print.cpp l.4233, l.4259); refused until that is done.
+    if regions.by_nozzle() && (!brim.is_empty() || (!layers.is_empty() && adhesion.has_skirt(0))) {
+        return Err(
+            "nozzles of two sizes: a brim or skirt is not laid at the line width of the \
+                    nozzle that lays it yet; turn them off (brim_type no_brim, skirt_loops 0) \
+                    to slice this print; no G-code was written"
+                .into(),
+        );
+    }
     // The brim shared out among the filaments by the wall it lies nearest
     // (`brim_filament_source` "nearest_wall"; Print.cpp l.6183): only
     // with more than one filament printing and layer by layer, as there.
@@ -3953,7 +4001,7 @@ impl Sliced {
 /// nozzles of different kinds for (PrintConfig.cpp
 /// `support_different_extruders`): one or two extruders, whose
 /// `extruder_variant_list` names more than one kind between them.
-fn groups_onto_nozzles(settings: &Settings) -> bool {
+pub(crate) fn groups_onto_nozzles(settings: &Settings) -> bool {
     let extruders = settings.texts("nozzle_diameter").map_or(0, <[String]>::len);
     let kinds: std::collections::BTreeSet<&str> = (settings.texts("extruder_variant_list"))
         .unwrap_or_default()

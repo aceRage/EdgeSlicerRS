@@ -644,6 +644,13 @@ pub(crate) struct Region {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Regions {
     own: Vec<Region>,
+    /// What each filament's regions print with over the plate's settings
+    /// on a printer whose nozzles differ in size, by filament from 1
+    /// (`crate::nozzle_process::filament_overrides`): laid under a
+    /// region's own settings, which win, as the reference stamps a
+    /// nozzle's process into a region and puts the object's and part's
+    /// values back over it (PrintObject.cpp `region_config_from_model_volume`).
+    nozzle: Vec<BTreeMap<String, String>>,
 }
 
 /// A value as the plate's settings give it, in the text a file gives it in.
@@ -708,7 +715,11 @@ impl Regions {
         filament: usize,
         overrides: &BTreeMap<String, String>,
     ) -> usize {
-        if overrides.is_empty() {
+        let nozzle = filament
+            .checked_sub(1)
+            .and_then(|index| self.nozzle.get(index))
+            .filter(|nozzle| !nozzle.is_empty());
+        if overrides.is_empty() && nozzle.is_none() {
             return filament;
         }
         if let Some(at) = (self.own.iter())
@@ -717,7 +728,7 @@ impl Regions {
             return BASE + at;
         }
         let mut settings = plate.clone();
-        for (key, value) in overrides {
+        for (key, value) in nozzle.into_iter().flatten().chain(overrides) {
             let value = match plate.get(key) {
                 Some(Value::Many(_)) => Value::Many(
                     value
@@ -735,6 +746,17 @@ impl Regions {
             settings: Arc::new(settings),
         });
         BASE + self.own.len() - 1
+    }
+
+    /// Sets what each filament's regions print with over the plate's
+    /// settings (see `nozzle`), before any region is made.
+    pub(crate) fn set_nozzles(&mut self, nozzle: Vec<BTreeMap<String, String>>) {
+        self.nozzle = nozzle;
+    }
+
+    /// Whether filaments print with settings of their nozzle's own.
+    pub(crate) fn by_nozzle(&self) -> bool {
+        self.nozzle.iter().any(|own| !own.is_empty())
     }
 
     /// The region `key` stands for when it has settings of its own.

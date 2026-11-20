@@ -723,6 +723,7 @@ fn slice(args: SliceArgs) -> Result<(), Failure> {
         closing_radius: args.closing_radius,
         wall_loops: args.wall_loops,
         bed_type: args.bed_type.clone(),
+        profiles: args.profiles.profiles.clone(),
         ..Overrides::default()
     };
     let opened = edge_engine::open_to_slice(

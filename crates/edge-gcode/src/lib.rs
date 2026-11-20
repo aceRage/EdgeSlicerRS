@@ -1979,6 +1979,9 @@ impl Writer<'_> {
                 let value = grouped.as_deref().unwrap_or(value);
                 writeln!(self.out, "; {key} = {value}")?;
             }
+            if let Some(nozzles) = &s.physical_nozzles {
+                writeln!(self.out, "; physical_nozzle_properties = {nozzles}")?;
+            }
             if let Some(bed) = self.file.first_layer_bed {
                 writeln!(self.out, "; first_layer_bed_temperature = {bed:.0}")?;
             }
