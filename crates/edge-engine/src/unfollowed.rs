@@ -392,6 +392,8 @@ pub(crate) fn notes(settings: &Settings, printing: usize) -> Vec<String> {
         Value::One(_) => 1,
         Value::Many(entries) => entries.len(),
     });
+    let by_nozzle = (settings.unnoted("nozzle_outer_wall_line_width"))
+        .is_some_and(|value| matches!(value, Value::Many(entries) if !entries.is_empty()));
     SILENT
         .iter()
         .filter(|silent| match silent.many {
@@ -403,6 +405,15 @@ pub(crate) fn notes(settings: &Settings, printing: usize) -> Vec<String> {
             silent.with.is_none_or(|(other, off)| {
                 (settings.unnoted(other)).is_some_and(|value| off.first_on(value).is_some())
             })
+        })
+        // Filled by `crate::nozzle_process` on nozzles of two sizes, and
+        // followed there.
+        .filter(|silent| {
+            !(by_nozzle
+                && matches!(
+                    silent.key,
+                    "process_extruder_values" | "nozzle_region_values" | "nozzle_process_presets"
+                ))
         })
         .filter_map(|silent| {
             let value = settings.unnoted(silent.key)?;
@@ -795,13 +806,24 @@ mod tests {
     /// itself is not followed. The filament grouping (`crate::grouping`)
     /// reads the rack's nozzle diameters only to refuse a rack, and
     /// `flush_multiplier_fast` for the grouping's flush matrices alone.
-    const PARTLY: [&str; 6] = [
+    const PARTLY: [&str; 15] = [
         "stabilizer_supports",
         "prime_volume_mode",
         "handle_hotend_as_extruder",
         "extruder_rack_nozzle_diameter",
         "extruder_rack_nozzle_override",
         "flush_multiplier_fast",
+        // Followed or refused on nozzles of two sizes (`crate::nozzle_process`),
+        // said on nozzles of one.
+        "line_width_nozzle_diameter",
+        "nozzle_diameter_override",
+        "nozzle_process_edits",
+        "nozzle_process_presets",
+        "nozzle_region_values",
+        "nozzle_slot_process_presets",
+        "print_extruder_nozzle_diameter",
+        "process_extruder_values",
+        "process_nozzle_line_widths",
     ];
 
     /// The workspace's crates.

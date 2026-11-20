@@ -483,6 +483,9 @@ pub struct PrintSettings {
     /// Printers and their hosts read the material, nozzle and
     /// temperatures from there.
     pub config: Vec<(String, String)>,
+    /// The nozzles' sizes and kinds, listed after the settings where they
+    /// differ in size (`physical_nozzle_properties`).
+    pub physical_nozzles: Option<String>,
     /// When the file is made, as `2026-11-10 at 07:21:37`, for its first
     /// lines; none leaves the time out.
     pub produced_at: Option<String>,
@@ -690,6 +693,7 @@ impl Default for PrintSettings {
             filaments: 1,
             variables: variables(&Settings::default(), None, None, None, None),
             config: Vec::new(),
+            physical_nozzles: None,
             produced_at: None,
             own_heights: false,
             calibration: None,
@@ -1539,12 +1543,14 @@ impl PrintSettings {
                         edge_config::reference_knows(key)
                             || crate::bambu_vars::listed_mass_model(settings, key)
                             || crate::two_nozzles::listed_pre_heating(settings, key)
+                            || listed_per_nozzle(settings, key)
                     })
                     .map(|(key, value)| (key.to_owned(), edge_config::serialized(key, value)))
                     .collect();
                 config.sort();
                 config
             },
+            physical_nozzles: physical_nozzle_properties(settings),
             produced_at: None,
             own_heights: false,
             calibration: None,
@@ -1552,6 +1558,66 @@ impl PrintSettings {
             unsupported,
         })
     }
+}
+
+/// The per-nozzle process settings the reference lists only for a job
+/// that has them (GCode.cpp l.10898-10912): each filament's line widths
+/// (`nozzle_*_line_width`) where they were worked out, and
+/// `nozzle_process_presets` and `process_extruder_values` where a nozzle
+/// prints with values of its own. `nozzle_region_values` never.
+fn listed_per_nozzle(settings: &Settings, key: &str) -> bool {
+    if key.starts_with("nozzle_") && key.ends_with("_line_width") {
+        return settings.texts(key).is_some_and(|values| !values.is_empty());
+    }
+    matches!(key, "nozzle_process_presets" | "process_extruder_values")
+        && (settings.flag("process_extruder_values").ok().flatten() == Some(true)
+            || (settings.texts("nozzle_process_presets"))
+                .is_some_and(|names| names.iter().any(|name| !name.trim().is_empty())))
+}
+
+/// ToolSlots.cpp `physical_nozzle_properties` and
+/// `emit_physical_nozzle_properties`: every nozzle's size and kind
+/// ("0.4-standard,0.6-standard"), where two or more nozzles differ in size
+/// and one nozzle is not fed by many filaments.
+fn physical_nozzle_properties(settings: &Settings) -> Option<String> {
+    let diameters: Vec<f64> = (settings.floats("nozzle_diameter").ok().flatten()?)
+        .into_iter()
+        .map(|diameter| diameter.unwrap_or(0.0))
+        .collect();
+    if diameters.len() < 2
+        || settings
+            .flag("single_extruder_multi_material")
+            .ok()
+            .flatten()
+            == Some(true)
+        || diameters
+            .iter()
+            .all(|diameter| (diameter - diameters[0]).abs() < 0.001)
+    {
+        return None;
+    }
+    let kinds = settings.texts("nozzle_volume_type").unwrap_or_default();
+    let size = |diameter: f64| {
+        let text = format!("{diameter:.2}");
+        let text = text.trim_end_matches('0');
+        text.trim_end_matches('.').to_owned()
+    };
+    Some(
+        (diameters.iter().enumerate())
+            .map(|(extruder, diameter)| {
+                let word = match kinds.get(extruder).map(|kind| kind.trim()) {
+                    Some("High Flow") => "high_flow",
+                    Some("Hybrid") => "hybrid",
+                    Some("TPU High Flow") => "tpu_high_flow",
+                    Some("TPU285") => "tpu285",
+                    Some("E3D High Flow") => "e3d_high_flow",
+                    _ => "standard",
+                };
+                format!("{}-{word}", size(*diameter))
+            })
+            .collect::<Vec<_>>()
+            .join(","),
+    )
 }
 
 impl PrintSettings {

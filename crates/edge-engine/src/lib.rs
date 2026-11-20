@@ -32,6 +32,7 @@ mod layer_heights;
 mod layering;
 mod load;
 mod model;
+mod nozzle_process;
 mod order;
 pub mod orient;
 mod paint;
