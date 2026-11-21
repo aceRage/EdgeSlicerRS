@@ -806,12 +806,16 @@ mod tests {
     /// itself is not followed. The filament grouping (`crate::grouping`)
     /// reads the rack's nozzle diameters only to refuse a rack, and
     /// `flush_multiplier_fast` for the grouping's flush matrices alone.
-    const PARTLY: [&str; 15] = [
+    const PARTLY: [&str; 17] = [
         "stabilizer_supports",
         "prime_volume_mode",
         "handle_hotend_as_extruder",
+        // Refused by the nozzle grouping (`crate::grouping`) where it runs,
+        // said on a printer it does not run for.
         "extruder_rack_nozzle_diameter",
         "extruder_rack_nozzle_override",
+        "filament_rack_nozzle_diameter",
+        "filament_rack_nozzle_slot",
         "flush_multiplier_fast",
         // Followed or refused on nozzles of two sizes (`crate::nozzle_process`),
         // said on nozzles of one.

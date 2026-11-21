@@ -74,6 +74,10 @@ pub struct Machine {
     pub max_group_size: Vec<i32>,
     /// Extruders that would rather print support (a Bowden extruder).
     pub prefer_non_model: Vec<bool>,
+    /// Some extruder has a nozzle rack (`extruder_max_nozzle_count` above
+    /// one, the H2C's right extruder): its nozzles are each a place a
+    /// filament can be grouped onto (`has_multiple_nozzle`).
+    pub multi_nozzle: bool,
 }
 
 /// What the grouping goes by.
@@ -331,8 +335,18 @@ struct Context<'a> {
 }
 
 impl Context<'_> {
+    /// The plate's own layer orders, which the grouping reads only on a
+    /// printer without a nozzle rack (ToolOrdering.cpp
+    /// `get_recommended_filament_maps`: `fg.get_custom_seq` is set only
+    /// where `!has_multiple_nozzle`, and the manual rack grouping never
+    /// sets it).
     fn custom(&self) -> impl Fn(usize) -> Option<Vec<i64>> + '_ {
-        |layer| custom_sequence(&self.input.sequences, layer).map(<[i64]>::to_vec)
+        |layer| {
+            if self.machine.multi_nozzle {
+                return None;
+            }
+            custom_sequence(&self.input.sequences, layer).map(<[i64]>::to_vec)
+        }
     }
 
     /// The score of putting the filaments where `map` says: what they
@@ -536,7 +550,7 @@ impl Context<'_> {
 
 /// Which nozzle each of the project's filaments prints from, as the
 /// reference decides it for a printer of `machine.extruders` extruders of
-/// one nozzle each (`get_recommended_filament_maps`). None where there is
+/// one nozzle each, or with a nozzle rack (`get_recommended_filament_maps`). None where there is
 /// nothing to group (no layers), as the reference leaves `filament_map`
 /// then as it is.
 pub fn group_filaments(machine: &Machine, input: &Input) -> Result<Option<Grouping>, String> {
@@ -553,7 +567,7 @@ pub fn group_filaments(machine: &Machine, input: &Input) -> Result<Option<Groupi
             }),
         )
     };
-    if input.mode == Mode::Manual {
+    if input.mode == Mode::Manual && !machine.multi_nozzle {
         return finish(input.manual_map.iter().map(|e| e - 1).collect());
     }
     let mut map = vec![machine.master_extruder; input.filament_count];
@@ -564,18 +578,51 @@ pub fn group_filaments(machine: &Machine, input: &Input) -> Result<Option<Groupi
         }
         return finish(map);
     }
-    if machine.extruders > 1 {
+    if machine.extruders > 1 || machine.multi_nozzle {
         // "Auto For Match" groups for flush without a printer's spools
         // to match (`calc_filament_group_for_match` finds none and the
         // reference falls back), as every other automatic mode does.
         let physical = vec![BTreeSet::new(); machine.extruders];
         let mut unprintable = collect_unprintable_limits(&physical, &input.geometric);
-        for filament in &used {
-            let f = *filament as i32;
-            if unprintable[0].contains(&f) && unprintable[1].contains(&f) {
-                unprintable[0].remove(&f);
-                unprintable[1].remove(&f);
+        // `add_volume_type_limits`, which also frees a filament neither
+        // extruder may take, runs only without a nozzle rack.
+        if !machine.multi_nozzle {
+            for filament in &used {
+                let f = *filament as i32;
+                if unprintable[0].contains(&f) && unprintable[1].contains(&f) {
+                    unprintable[0].remove(&f);
+                    unprintable[1].remove(&f);
+                }
             }
+        }
+        let rack_machine;
+        let mut machine = machine;
+        if input.mode == Mode::Manual {
+            // A manual map on a printer with a nozzle rack picks the
+            // extruder; which of its nozzles is grouped for flush, every
+            // filament barred from the other extruder and no nozzle held to
+            // a share (FilamentGroup.cpp
+            // `calc_filament_group_for_manual_multi_nozzle`). The reference
+            // refuses a used filament the map puts on neither extruder
+            // (ToolOrdering.cpp, "Group error in manual mode").
+            for filament in &used {
+                let side = input.manual_map.get(*filament as usize).map(|e| e - 1);
+                match side {
+                    Some(side @ (0 | 1)) => {
+                        unprintable[1 - side as usize].insert(*filament as i32);
+                    }
+                    _ => {
+                        return Err(
+                            "Group error in manual mode. Please check nozzle count or regroup."
+                                .to_owned(),
+                        );
+                    }
+                }
+            }
+            let mut unlimited = machine.clone();
+            unlimited.max_group_size.fill(i32::MAX);
+            rack_machine = unlimited;
+            machine = &rack_machine;
         }
         let context = Context {
             machine,
@@ -614,6 +661,7 @@ mod tests {
             master_extruder: 1,
             max_group_size: vec![1, 1],
             prefer_non_model: vec![false, false],
+            multi_nozzle: false,
         }
     }
 
@@ -714,6 +762,46 @@ mod tests {
         three.geometric = vec![BTreeSet::from([0, 1, 2]), BTreeSet::new()];
         let grouping = group_filaments(&machine, &three).unwrap().unwrap();
         assert_eq!(grouping.filament_map, [2, 2, 2]);
+    }
+
+    /// The H2C: one nozzle on the left, a rack of six on the right.
+    fn h2c() -> Machine {
+        Machine {
+            extruders: 2,
+            nozzles: nozzle_list(&[
+                ("0.4".into(), VolumeType::STANDARD, 0, 1),
+                ("0.4".into(), VolumeType::STANDARD, 1, 6),
+            ]),
+            master_extruder: 1,
+            max_group_size: vec![1, 1],
+            prefer_non_model: vec![false, false],
+            multi_nozzle: true,
+        }
+    }
+
+    #[test]
+    fn a_manual_map_on_a_rack_picks_the_extruder_and_groups_its_nozzles() {
+        // Both filaments on the right: the rack's nozzles are grouped for
+        // flush, one each (measured: work/tower/h2c, h2c_two_22_pn gives
+        // filament_nozzle_map 2,1 in both slicers).
+        let mut manual = input(2);
+        manual.mode = Mode::Manual;
+        manual.manual_map = vec![2, 2];
+        let grouping = group_filaments(&h2c(), &manual).unwrap().unwrap();
+        assert_eq!(grouping.filament_map, [2, 2]);
+        assert_eq!(grouping.result.nozzle_map(), [2, 1]);
+        // One on each side keeps its side.
+        manual.manual_map = vec![1, 2];
+        let grouping = group_filaments(&h2c(), &manual).unwrap().unwrap();
+        assert_eq!(grouping.filament_map, [1, 2]);
+        assert_eq!(grouping.result.nozzle_map(), [0, 1]);
+        // A used filament on neither extruder is the reference's group error.
+        manual.manual_map = vec![1, 3];
+        assert!(
+            group_filaments(&h2c(), &manual)
+                .unwrap_err()
+                .contains("Group error")
+        );
     }
 
     #[test]

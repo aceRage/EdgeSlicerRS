@@ -9,7 +9,7 @@
 //! depths, where it stands; and how it is laid ([`lay()`]), as the
 //! reference's tower writes its G-code.
 //!
-//! Refused: rack hotends counted as extruders (H2C, H3C), more than two
+//! Refused: rack hotends counted as extruders (H3C), more than two
 //! nozzles or two of different sizes, the side scrape, sparse layers laid
 //! as one, and Edge's own tower interface options.
 

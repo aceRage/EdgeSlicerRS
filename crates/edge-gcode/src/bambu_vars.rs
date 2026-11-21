@@ -452,3 +452,112 @@ pub(crate) fn farthest_point_of(parts: &[crate::Layer<'_>]) -> Option<(edge_geom
     }
     walls.or(rest).map(|(_, point, filament)| (point, filament))
 }
+
+/// Where Bambu's H2C change G-code is told the nozzle waits to heat
+/// (`M620.14 X[wipe_tower_center_pos_x] Y[wipe_tower_center_pos_y]`): the
+/// tower's box on the bed (its first layer, brim included), the bed's
+/// (`printable_area`) and the bed every nozzle reaches (the extruders'
+/// `extruder_printable_area` in common, else the bed), as GCode.cpp
+/// `bambu_wipe_tower_plate_bbx` and `bambu_shared_printable_bbx` have them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct HeatingBoxes {
+    tower: [f64; 4],
+    bed: [f64; 4],
+    shared: [f64; 4],
+}
+
+fn box_of(points: impl IntoIterator<Item = [f64; 2]>) -> Option<[f64; 4]> {
+    points.into_iter().fold(None, |acc, [x, y]| {
+        Some(match acc {
+            None => [x, y, x, y],
+            Some([a, b, c, d]) => [a.min(x), b.min(y), c.max(x), d.max(y)],
+        })
+    })
+}
+
+impl HeatingBoxes {
+    pub(crate) fn new(variables: &Variables, tower: Option<[f64; 4]>) -> Option<Self> {
+        let tower = tower?;
+        let corners = (variables.list("printable_area").unwrap_or(&[]).iter()).filter_map(|v| {
+            let text = v.to_string();
+            let (x, y) = text.trim().split_once('x')?;
+            Some([x.trim().parse().ok()?, y.trim().parse().ok()?])
+        });
+        let bed = box_of(corners)?;
+        let areas =
+            crate::timelapse::areas_of(variables.list("extruder_printable_area").unwrap_or(&[]));
+        let shared = if areas.len() > 1 {
+            (areas.iter().filter_map(|area| box_of(area.iter().copied()))).fold(
+                None,
+                |acc: Option<[f64; 4]>, [a, b, c, d]| {
+                    Some(match acc {
+                        None => [a, b, c, d],
+                        Some([e, f, g, h]) => [a.max(e), b.max(f), c.min(g), d.min(h)],
+                    })
+                },
+            )?
+        } else {
+            bed
+        };
+        Some(Self { tower, bed, shared })
+    }
+
+    fn clamp_x(&self, x: f64) -> f64 {
+        x.clamp(self.shared[0], self.shared[0].max(self.shared[2]))
+    }
+
+    /// At the print's start: 2 mm beside the tower on the side facing the
+    /// bed's middle, at the tower's middle y (GCode.cpp
+    /// `bambu_heating_stop_at_print_start`).
+    pub(crate) fn at_start(&self) -> [f64; 2] {
+        let [a, b, c, d] = self.tower;
+        let (cx, cy) = ((a + c) / 2.0, (b + d) / 2.0);
+        let x = if cx < (self.bed[0] + self.bed[2]) / 2.0 {
+            c + 2.0
+        } else {
+            a - 2.0
+        };
+        [self.clamp_x(x), cy]
+    }
+
+    /// At a change on the tower: 2 mm out from where its purge starts,
+    /// away from the tower's middle (`bambu_heating_stop_at_toolchange`).
+    pub(crate) fn at_change(&self, start: [f64; 2]) -> [f64; 2] {
+        let centre = (self.tower[0] + self.tower[2]) / 2.0;
+        let x = start[0] + if start[0] < centre { -2.0 } else { 2.0 };
+        [self.clamp_x(x), start[1]]
+    }
+}
+
+#[cfg(test)]
+mod heating_tests {
+    use super::*;
+
+    #[test]
+    fn the_heating_point_is_beside_the_tower_inside_the_shared_bed() {
+        let mut variables = Variables::default();
+        let corners = ["0x0", "330x0", "330x320", "0x320"];
+        variables.set_list(
+            "printable_area",
+            corners.iter().map(|c| Value::text(*c)).collect(),
+        );
+        variables.set_list(
+            "extruder_printable_area",
+            vec![
+                Value::text("0x0,325x0,325x320,0x320"),
+                Value::text("25x0,330x0,330x320,25x320"),
+            ],
+        );
+        assert!(HeatingBoxes::new(&variables, None).is_none());
+        // A tower left of the middle: 2 mm right of it, at its middle y
+        // (measured: work/tower/h2c, h2c_two_12 prints M620.14 X... Y...).
+        let boxes = HeatingBoxes::new(&variables, Some([40.0, 220.0, 80.0, 260.0])).unwrap();
+        assert_eq!(boxes.at_start(), [82.0, 240.0]);
+        // At a change: 2 mm out from the purge start, away from the middle.
+        assert_eq!(boxes.at_change([43.0, 243.0]), [41.0, 243.0]);
+        assert_eq!(boxes.at_change([79.0, 226.0]), [81.0, 226.0]);
+        // Never off the bed both nozzles reach.
+        let edge = HeatingBoxes::new(&variables, Some([10.0, 220.0, 50.0, 260.0])).unwrap();
+        assert_eq!(edge.at_change([12.0, 230.0]), [25.0, 230.0]);
+    }
+}

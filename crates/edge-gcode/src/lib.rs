@@ -634,6 +634,17 @@ pub fn write_timed(
         .value("print_sequence")
         .is_none_or(|sequence| sequence.to_string() != "by object");
     bambu_vars::single_nozzle(&mut variables, settings.len(), first, &used, by_layer);
+    // The point the nozzle heats at, beside the tower (GCode.cpp, print
+    // start): the H2C's start and change G-code; without a tower they
+    // fall back to their own fixed point.
+    if let Some(boxes) =
+        bambu_vars::HeatingBoxes::new(&variables, settings[first].tower_mesh_bottom)
+    {
+        let [x, y] = boxes.at_start();
+        variables.set("wipe_tower_center_pos_valid", Value::Bool(true));
+        variables.set("wipe_tower_center_pos_x", Value::Float(x));
+        variables.set("wipe_tower_center_pos_y", Value::Float(y));
+    }
     // Two nozzles: which each filament prints from (GCode.cpp `_do_export`).
     if let Some(map) = &plate.nozzles {
         two_nozzles::start(&mut variables, map, layers);

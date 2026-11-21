@@ -205,6 +205,12 @@ pub struct Settings {
     /// each rack hotend counts as an extruder (`handle_hotend_as_extruder`).
     pub nozzles: usize,
     pub hotend_as_extruder: bool,
+    /// A printer with a nozzle rack (`extruder_max_nozzle_count` above
+    /// one, the H2C) and Marlin G-code: each tool change backs the speed
+    /// override up and restores it (`M220 B`, `M220 R`; WipeTower.cpp
+    /// `speed_override_backup`, `speed_override_restore`, which the
+    /// reference writes only on rack printers).
+    pub speed_backup: bool,
     /// Each extruder's nozzle diameter (`nozzle_diameter`), and its
     /// physical extruder, the one a temperature line names
     /// (`physical_extruder_map`).
@@ -763,6 +769,13 @@ impl Settings {
                 .is_some_and(|name| name.starts_with("Bambu Lab")),
             nozzles: nozzles.len().max(1),
             hotend_as_extruder: flag("handle_hotend_as_extruder", false)?,
+            speed_backup: list("extruder_max_nozzle_count")?
+                .iter()
+                .any(|count| count.is_some_and(|count| count > 1.0))
+                && matches!(
+                    config.text("gcode_flavor").unwrap_or("marlin"),
+                    "marlin" | "marlin2"
+                ),
             nozzle_diameters,
             physical_extruders,
             shared_bed,
