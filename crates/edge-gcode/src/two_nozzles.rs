@@ -200,9 +200,11 @@ impl Held {
     /// `HotendFilamentTracker`, runs on the H3C alone; GCode.cpp
     /// `append_tcr` zeroes only changes onto another extruder), which
     /// flushes a full colour change into a nozzle that already holds the
-    /// new filament (measured: work/tower/h2c2, h2c_two_22_pn, every change
-    /// after the first two `M620.10 ... L82.7` / `L265.7` where ours has
-    /// `L0`); not followed.
+    /// new filament (measured: work/tower/h2c2, h2c_two_22_pn, two
+    /// filaments each on a rack nozzle of its own: every change there is
+    /// `M620.10 ... L82.7` (0 to 1) or `L265.7` (1 to 0), here `L0`, the
+    /// nozzle taken holding the new filament or, at its first use,
+    /// nothing, as on the H2D); not followed.
     pub(crate) fn cross_flush(
         &self,
         map: &NozzleMap,
