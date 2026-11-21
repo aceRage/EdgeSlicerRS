@@ -4,10 +4,13 @@
 //! MultiNozzleUtils.cpp and ToolOrdering.cpp `get_recommended_filament_maps`,
 //! ported from libslic3r).
 //!
-//! Only what the reference runs for a two-nozzle printer without a nozzle
-//! rack, sliced without a printer to ask, is here:
+//! Only what the reference runs for a two-nozzle printer, sliced without a
+//! printer to ask, is here:
 //!
-//! - "Manual": the project's `filament_map` as it stands;
+//! - "Manual": the project's `filament_map` as it stands; on a printer with
+//!   a nozzle rack (the H2C's right extruder, `Machine::multi_nozzle`) the
+//!   map picks each filament's extruder and the rack's nozzles are grouped
+//!   for flush (`calc_filament_group_for_manual_multi_nozzle`);
 //! - every automatic mode: every way of putting the plate's filaments on
 //!   the nozzles is tried in turn (`calc_group_by_enum`) and scored by the
 //!   flush the layers would cost on each nozzle and the time the filament
@@ -21,8 +24,8 @@
 //! - fourteen or more filaments, which the reference groups by a k-medoids
 //!   search bounded by a three-second clock (`calc_group_by_kmedoids`), so
 //!   that its answer depends on the speed of the machine;
-//! - nozzle racks (H2C, H3C: `extruder_max_nozzle_count` above one,
-//!   `handle_hotend_as_extruder`);
+//! - rack hotends taken as extruders (H3C, `handle_hotend_as_extruder`),
+//!   and racks of mixed nozzles (the caller refuses both);
 //! - the pool of near-best groupings kept for matching the printer's spools
 //!   (`update_memoryed_groups`, `select_best_group_for_ams`): with no spools
 //!   to match the reference takes the best grouping, as here.

@@ -24,6 +24,9 @@ pub struct TowerVisit {
     pub start: Point2,
     pub change_start: Point2,
     pub end: Point2,
+    /// Where the purge starts, in mm, worked in single precision as the
+    /// reference's `tool_change_start_pos` is (for the H2C's heating point).
+    pub change_start_mm: [f64; 2],
     /// Where the nozzle wipes leaving the tower, on the bed.
     pub wipe_path: Vec<Point2>,
     /// The visit starts with the tower's own lines, not with the change
@@ -244,6 +247,17 @@ impl Writer<'_> {
         };
         set(self, "wipe_avoid_perimeter", Value::Bool(s.tower_wall_gap));
         set(self, "wipe_avoid_pos_x", Value::Float(visit.wipe_avoid_x));
+        // The point the nozzle heats at for this change: 2 mm out from
+        // where the purge starts (GCode.cpp `append_tcr`), for this change
+        // only.
+        if let Some(boxes) =
+            crate::bambu_vars::HeatingBoxes::new(&self.variables, self.settings.tower_mesh_bottom)
+        {
+            let [x, y] = boxes.at_change(visit.change_start_mm);
+            set(self, "wipe_tower_center_pos_valid", Value::Bool(true));
+            set(self, "wipe_tower_center_pos_x", Value::Float(x));
+            set(self, "wipe_tower_center_pos_y", Value::Float(y));
+        }
         if interface.features {
             set(
                 self,

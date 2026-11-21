@@ -7,9 +7,11 @@
 //!
 //! The grouping itself (which nozzle) is worked out before the writer
 //! (edge-engine `grouping`; for copies printed one after another, the
-//! plate's own map) and handed over in [`Plate::nozzles`]. Not done here,
-//! and refused before: printers with a nozzle rack (H2C, H3C; the grouping
-//! refuses them). On Bambu's tower the ramming before a change onto the
+//! plate's own map) and handed over in [`Plate::nozzles`]. The H2C's rack
+//! comes here only with each extruder printing from one of its nozzles,
+//! which is the two-nozzle print; a change between two nozzles of one
+//! extruder's rack (M632 / M633) is not done, and the grouping refuses a
+//! plate that needs one. On Bambu's tower the ramming before a change onto the
 //! other nozzle is laid by `bambu_tower`.
 
 use edge_template::{Value, Variables};

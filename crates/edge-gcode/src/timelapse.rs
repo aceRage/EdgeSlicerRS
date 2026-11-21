@@ -872,7 +872,7 @@ impl Photos {
 
 /// The corners of a "XxY,XxY" list, each entry of a list of them an area
 /// of its own, and `#` too parting areas (`extruder_printable_area`).
-fn areas_of(values: &[edge_template::Value]) -> Vec<Vec<[f64; 2]>> {
+pub(crate) fn areas_of(values: &[edge_template::Value]) -> Vec<Vec<[f64; 2]>> {
     values
         .iter()
         .flat_map(|value| {

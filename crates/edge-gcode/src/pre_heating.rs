@@ -12,8 +12,10 @@
 //! written and timed, on the file as a whole; the lines are slipped in
 //! after the line they belong after.
 //!
-//! Not done, as nothing here reaches it: the rack hotends of the H2C and
-//! H3C (`handle_hotend_as_extruder`, refused before), and EdgeSlicer's
+//! Not done, as nothing here reaches it: the rack hotends of the H3C
+//! (`handle_hotend_as_extruder`, refused before) and a change between
+//! two nozzles of the H2C's rack (refused by the grouping; with each
+//! extruder on one nozzle the H2C pre-heats as the H2D), and EdgeSlicer's
 //! support interface temperature, which the reference pre-heats an idle
 //! nozzle to (`Print::support_interface_temperatures`; not a setting this
 //! engine follows).

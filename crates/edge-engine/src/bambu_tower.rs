@@ -253,6 +253,10 @@ pub(crate) fn plan(
                 origin,
                 start: bed(visit.start_pos),
                 change_start: bed(visit.tool_change_start_pos),
+                change_start_mm: [
+                    f64::from(visit.tool_change_start_pos.0 + planned.origin.0),
+                    f64::from(visit.tool_change_start_pos.1 + planned.origin.1),
+                ],
                 end: bed(visit.end_pos),
                 wipe_path: visit.wipe_path.iter().map(|p| bed(*p)).collect(),
                 finish_first: visit.is_finish_first,

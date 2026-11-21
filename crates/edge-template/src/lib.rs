@@ -209,7 +209,63 @@ fn expand_over(
 
         if close == ']' {
             // The older form names one variable, nothing more.
-            if live {
+            let word = |text: &str| {
+                !text.is_empty()
+                    && !text.starts_with(|c: char| c.is_ascii_digit())
+                    && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            };
+            // `[list[index]]`, a list's entry at an integer variable
+            // (PlaceholderParser.cpp `legacy_variable_expansion2`): a
+            // negative index is refused, one past the end gives the first
+            // entry, and the entry is written as the setting writes it. The
+            // H2C's filament change reads
+            // `[filament_pre_cooling_temperature_nc[next_filament_id]]`.
+            let indexed = body
+                .trim()
+                .strip_suffix(']')
+                .and_then(|inner| inner.split_once('['))
+                .filter(|(list, index)| word(list.trim()) && word(index.trim()));
+            if let (true, Some((list, index))) = (live, indexed) {
+                let (list, index) = (list.trim(), index.trim());
+                let index = match read(overlay, index).map_err(fail)? {
+                    expression::Value::Int(value) => value,
+                    expression::Value::Text(text) if text.trim().parse::<i64>().is_ok() => {
+                        text.trim().parse::<i64>().unwrap_or(0)
+                    }
+                    _ => {
+                        return Err(fail(format!(
+                            "\"[{body}]\": indexing variable has to be integer"
+                        )));
+                    }
+                };
+                if index < 0 {
+                    return Err(fail(format!("\"[{body}]\": negative vector index")));
+                }
+                let variable = match overlay.values.get(list) {
+                    Some(variable) => Some(variable),
+                    None => variables.variable(list),
+                };
+                let value = match variable {
+                    Some(Variable::Many(values)) if values.is_empty() => {
+                        return Err(fail(format!(
+                            "\"[{body}]\": indexing an empty vector variable"
+                        )));
+                    }
+                    Some(variable @ Variable::Many(_)) => {
+                        variable.read(list, Some(index)).map_err(fail)?
+                    }
+                    Some(Variable::One(_)) => {
+                        return Err(fail(format!(
+                            "\"[{body}]\": trying to index a scalar variable"
+                        )));
+                    }
+                    None => return Err(fail(format!("\"[{body}]\": variable does not exist"))),
+                };
+                match value {
+                    expression::Value::Bool(value) => out.push_str(if value { "1" } else { "0" }),
+                    value => out.push_str(&value.brief()),
+                }
+            } else if live {
                 let name = body.trim();
                 if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
                     return Err(fail(format!("\"[{body}]\" is not a variable name")));
@@ -355,6 +411,29 @@ mod tests {
         variables.set("spiral", Value::Bool(false));
         assert_eq!(expand("[clear_to_x0] [spiral]", &variables).unwrap(), "1 0");
         assert_eq!(expand("{clear_to_x0}", &variables).unwrap(), "true");
+    }
+
+    #[test]
+    fn a_list_in_brackets_is_indexed_by_an_integer_variable() {
+        // PlaceholderParser.cpp `legacy_variable_expansion2`, as the H2C's
+        // `M620.15 P[filament_pre_cooling_temperature_nc[next_filament_id]]`.
+        let mut variables = variables();
+        variables.set("next_filament_id", Value::Int(1));
+        variables.set("far", Value::Int(7));
+        variables.set("below", Value::Int(-1));
+        assert_eq!(
+            expand("P[nozzle_temperature[next_filament_id]]", &variables).unwrap(),
+            "P240"
+        );
+        // Past the end: the first entry.
+        assert_eq!(
+            expand("[nozzle_temperature[far]]", &variables).unwrap(),
+            "220"
+        );
+        assert!(expand("[nozzle_temperature[below]]", &variables).is_err());
+        assert!(expand("[layer_z[next_filament_id]]", &variables).is_err());
+        assert!(expand("[nozzle_temperature[layer_z]]", &variables).is_err());
+        assert!(expand("[missing[next_filament_id]]", &variables).is_err());
     }
 
     #[test]

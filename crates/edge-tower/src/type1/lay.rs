@@ -1077,6 +1077,9 @@ impl Layer<'_> {
             material(self.current_tool),
             material(new_tool)
         ));
+        if self.settings.speed_backup {
+            writer.append("M220 B\n");
+        }
         writer.append("M220 S100\n");
         let mut initial = self.next_pos(&cleaning, wipe_length, new_tool, solid);
         // With Bambu's interface features a contact purge starts outside
@@ -1108,6 +1111,9 @@ impl Layer<'_> {
             after_nozzle_change,
         );
         writer.append("; WIPE_TOWER_END\n");
+        if self.settings.speed_backup {
+            writer.append("M220 R\n");
+        }
         self.tool_changes += 1;
         self.blocks[block].cur_depth += wipe_depth;
         self.blocks[block].last_filament_change = Some(new_tool);
@@ -1914,6 +1920,21 @@ mod tests {
             .filter(|e| *e > 0.0)
             .sum();
         assert!(laid * area > 44.0 && laid * area < 52.0, "{}", laid * area);
+    }
+
+    #[test]
+    fn a_rack_printer_backs_the_speed_override_up_around_each_change() {
+        // WipeTower.cpp `speed_override_backup` / `_restore`: `M220 B`
+        // before and `M220 R` after each change, on a printer with a
+        // nozzle rack only (measured: work/tower/h2c, one pair a change).
+        let rack = settings(r#", "extruder_max_nozzle_count": ["1", "6"]"#);
+        let visits = lay(&plan(&rack, &layers(3), 0).unwrap(), &rack).unwrap();
+        let change = visits[1].iter().find(|v| v.is_tool_change).unwrap();
+        assert!(change.gcode.contains("M220 B\nM220 S100\n"));
+        assert!(change.gcode.contains("; WIPE_TOWER_END\nM220 R\n"));
+        let s = settings("");
+        let visits = lay(&plan(&s, &layers(3), 0).unwrap(), &s).unwrap();
+        assert!(visits.iter().flatten().all(|v| !v.gcode.contains("M220 B")));
     }
 
     #[test]

@@ -1,12 +1,16 @@
 //! Which nozzle each filament prints from on a printer of two nozzles of
-//! different kinds (the Bambu Lab H2D), worked out from a plate's settings
+//! different kinds (the Bambu Lab H2D) or with a nozzle rack (the H2C:
+//! one nozzle on the left, six on the right), worked out from a plate's settings
 //! and the filaments each layer prints (ToolOrdering.cpp
 //! `reorder_extruders_for_minimum_flush_volume`,
 //! `get_recommended_filament_maps`, `build_filament_group_context`;
 //! the grouping itself is `edge-group`'s).
 //!
 //! Refused here, where the reference would group differently from what is
-//! ported: nozzle racks (H2C, H3C), a part or the prime tower where only
+//! ported: rack hotends taken as extruders (the H3C), a rack set by hand
+//! or of mixed nozzles, a grouping that puts the filaments of one
+//! extruder on two or more of its rack's nozzles (`rack_spread`: a nozzle
+//! change on the rack is not done yet), a part or the prime tower where only
 //! one nozzle reaches or above a nozzle's height, and a flush matrix of a
 //! length the grouping cannot read (see `edge_group::prepare_flush_matrices`).
 
@@ -83,23 +87,64 @@ fn machine(settings: &Settings) -> Result<Machine, Failure> {
     // size (`crate::nozzle_process`), which needs the filament map before
     // the walls are laid: only a map set by hand comes this far
     // (`nozzle_process::fill` refuses the others).
-    let rack = |key: &str| {
-        (settings.texts(key)).is_some_and(|texts| texts.iter().any(|t| !t.trim().is_empty()))
-    };
     let counts = numbers(settings, "extruder_max_nozzle_count")?;
+    let count_of = |extruder: usize| counts.get(extruder).map_or(1, |c| (*c as i32).max(1));
+    let blank = |key: &str| {
+        (settings.texts(key))
+            .is_none_or(|texts| texts.iter().all(|t| t.trim().is_empty() || t.trim() == "0"))
+    };
+    // Rack hotends taken one by one as extruders (Bambu Studio 2.9.1
+    // `handle_hotend_as_extruder`; PrintConfig.cpp `hotend_as_extruder`
+    // also says so of one extruder with a rack): the H3C.
     if settings.flag("handle_hotend_as_extruder")? == Some(true)
-        || counts.iter().any(|count| *count > 1.0)
-        || rack("extruder_rack_nozzle_diameter")
-        || rack("extruder_rack_nozzle_override")
+        || (extruders == 1 && count_of(0) > 1)
     {
         return Err(
-            "a printer with a nozzle rack (H2C, H3C): grouping filaments onto the rack's \
-                    nozzles is not done yet; no G-code was written"
+            "a printer whose rack hotends count as extruders (H3C): grouping filaments onto \
+             them is not done yet; no G-code was written"
                 .into(),
         );
     }
+    // A nozzle rack (the H2C's right extruder, `extruder_max_nozzle_count`
+    // above one): only the rack the machine has when neither the project
+    // nor the printer names one (ToolSlots.cpp `default_rack_nozzle_text`:
+    // that many nozzles of the extruder's size and kind) is followed.
+    let multi_nozzle = counts.iter().any(|count| *count > 1.0);
+    {
+        for (key, what) in [
+            (
+                "extruder_rack_nozzle_override",
+                "the project's rack nozzles",
+            ),
+            (
+                "extruder_rack_nozzle_diameter",
+                "the printer's rack nozzles",
+            ),
+            (
+                "filament_rack_nozzle_diameter",
+                "a filament pinned to a rack nozzle size",
+            ),
+            (
+                "filament_rack_nozzle_slot",
+                "a filament pinned to a rack slot",
+            ),
+        ] {
+            if !blank(key) {
+                return Err(format!(
+                    "{key} ({what}): grouping filaments onto a nozzle rack set by hand is not \
+                     done yet; clear it to slice with the machine's own rack; no G-code was \
+                     written"
+                )
+                .into());
+            }
+        }
+    }
     let kinds = settings.texts("nozzle_volume_type").unwrap_or_default();
     let stats = settings.texts("extruder_nozzle_stats").unwrap_or_default();
+    let total_slots: i32 = (0..extruders).map(count_of).sum();
+    let slot_kinds = settings
+        .texts("default_nozzle_volume_type")
+        .unwrap_or_default();
     let mut groups = Vec::new();
     for (extruder, diameter) in diameters.iter().enumerate() {
         // A missing entry is a Standard nozzle (`nozzle_volume_type_at`).
@@ -108,6 +153,38 @@ fn machine(settings: &Settings) -> Result<Machine, Failure> {
             None => VolumeType::STANDARD,
         };
         let text = diameter_text(*diameter);
+        let e = extruder as i32;
+        let count = count_of(extruder);
+        if count > 1 {
+            if kind == VolumeType::HYBRID {
+                return Err(format!(
+                    "a nozzle rack of mixed kinds (extruder {}, nozzle_volume_type Hybrid): \
+                     grouping filaments onto it is not done yet; no G-code was written",
+                    extruder + 1
+                )
+                .into());
+            }
+            // One kind for each slot when the list is as long as all slots
+            // (the H3C's TPU slot); the H2C's has one to an extruder.
+            if slot_kinds.len() == total_slots as usize && total_slots as usize > extruders {
+                let first: i32 = (0..extruder).map(count_of).sum();
+                for name in &slot_kinds[first as usize..(first + count) as usize] {
+                    let slot = volume_type(name)?;
+                    if slot != kind && slot != VolumeType::STANDARD && slot != VolumeType::HYBRID {
+                        return Err(
+                            "a nozzle rack of mixed kinds (default_nozzle_volume_type): \
+                                    grouping filaments onto it is not done yet; no G-code was \
+                                    written"
+                                .into(),
+                        );
+                    }
+                }
+            }
+            // ToolOrdering.cpp `build_nozzle_groups` (`rack_nozzle_groups`):
+            // one group of every nozzle of the rack.
+            groups.push((text, kind, e, count));
+            continue;
+        }
         // "Kind#count|Kind#count" (PrintConfig.cpp `get_extruder_nozzle_stats`).
         let mut stat: BTreeMap<VolumeType, i32> = BTreeMap::new();
         for entry in stats.get(extruder).map_or("", String::as_str).split('|') {
@@ -117,7 +194,6 @@ fn machine(settings: &Settings) -> Result<Machine, Failure> {
                 *stat.entry(kind).or_default() += count.trim().parse::<i32>().unwrap_or(0);
             }
         }
-        let e = extruder as i32;
         if stat.is_empty() {
             groups.push((text, kind, e, 1));
         } else if kind == VolumeType::HYBRID {
@@ -128,10 +204,17 @@ fn machine(settings: &Settings) -> Result<Machine, Failure> {
             groups.push((text, kind, e, stat.get(&kind).copied().unwrap_or(0)));
         }
     }
+    // A rack of one kind is numbered the same by physical slot
+    // (ToolSlots.cpp `grouping_nozzle_list`) as sorted (`build_nozzle_list`).
     let nozzles = nozzle_list(&groups);
-    if nozzles.len() != extruders
-        || (nozzles.iter().enumerate()).any(|(index, nozzle)| nozzle.extruder_id != index as i32)
-    {
+    let one_each = (0..extruders).all(|extruder| {
+        let on = nozzles
+            .iter()
+            .filter(|n| n.extruder_id == extruder as i32)
+            .count();
+        on == 1 || (count_of(extruder) > 1 && on == count_of(extruder) as usize)
+    });
+    if nozzles.is_empty() || !one_each {
         return Err(format!(
             "extruder_nozzle_stats {stats:?}: an extruder of other than one nozzle; grouping \
              filaments onto such nozzles is not done yet; no G-code was written"
@@ -157,6 +240,7 @@ fn machine(settings: &Settings) -> Result<Machine, Failure> {
         // reference reads `extruder_type` as one Direct Drive entry
         // whatever the project says (a legacy key, dropped on load).
         prefer_non_model: vec![false; extruders],
+        multi_nozzle,
     })
 }
 
@@ -356,6 +440,9 @@ pub(crate) fn group(
             .collect(),
     };
     let grouping = edge_group::group_filaments(&machine, &input)?;
+    if let Some(grouping) = &grouping {
+        rack_spread(grouping)?;
+    }
     Ok(Grouped {
         machine,
         input,
@@ -365,6 +452,42 @@ pub(crate) fn group(
         grouping,
         orders: Vec::new(),
     })
+}
+
+/// Refuses a grouping that puts the plate's filaments on two or more
+/// nozzles of one extruder's rack: a change between them is a rack nozzle
+/// change (GCode.cpp `nozzle_change_gcode`, M632 / M633; WipeTower.cpp
+/// `NozzleChangePlan`), and a filament loaded into a nozzle that last held
+/// another flushes from that one, neither of which is done yet. With every
+/// extruder printing from one nozzle the print is the two-nozzle one.
+fn rack_spread(grouping: &edge_group::Grouping) -> Result<(), Failure> {
+    let result = &grouping.result;
+    let mut on: BTreeMap<i32, BTreeSet<i32>> = BTreeMap::new();
+    for filament in &result.used {
+        if let Some(nozzle) = result.nozzle_for(i64::from(*filament)) {
+            on.entry(nozzle.extruder_id)
+                .or_default()
+                .insert(nozzle.group_id);
+        }
+    }
+    match on.iter().find(|(_, nozzles)| nozzles.len() > 1) {
+        Some((extruder, nozzles)) => Err(format!(
+            "the filament grouping puts the plate's filaments on {} nozzles of extruder {}'s \
+             rack (filament_nozzle_map {}): changing nozzles on the rack is not done yet; \
+             put the filaments that extruder prints on one nozzle (one filament on it, or \
+             Manual with the rest on the other extruder); no G-code was written",
+            nozzles.len(),
+            extruder + 1,
+            (result
+                .nozzle_map()
+                .iter()
+                .map(i32::to_string)
+                .collect::<Vec<_>>())
+            .join(",")
+        )
+        .into()),
+        None => Ok(()),
+    }
 }
 
 /// Each layer's filaments in the order the layer prints them, put in
@@ -551,15 +674,55 @@ mod tests {
         // matrix as half a matrix to each nozzle, gives [1, 2]
         // (work/bambu/h2d_two.3mf).
         assert_eq!(grouped.grouping.unwrap().filament_map, [2, 1]);
+    }
+
+    fn many(values: &[&str]) -> edge_config::Value {
+        edge_config::Value::Many(values.iter().map(|v| (*v).to_owned()).collect())
+    }
+
+    #[test]
+    fn the_h2c_rack_is_grouped_onto_and_a_spread_refused() {
         let mut rack = h2d();
+        rack.insert("extruder_max_nozzle_count", many(&["1", "6"]));
+        // The machine's own rack: the left nozzle and six on the right.
+        let machine = machine(&merged(&rack)).unwrap();
+        assert!(machine.multi_nozzle);
+        assert_eq!(machine.nozzles.len(), 7);
+        assert!(machine.nozzles[1..].iter().all(|n| n.extruder_id == 1));
+        // One filament on each side prints as on two nozzles.
         rack.insert(
-            "extruder_max_nozzle_count",
-            edge_config::Value::Many(vec!["1".into(), "6".into()]),
+            "filament_map_mode",
+            edge_config::Value::One("Manual".into()),
         );
-        let said = group(&rack, vec![vec![0, 1]], &[], None, false)
+        rack.insert("filament_map", many(&["1", "2"]));
+        let grouped = group(&rack, vec![vec![0, 1]; 3], &[], None, false).unwrap();
+        assert_eq!(grouped.grouping.unwrap().result.nozzle_map(), [0, 1]);
+        // Both on the right with a flush between them: the grouping puts
+        // them on two of the rack's nozzles, whose changes are not done.
+        rack.insert("filament_map", many(&["2", "2"]));
+        rack.insert(
+            "flush_volumes_matrix",
+            many(&["0", "199", "639", "0", "0", "199", "639", "0"]),
+        );
+        let said = group(&rack, vec![vec![0, 1]; 3], &[], None, false)
             .unwrap_err()
             .to_string();
-        assert!(said.contains("rack"), "{said}");
+        assert!(said.contains("filament_nozzle_map 2,1"), "{said}");
+        // A rack set by hand, and rack hotends taken as extruders (H3C),
+        // are refused.
+        let mut set = rack.clone();
+        set.insert("extruder_rack_nozzle_override", many(&["", "0.4,0.6"]));
+        let said = group(&set, vec![vec![0]], &[], None, false)
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("extruder_rack_nozzle_override"), "{said}");
+        let mut h3c = h2d();
+        h3c.insert("nozzle_diameter", many(&["0.4"]));
+        h3c.insert("extruder_max_nozzle_count", many(&["9"]));
+        let said = group(&h3c, vec![vec![0]], &[], None, false)
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("H3C"), "{said}");
     }
 
     /// Copies printed one after another take the plate's own map, the

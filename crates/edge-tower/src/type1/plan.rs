@@ -1181,12 +1181,12 @@ pub(crate) fn valid_last_layer(
 /// print starts with (WipeTower.cpp `plan_toolchange` for each, then
 /// `generate` up to the layers' laying: `plan_tower_new`, `set_rib_offset`).
 pub fn plan(settings: &Settings, layers: &[LayerIn], start_tool: usize) -> Result<Plan, PlanError> {
-    // A printer whose rack hotends count as extruders (H2C, H3C) has its
+    // A printer whose rack hotends count as extruders (H3C) has its
     // racks' machinery (idle cooling, heater-off changes, the H3C's
     // ladder and merged slabs) not ported; nor more than two nozzles.
     if settings.hotend_as_extruder || settings.nozzles > 2 {
         let what = if settings.hotend_as_extruder {
-            "a printer whose rack hotends count as extruders (H2C, H3C)".to_owned()
+            "a printer whose rack hotends count as extruders (H3C)".to_owned()
         } else {
             format!("a printer of {} nozzles", settings.nozzles)
         };
@@ -2212,7 +2212,7 @@ pub(crate) mod tests {
 
     #[test]
     fn what_is_not_planned_yet_is_refused() {
-        // Rack hotends counted as extruders (H2C, H3C).
+        // Rack hotends counted as extruders (H3C).
         let rack =
             settings(r#"{"nozzle_diameter": ["0.4", "0.4"], "handle_hotend_as_extruder": "1"}"#);
         let refused = super::plan(&rack, &layers(2, &[0, 1]), 0).unwrap_err();
@@ -2221,11 +2221,11 @@ pub(crate) mod tests {
         assert!(said.contains("rack hotends"), "{said}");
         assert!(said.contains("choose the Type 2 tower"), "{said}");
         // A Bambu Lab printer has no other tower to choose.
-        let h2c = settings(
-            r#"{"printer_model": "Bambu Lab H2C", "nozzle_diameter": ["0.4", "0.4"],
+        let h3c = settings(
+            r#"{"printer_model": "Bambu Lab H3C", "nozzle_diameter": ["0.4", "0.4"],
                 "handle_hotend_as_extruder": "1"}"#,
         );
-        let said = super::plan(&h2c, &layers(2, &[0, 1]), 0)
+        let said = super::plan(&h3c, &layers(2, &[0, 1]), 0)
             .unwrap_err()
             .to_string();
         assert!(said.contains("turn the prime tower off"), "{said}");
