@@ -14,24 +14,16 @@
 
 use std::collections::HashMap;
 
-/// Two areas no further apart than this share of the larger are the same.
-/// The reference compares them exactly. It cuts each object in the
-/// object's own frame, so copies of one object come out the same to the
-/// unit and tie; here parts are cut where they stand on the plate, and
-/// copies come out a hair different (on mcbrim_test's first layer, by up
-/// to 2e-4 mm² in 609 after elephant foot compensation), which would
-/// leave the order to chance. Parts that are not copies but differ by
-/// less than this are taken in the reference's order only by chance:
-/// threetone's two end blocks (13.3 mm wide each, walls the same to the
-/// micron in both files) come out 1, 0, 2 here and on the reference's X1
-/// Carbon, but 1, 2, 0 on its H2D, whatever the filament map; with the
-/// end blocks' filaments swapped the H2D gives 1, 0, 2. That is which
-/// side rounds larger, not a rule to follow.
-const SAME_AREA: f64 = 1e-6;
-
 /// The first layer's order: `pieces` gives, for each tool on it in
 /// ascending order, the area of its smallest piece. Largest first; of two
 /// the same, the lower number first (`generate_first_layer_tool_order`).
+/// The areas are compared exactly, as the reference compares them: the
+/// pieces are cut as the reference cuts them, in their object's frame
+/// with its single-precision corners (`edge_mesh::slicing`), so copies of
+/// one object tie to the unit, and parts that are the same in the file
+/// but stand at different places in their object come out as the
+/// reference has them (on m2b_three the block at the right end is larger
+/// by 0.00016 mm² than the one at the left, both there and here).
 /// `sequence` is the plate's own order, as filament numbers from 1, and
 /// `number` gives a tool's filament number; it is followed when it names
 /// every tool on the layer (`apply_first_layer_order`).
@@ -46,7 +38,7 @@ pub(crate) fn first_layer(
             pieces
                 .iter()
                 .find(|(tool, _)| tool == other)
-                .is_some_and(|(_, theirs)| *theirs < area - SAME_AREA * area.abs())
+                .is_some_and(|(_, theirs)| theirs < area)
         };
         let at = order.iter().position(smaller).unwrap_or(order.len());
         order.insert(at, *tool);
@@ -218,15 +210,15 @@ mod tests {
         assert_eq!(first_layer(&[(0, 400.0), (1, 200.0)], &[], own), [0, 1]);
         // The first the smaller: the second goes first.
         assert_eq!(first_layer(&[(0, 200.0), (1, 400.0)], &[], own), [1, 0]);
-        // Of two the same, the lower number; and two are the same that
-        // differ by less than a millionth.
+        // Of two the same, the lower number; two that differ at all are
+        // not the same.
         assert_eq!(
             first_layer(&[(0, 300.0), (1, 500.0), (2, 300.0), (3, 500.0)], &[], own),
             [1, 3, 0, 2]
         );
         assert_eq!(
             first_layer(&[(0, 615.833120), (1, 615.833186)], &[], own),
-            [0, 1]
+            [1, 0]
         );
         assert_eq!(first_layer(&[(0, 615.0), (1, 615.9)], &[], own), [1, 0]);
         // A plate's own order, in filament numbers, is followed when it

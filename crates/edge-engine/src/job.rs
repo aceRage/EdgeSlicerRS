@@ -557,6 +557,8 @@ mod tests {
             filament: 2,
             part: None,
             object: None,
+            cut: None,
+            negative_cut: None,
         });
         loaded.bounds = ([0.0; 3], [30.0, 10.0, 1.0]);
         prepare(loaded, &chosen, overrides)

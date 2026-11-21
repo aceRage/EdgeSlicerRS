@@ -26,7 +26,12 @@ pub(crate) fn edge_key(a: u32, b: u32) -> u64 {
 /// An edge of more than two triangles goes by its first and its last, as
 /// in the reference.
 pub(crate) fn flat_edges(mesh: &Mesh) -> FxHashSet<u64> {
-    let corner = |vertex: u32| mesh.vertices[vertex as usize].map(f64::from);
+    flat_edges_by(mesh, |vertex| mesh.vertices[vertex as usize].map(f64::from))
+}
+
+/// [`flat_edges`], with each corner where `corner` puts it, in mm.
+pub(crate) fn flat_edges_by(mesh: &Mesh, corner: impl Fn(u32) -> [f64; 3]) -> FxHashSet<u64> {
+    let corner = &corner;
     let minus = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
     let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
     // A triangle's first corner and its unit normal; none for a
@@ -198,6 +203,7 @@ mod tests {
             solid: &mesh,
             negative: None,
             filament: 1,
+            cut: None,
         };
         let layers = crate::slice_regions(&[body], &[0.1, 3.7, 9.9], scaled(0.049)).unwrap();
         for layer in layers {

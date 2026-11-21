@@ -86,6 +86,8 @@ mod tests {
                 filament: 1,
                 part: None,
                 object: None,
+                cut: None,
+                negative_cut: None,
             }],
             painted: Vec::new(),
             settings: None,

@@ -146,6 +146,9 @@ pub struct OwnVolume {
     /// Its mesh, in world coordinates. Empty for a printed part, which is
     /// among the bodies.
     pub mesh: Mesh,
+    /// The same as the reference cuts it, in its object's frame
+    /// ([`edge_mesh::slicing`]); none for a printed part.
+    pub cut: Option<edge_mesh::SlicingMesh>,
 }
 
 /// Whether an object sets anything for itself that slicing has to keep
@@ -186,6 +189,8 @@ fn own_objects(project: &Project, plate: Option<usize>) -> (Vec<OwnObject>, Vec<
             negative.append(&part.mesh, &part.transform.then(&instance.transform));
         }
         let at = own.len();
+        let placement = edge_3mf::placement(object, instance);
+        let negative_cut = placement.cut_all(object, PartKind::Negative);
         let mut volumes = Vec::new();
         let mut support_paint = Vec::new();
         for part in object
@@ -203,8 +208,8 @@ fn own_objects(project: &Project, plate: Option<usize>) -> (Vec<OwnObject>, Vec<
                 support_paint.push((if mirrored { [a, c, b] } else { [a, b, c] }, facet.kind));
             }
         }
-        for part in &object.parts {
-            let (filament, mesh) = match part.kind {
+        for (index, part) in object.parts.iter().enumerate() {
+            let (filament, mesh, cut) = match part.kind {
                 PartKind::Normal => {
                     if part.mesh.triangles.is_empty() {
                         continue;
@@ -215,12 +220,16 @@ fn own_objects(project: &Project, plate: Option<usize>) -> (Vec<OwnObject>, Vec<
                         filament: part.filament,
                         part: Some((at, volumes.len())),
                         object: Some(place - 1),
+                        cut: Some(placement.cut(index)),
+                        negative_cut: negative_cut.clone(),
                     });
-                    (Some(part.filament), Mesh::default())
+                    (Some(part.filament), Mesh::default(), None)
                 }
-                PartKind::Modifier | PartKind::SupportBlocker | PartKind::SupportEnforcer => {
-                    (part.own_filament, part.placed(instance))
-                }
+                PartKind::Modifier | PartKind::SupportBlocker | PartKind::SupportEnforcer => (
+                    part.own_filament,
+                    part.placed(instance),
+                    Some(placement.cut(index)),
+                ),
                 PartKind::Negative | PartKind::PreciseSeam => continue,
             };
             volumes.push(OwnVolume {
@@ -229,6 +238,7 @@ fn own_objects(project: &Project, plate: Option<usize>) -> (Vec<OwnObject>, Vec<
                 filament,
                 settings: part.settings(),
                 mesh,
+                cut,
             });
         }
         // A range's heights are the object's own, measured from its
@@ -473,6 +483,8 @@ pub(crate) fn lone(path: &Path, solid: Mesh) -> Result<Loaded, Failure> {
         filament: 1,
         part: None,
         object: None,
+        cut: None,
+        negative_cut: None,
     }];
     let bounds = bounds_of(path, &bodies)?;
     Ok(Loaded {
@@ -542,6 +554,22 @@ pub(crate) fn placed(
         .collect();
     if let Some((x, y)) = origin {
         shift(&mut bodies, -x, -y);
+        // The cuts' shifts, as the reference takes the plate's origin off
+        // a shift (Print.cpp `PrintInstance::shift_without_plate_offset`).
+        let plate = [edge_3mf::new_scale(x), edge_3mf::new_scale(y)];
+        // (The bodies' are moved with them.)
+        let cuts = (own.iter_mut().flat_map(|object| &mut object.volumes))
+            .filter_map(|volume| volume.cut.as_mut())
+            .chain(painted.iter_mut().flat_map(|object| {
+                object
+                    .part_cuts
+                    .iter_mut()
+                    .chain(object.negative_cut.as_mut())
+            }));
+        for cut in cuts {
+            cut.shift[0] -= plate[0];
+            cut.shift[1] -= plate[1];
+        }
         shift_meshes(objects.iter_mut(), -x, -y);
         // As the reference takes the plate's origin off a shift
         // (Print.cpp `PrintInstance::shift_without_plate_offset`).
@@ -698,8 +726,17 @@ fn bounds_of(path: &Path, bodies: &[Body]) -> Result<([f32; 3], [f32; 3]), Failu
         .ok_or_else(|| format!("{}: nothing printable to slice", path.display()).into())
 }
 
-/// Moves bodies across the bed by `(x, y)` mm.
+/// Moves bodies across the bed by `(x, y)` mm; what of them is given as
+/// the reference cuts it by as many whole units, cut off toward zero, as
+/// the reference moves a copy's shift (`scaled`).
 pub(crate) fn shift(bodies: &mut [Body], x: f64, y: f64) {
+    let by = [edge_3mf::new_scale(x), edge_3mf::new_scale(y)];
+    for cut in
+        (bodies.iter_mut()).flat_map(|body| body.cut.iter_mut().chain(body.negative_cut.as_mut()))
+    {
+        cut.shift[0] += by[0];
+        cut.shift[1] += by[1];
+    }
     let meshes = bodies
         .iter_mut()
         .flat_map(|body| std::iter::once(&mut body.solid).chain(body.negative.as_mut()));
@@ -861,6 +898,8 @@ mod tests {
             filament: 1,
             part: None,
             object: None,
+            cut: None,
+            negative_cut: None,
         }];
         shift(&mut bodies, 10.0, -5.0);
         for mesh in [&bodies[0].solid, bodies[0].negative.as_ref().unwrap()] {

@@ -230,15 +230,14 @@ pub(crate) fn outlines(
     /// Five times `SCALED_EPSILON`, the reference's `expolygons_simplify`
     /// tolerance there.
     const SIMPLIFY: edge_geom::Coord = 500;
-    let parts = object
-        .parts
-        .par_iter()
-        .map(|part| {
+    let parts = (object.parts.par_iter().enumerate())
+        .map(|(at, part)| {
             edge_slice::slice_regions(
                 &[edge_slice::Body {
                     solid: part,
                     negative: object.negative.as_ref(),
                     filament: base,
+                    cut: (object.part_cuts.get(at)).map(|cut| (cut, object.negative_cut.as_ref())),
                 }],
                 planes,
                 closing_radius,
@@ -423,6 +422,8 @@ mod tests {
                 cube([0.0, 0.0, 0.0], [10.0, 10.0, 1.0]),
                 cube([10.0 + gap, 0.0, 0.0], [20.0, 10.0, 1.0]),
             ],
+            part_cuts: Vec::new(),
+            negative_cut: None,
         }
     }
 

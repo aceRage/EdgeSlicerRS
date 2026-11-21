@@ -2,7 +2,7 @@
 
 use edge_clip::{ClipError, Join};
 use edge_geom::{Coord, ExPolygon, Point2, Polygon};
-use edge_mesh::Mesh;
+use edge_mesh::{Mesh, SlicingMesh};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -112,8 +112,43 @@ pub fn layer_planes_for(
 /// such an outline by `slice_closing_radius` leaves a kink there, some
 /// hundredths of a millimetre from where the corner beside it was.
 pub fn slice(mesh: &Mesh, planes: &[f64]) -> Vec<Layer> {
+    slice_with(mesh, planes, None, None)
+}
+
+/// [`slice`] for a mesh in the reference's slicing frame
+/// ([`edge_mesh::slicing`]), with the reference's arithmetic
+/// (TriangleMeshSlicer.cpp `slice_facet`): each plane in single
+/// precision, as its heights are (`zs`); a corner on the plane taken as
+/// it is, cut off toward zero to whole units; an edge crossing it met at
+/// `t = (z - z_b) / (z_a - z_b)` from its corner `b` of the higher number,
+/// in double precision, and rounded half up. Faces in one plane are told
+/// by the corners in millimetres (`exact`). The outlines are moved to
+/// where the copy stands (`shift`); each layer keeps its plane's height
+/// as given.
+pub fn slice_cut(cut: &SlicingMesh, planes: &[f64]) -> Vec<Layer> {
+    slice_with(&cut.mesh, planes, Some(cut.shift), Some(&cut.exact))
+}
+
+fn slice_with(
+    mesh: &Mesh,
+    planes: &[f64],
+    frame: Option<[i64; 2]>,
+    exact: Option<&[[f64; 3]]>,
+) -> Vec<Layer> {
     assert!(planes.is_sorted(), "planes must be sorted ascending");
-    let flat = flat::flat_edges(mesh);
+    // The heights compared with the mesh's corners.
+    let cut_at: Vec<f64> = match frame {
+        None => planes.to_vec(),
+        Some(_) => planes.iter().map(|&p| f64::from(p as f32)).collect(),
+    };
+    let planes_given = planes;
+    let planes = cut_at.as_slice();
+    let flat = match exact {
+        Some(exact) if exact.len() == mesh.vertices.len() => {
+            flat::flat_edges_by(mesh, |vertex| exact[vertex as usize])
+        }
+        _ => flat::flat_edges(mesh),
+    };
 
     // Half-open range of planes each triangle crosses: lowest < plane <= highest.
     let spans: Vec<(u32, u32)> = mesh
@@ -154,7 +189,15 @@ pub fn slice(mesh: &Mesh, planes: &[f64]) -> Vec<Layer> {
         .par_iter()
         .enumerate()
         .map(|(plane, &z)| {
-            slice_layer(mesh, z, &buckets[offsets[plane]..offsets[plane + 1]], &flat)
+            let mut layer = slice_layer(
+                mesh,
+                z,
+                &buckets[offsets[plane]..offsets[plane + 1]],
+                &flat,
+                frame,
+            );
+            layer.z = planes_given[plane];
+            layer
         })
         .collect()
 }
@@ -167,6 +210,10 @@ pub struct Body<'a> {
     pub negative: Option<&'a Mesh>,
     /// Which filament the solid is printed in, counting from 1.
     pub filament: usize,
+    /// The solid and its negative volume in the reference's slicing
+    /// frame ([`slice_cut`]): cut instead of `solid` and `negative` when
+    /// given.
+    pub cut: Option<(&'a SlicingMesh, Option<&'a SlicingMesh>)>,
 }
 
 /// One layer's material as regions with holes, ready for perimeters.
@@ -244,30 +291,41 @@ pub fn slice_regions_by_object(
 ) -> Result<Vec<LayerRegions>, ClipError> {
     // An object's parts each carry its negative volume: cut once.
     let mut negative_of: Vec<Option<usize>> = Vec::with_capacity(bodies.len());
-    let mut negative_meshes: Vec<&Mesh> = Vec::new();
+    type Negative<'m> = (&'m Mesh, Option<[i64; 2]>, Option<&'m [[f64; 3]]>);
+    let mut negative_meshes: Vec<Negative<'_>> = Vec::new();
     for body in bodies {
-        negative_of.push(body.negative.map(|mesh| {
-            match negative_meshes.iter().position(|seen| {
-                std::ptr::eq(*seen, mesh)
-                    || (seen.triangles == mesh.triangles && seen.vertices == mesh.vertices)
+        let negative = match body.cut {
+            Some((_, cut)) => {
+                cut.map(|cut| (&cut.mesh, Some(cut.shift), Some(cut.exact.as_slice())))
+            }
+            None => body.negative.map(|mesh| (mesh, None, None)),
+        };
+        negative_of.push(negative.map(
+            |(mesh, frame, exact)| match negative_meshes.iter().position(|(seen, seen_frame, _)| {
+                *seen_frame == frame
+                    && (std::ptr::eq(*seen, mesh)
+                        || (seen.triangles == mesh.triangles && seen.vertices == mesh.vertices))
             }) {
                 Some(at) => at,
                 None => {
-                    negative_meshes.push(mesh);
+                    negative_meshes.push((mesh, frame, exact));
                     negative_meshes.len() - 1
                 }
-            }
-        }));
+            },
+        ));
     }
     let negatives: Vec<Vec<Layer>> = negative_meshes
         .iter()
-        .map(|mesh| slice(mesh, planes))
+        .map(|(mesh, frame, exact)| slice_with(mesh, planes, *frame, *exact))
         .collect();
     let sliced: Vec<(Vec<Layer>, Option<&Vec<Layer>>)> = bodies
         .iter()
         .enumerate()
         .map(|(at, body)| {
-            let mut solid = slice(body.solid, planes);
+            let mut solid = match body.cut {
+                Some((cut, _)) => slice_cut(cut, planes),
+                None => slice(body.solid, planes),
+            };
             if let Some(Some(from)) = largest_from.get(at) {
                 for layer in solid.iter_mut().skip(*from) {
                     keep_largest_contour(&mut layer.polygons);
@@ -538,7 +596,13 @@ const NONE: u32 = u32::MAX;
 
 /// Every triangle in `triangles` must cross the plane at `z`. A point cut
 /// on an edge in `flat` is left out of its contour.
-fn slice_layer(mesh: &Mesh, z: f64, triangles: &[u32], flat: &FxHashSet<u64>) -> Layer {
+fn slice_layer(
+    mesh: &Mesh,
+    z: f64,
+    triangles: &[u32],
+    flat: &FxHashSet<u64>,
+    frame: Option<[i64; 2]>,
+) -> Layer {
     let kept = |edge: u64| !flat.contains(&edge);
     // Each triangle contributes one segment between two mesh edges, and
     // segments chain by edge identity, so contours close exactly with no
@@ -568,8 +632,15 @@ fn slice_layer(mesh: &Mesh, z: f64, triangles: &[u32], flat: &FxHashSet<u64>) ->
             0
         };
         let (after, before) = ((lone + 1) % 3, (lone + 2) % 3);
-        let leaving = crossing(ids[lone], v[lone], ids[after], v[after], z);
-        let entering = crossing(ids[before], v[before], ids[lone], v[lone], z);
+        let meet = |a: usize, b: usize| match frame {
+            None => {
+                let (key, [x, y]) = crossing(ids[a], v[a], ids[b], v[b], z);
+                (key, Point2::from_mm(x, y))
+            }
+            Some(shift) => crossing_units(ids[a], v[a], ids[b], v[b], z, shift),
+        };
+        let leaving = meet(lone, after);
+        let entering = meet(before, lone);
         let ((from, point), (to, _)) = if above[lone] {
             (leaving, entering)
         } else {
@@ -579,7 +650,7 @@ fn slice_layer(mesh: &Mesh, z: f64, triangles: &[u32], flat: &FxHashSet<u64>) ->
         segments.push(Segment {
             from,
             to,
-            point: Point2::from_mm(point[0], point[1]),
+            point,
             sibling,
         });
     }
@@ -641,6 +712,40 @@ fn slice_layer(mesh: &Mesh, z: f64, triangles: &[u32], flat: &FxHashSet<u64>) ->
         polygons,
         open_chains,
     }
+}
+
+/// [`crossing`] in the reference's slicing frame, in whole units moved
+/// by `shift` ([`slice_cut`]).
+fn crossing_units(
+    a: u32,
+    pa: [f64; 3],
+    b: u32,
+    pb: [f64; 3],
+    z: f64,
+    shift: [i64; 2],
+) -> (u64, Point2) {
+    let (low, p_low, high, p_high) = if a < b {
+        (a, pa, b, pb)
+    } else {
+        (b, pb, a, pa)
+    };
+    // A corner's coordinates are single-precision numbers, which the
+    // reference turns to whole units by cutting off toward zero.
+    let [x, y] = if p_low[2] == z {
+        [p_low[0].trunc(), p_low[1].trunc()]
+    } else if p_high[2] == z {
+        [p_high[0].trunc(), p_high[1].trunc()]
+    } else {
+        let t = (z - p_high[2]) / (p_low[2] - p_high[2]);
+        [0, 1].map(|c| (p_high[c] + (p_low[c] - p_high[c]) * t + 0.5).floor())
+    };
+    (
+        u64::from(low) << 32 | u64::from(high),
+        Point2 {
+            x: x as Coord + shift[0],
+            y: y as Coord + shift[1],
+        },
+    )
 }
 
 /// Where the edge between two vertices meets the plane, with the edge's key.
@@ -709,6 +814,56 @@ mod tests {
         assert!(layer_planes_for(1.0, 1.0, 0.2, 0.2, 0.08).is_empty());
     }
 
+    /// A mesh in the reference's slicing frame is cut as the reference
+    /// cuts it: a wall standing up is met where its corners stand,
+    /// rounded half up; a slanted edge at `t` from its corner of the
+    /// higher number; a corner on the plane cut off toward zero; and the
+    /// outline moved by the copy's shift.
+    #[test]
+    fn a_cut_mesh_is_cut_with_the_reference_s_arithmetic() {
+        // A wedge, x and y in coordinate units, z in millimetres: its
+        // corner at (2.5, 0) leans over to (12.5, 0) at the top.
+        let mesh =
+            Mesh::from_triangle_soup(cuboid([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]).into_iter().map(
+                |t| {
+                    t.map(|[x, y, z]| {
+                        [
+                            x * 1_000.5 + if z > 0.5 { 12.5 } else { 2.5 },
+                            y * 1_000.0,
+                            z,
+                        ]
+                    })
+                },
+            ));
+        let cut = SlicingMesh {
+            mesh,
+            shift: [100, -50],
+            exact: Vec::new(),
+        };
+        let at = |z: f64| {
+            let mut xs: Vec<i64> = slice_cut(&cut, &[z])[0].polygons[0]
+                .points
+                .iter()
+                .map(|p| p.x)
+                .collect();
+            xs.sort_unstable();
+            xs.dedup();
+            xs
+        };
+        // Halfway up: 2.5 + 5 = 7.5 rounds up to 8, 1003 + 5 = 1008.
+        assert_eq!(at(0.5), [108, 1108]);
+        // On the top: its corners as they are, 12.5 and 1013 cut down.
+        assert_eq!(at(1.0), [112, 1113]);
+        // Planes are taken in single precision.
+        assert_eq!(slice_cut(&cut, &[0.5])[0].z, 0.5);
+        let y = slice_cut(&cut, &[0.5])[0].polygons[0]
+            .points
+            .iter()
+            .map(|p| p.y)
+            .max();
+        assert_eq!(y, Some(950));
+    }
+
     #[test]
     fn cube_gives_one_outer_contour_per_layer() {
         let mesh = Mesh::from_triangle_soup(cube(0.0, 10.0));
@@ -770,6 +925,7 @@ mod tests {
             solid: &mesh,
             negative: None,
             filament: 1,
+            cut: None,
         };
         let layers = slice_regions(&[body], &[1.0, 5.0], 0).unwrap();
         // Two overlapping boxes: 100 + 36 - 4 shared.
@@ -789,11 +945,13 @@ mod tests {
                 solid: &block,
                 negative: Some(&drill),
                 filament: 1,
+                cut: None,
             },
             Body {
                 solid: &neighbour,
                 negative: None,
                 filament: 1,
+                cut: None,
             },
         ];
         let layers = slice_regions(&bodies, &[1.0, 5.0], 0).unwrap();
@@ -817,6 +975,7 @@ mod tests {
             solid: &mesh,
             negative: None,
             filament: 1,
+            cut: None,
         };
         let open = slice_regions(&[body], &[5.0], 0).unwrap();
         assert_eq!(open[0].regions.len(), 2);
@@ -883,6 +1042,7 @@ mod tests {
                 solid: mesh,
                 negative: None,
                 filament: 1,
+                cut: None,
             };
             let layers =
                 slice_regions_by_object(&[body], &[Some(0)], &[5.0], 0, &[], simplify).unwrap();
@@ -898,6 +1058,7 @@ mod tests {
             solid,
             negative: None,
             filament: 1,
+            cut: None,
         });
         let layers =
             slice_regions_by_object(&bodies, &[Some(0), Some(0)], &[5.0], 0, &[], tolerance)
@@ -922,6 +1083,7 @@ mod tests {
             solid,
             negative: None,
             filament: 1,
+            cut: None,
         });
         let radius = edge_geom::scaled(0.049);
         for objects in [[Some(0), Some(0)], [Some(0), Some(1)]] {
@@ -937,6 +1099,7 @@ mod tests {
             solid,
             negative: None,
             filament: 1,
+            cut: None,
         });
         for objects in [[Some(0), Some(0)], [Some(0), Some(1)]] {
             let both = slice_regions_by_object(&bodies, &objects, &[5.0], radius, &[], 0);
@@ -956,6 +1119,7 @@ mod tests {
             solid,
             negative: None,
             filament: 1,
+            cut: None,
         });
         let layers = slice_regions(&bodies, &[5.0], edge_geom::scaled(0.049)).unwrap();
         assert_eq!(shapes(&layers[0]), [(200.0, 0)]);
@@ -976,6 +1140,7 @@ mod tests {
             solid: &notched,
             negative: None,
             filament: 1,
+            cut: None,
         };
         let layers = slice_regions(&[body], &[5.0], edge_geom::scaled(0.049)).unwrap();
         let closed = shapes(&layers[0]);
@@ -1012,6 +1177,7 @@ mod filament_tests {
             solid,
             negative: None,
             filament: 3,
+            cut: None,
         });
         let layers = slice_regions(&bodies, &[5.0], 0).unwrap();
         assert_eq!(layers[0].regions.len(), 2);
@@ -1028,6 +1194,7 @@ mod filament_tests {
             solid,
             negative: None,
             filament,
+            cut: None,
         });
         let layers = slice_regions(&bodies, &[5.0], 0).unwrap();
         let layer = &layers[0];
@@ -1066,6 +1233,7 @@ mod filament_tests {
             solid,
             negative: None,
             filament,
+            cut: None,
         });
         let layers = slice_regions(&bodies, &[5.0], edge_geom::scaled(0.049)).unwrap();
         let layer = &layers[0];
@@ -1082,6 +1250,7 @@ mod filament_tests {
             solid,
             negative: None,
             filament,
+            cut: None,
         });
         let layers = slice_regions(&bodies, &[5.0], edge_geom::scaled(0.049)).unwrap();
         let layer = &layers[0];
@@ -1113,6 +1282,7 @@ mod filament_tests {
             solid,
             negative: None,
             filament,
+            cut: None,
         });
         let layers = slice_regions(&bodies, &[5.0], 0).unwrap();
         let layer = &layers[0];

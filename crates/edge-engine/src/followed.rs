@@ -53,6 +53,8 @@ pub(crate) fn block(project: Option<&Settings>, filament: usize) -> Loaded {
             filament,
             part: None,
             object: None,
+            cut: None,
+            negative_cut: None,
         }],
         painted: Vec::new(),
         settings: project.cloned(),

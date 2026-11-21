@@ -506,6 +506,8 @@ mod tests {
             filament: 1,
             part: None,
             object: None,
+            cut: None,
+            negative_cut: None,
         };
         let label = |object: usize, name: &str| InstanceLabel {
             object,
