@@ -8,9 +8,10 @@
 //!
 //! Refused here, where the reference would group differently from what is
 //! ported: rack hotends taken as extruders (the H3C), a rack set by hand
-//! or of mixed nozzles, a grouping that puts the filaments of one
-//! extruder on two or more of its rack's nozzles (`rack_spread`: a nozzle
-//! change on the rack is not done yet), a part or the prime tower where only
+//! or of mixed nozzles, with the prime tower on a grouping that puts the
+//! filaments of one extruder on two or more of its rack's nozzles
+//! (`rack_spread`: the tower's ramming for a nozzle change on the rack is
+//! not done yet), a part or the prime tower where only
 //! one nozzle reaches or above a nozzle's height, and a flush matrix of a
 //! length the grouping cannot read (see `edge_group::prepare_flush_matrices`).
 
@@ -440,7 +441,9 @@ pub(crate) fn group(
             .collect(),
     };
     let grouping = edge_group::group_filaments(&machine, &input)?;
-    if let Some(grouping) = &grouping {
+    if let Some(grouping) = &grouping
+        && settings.flag("enable_prime_tower")? == Some(true)
+    {
         rack_spread(grouping)?;
     }
     Ok(Grouped {
@@ -454,12 +457,12 @@ pub(crate) fn group(
     })
 }
 
-/// Refuses a grouping that puts the plate's filaments on two or more
-/// nozzles of one extruder's rack: a change between them is a rack nozzle
-/// change (GCode.cpp `nozzle_change_gcode`, M632 / M633; WipeTower.cpp
-/// `NozzleChangePlan`), and a filament loaded into a nozzle that last held
-/// another flushes from that one, neither of which is done yet. With every
-/// extruder printing from one nozzle the print is the two-nozzle one.
+/// Refuses, with the prime tower on, a grouping that puts the plate's
+/// filaments on two or more nozzles of one extruder's rack: a change
+/// between them is a rack nozzle change, whose ramming on the tower
+/// (WipeTower.cpp `NozzleChangePlan`, M632 / M633) is not done yet. With
+/// the tower off such a change is the change G-code alone, with the
+/// nozzle taken from the rack flushed of what it last held.
 fn rack_spread(grouping: &edge_group::Grouping) -> Result<(), Failure> {
     let result = &grouping.result;
     let mut on: BTreeMap<i32, BTreeSet<i32>> = BTreeMap::new();
@@ -473,9 +476,10 @@ fn rack_spread(grouping: &edge_group::Grouping) -> Result<(), Failure> {
     match on.iter().find(|(_, nozzles)| nozzles.len() > 1) {
         Some((extruder, nozzles)) => Err(format!(
             "the filament grouping puts the plate's filaments on {} nozzles of extruder {}'s \
-             rack (filament_nozzle_map {}): changing nozzles on the rack is not done yet; \
-             put the filaments that extruder prints on one nozzle (one filament on it, or \
-             Manual with the rest on the other extruder); no G-code was written",
+             rack (filament_nozzle_map {}): changing nozzles on the rack with the prime tower on \
+             is not done yet; turn the prime tower off, or put the filaments that extruder \
+             prints on one nozzle (one filament on it, or Manual with the rest on the other \
+             extruder); no G-code was written",
             nozzles.len(),
             extruder + 1,
             (result
@@ -681,7 +685,7 @@ mod tests {
     }
 
     #[test]
-    fn the_h2c_rack_is_grouped_onto_and_a_spread_refused() {
+    fn the_h2c_rack_is_grouped_onto() {
         let mut rack = h2d();
         rack.insert("extruder_max_nozzle_count", many(&["1", "6"]));
         // The machine's own rack: the left nozzle and six on the right.
@@ -698,13 +702,20 @@ mod tests {
         let grouped = group(&rack, vec![vec![0, 1]; 3], &[], None, false).unwrap();
         assert_eq!(grouped.grouping.unwrap().result.nozzle_map(), [0, 1]);
         // Both on the right with a flush between them: the grouping puts
-        // them on two of the rack's nozzles, whose changes are not done.
+        // them on two of the rack's nozzles, which with the tower off are
+        // changed between by the change G-code alone.
         rack.insert("filament_map", many(&["2", "2"]));
         rack.insert(
             "flush_volumes_matrix",
             many(&["0", "199", "639", "0", "0", "199", "639", "0"]),
         );
-        let said = group(&rack, vec![vec![0, 1]; 3], &[], None, false)
+        rack.insert("enable_prime_tower", edge_config::Value::One("0".into()));
+        let grouped = group(&rack, vec![vec![0, 1]; 3], &[], None, false).unwrap();
+        assert_eq!(grouped.grouping.unwrap().result.nozzle_map(), [2, 1]);
+        // With the tower on, whose ramming for them is not done, refused.
+        let mut tower = rack.clone();
+        tower.insert("enable_prime_tower", edge_config::Value::One("1".into()));
+        let said = group(&tower, vec![vec![0, 1]; 3], &[], None, false)
             .unwrap_err()
             .to_string();
         assert!(said.contains("filament_nozzle_map 2,1"), "{said}");

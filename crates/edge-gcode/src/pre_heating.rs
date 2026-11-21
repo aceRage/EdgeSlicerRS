@@ -12,10 +12,13 @@
 //! written and timed, on the file as a whole; the lines are slipped in
 //! after the line they belong after.
 //!
+//! On the H2C's rack an extruder's nozzles are told apart by the nozzle
+//! change markers, and the heating of a rack extruder is marked
+//! `M632 S<filament> N R W` (PreCoolingInjector.cpp l.509-543).
+//!
 //! Not done, as nothing here reaches it: the rack hotends of the H3C
-//! (`handle_hotend_as_extruder`, refused before) and a change between
-//! two nozzles of the H2C's rack (refused by the grouping; with each
-//! extruder on one nozzle the H2C pre-heats as the H2D), and EdgeSlicer's
+//! (`handle_hotend_as_extruder`, refused before; its second pass with
+//! `hotend_cooling_rate_on_rack`), and EdgeSlicer's
 //! support interface temperature, which the reference pre-heats an idle
 //! nozzle to (`Print::support_interface_temperatures`; not a setting this
 //! engine follows).
@@ -174,7 +177,9 @@ pub(crate) const END_START: &str = "; MACHINE_END_GCODE_START";
 const NONE: usize = usize::MAX;
 
 /// The nozzles of the grouping: on the H2D one to each extruder, so a
-/// nozzle's number is its extruder's.
+/// nozzle's number is its extruder's; on the H2C's rack a nozzle is its
+/// extruder's by the filaments the grouping puts on it
+/// (PreCoolingInjector.cpp `get_nozzle_from_id(..)->extruder_id`).
 struct Group<'a> {
     map: &'a NozzleMap,
 }
@@ -191,7 +196,13 @@ impl Group<'_> {
             .unwrap_or(-1)
     }
     fn extruder_of_nozzle(&self, nozzle: i32) -> Option<usize> {
-        (nozzle >= 0).then_some(nozzle as usize)
+        if nozzle < 0 {
+            return None;
+        }
+        Some(match self.map.nozzles.iter().position(|n| *n == nozzle) {
+            Some(filament) => self.map.extruder(filament),
+            None => nozzle as usize,
+        })
     }
 }
 
@@ -948,6 +959,22 @@ mod tests {
         let one = Settings::from_json(r#"{"enable_pre_heating": "1", "nozzle_diameter": ["0.4"]}"#)
             .unwrap();
         assert!(PreHeating::from_settings(&one, true).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_rack_nozzle_belongs_to_its_extruder() {
+        // The H2C: filament 0 on the left nozzle, 1 and 2 on nozzles 3 and
+        // 5 of the right extruder's rack.
+        let map = NozzleMap {
+            extruders: vec![1, 2, 2],
+            nozzles: vec![0, 3, 5],
+            volumes: vec![0, 0, 0],
+        };
+        let group = Group { map: &map };
+        assert_eq!(group.extruder_of_nozzle(0), Some(0));
+        assert_eq!(group.extruder_of_nozzle(3), Some(1));
+        assert_eq!(group.extruder_of_nozzle(5), Some(1));
+        assert_eq!(group.extruder_of_nozzle(-1), None);
     }
 
     #[test]

@@ -5619,6 +5619,65 @@ fn two_nozzles_change_between_and_within_them() {
     assert!(text.contains("; filament_nozzle_map = 0,1,0\n"));
 }
 
+/// The H2C's rack: three filaments on the right extruder, 0 and 2 on one
+/// of its nozzles and 1 on another. A change onto another nozzle of the
+/// rack flushes what that nozzle still holds (nothing the first time, then
+/// 0 into 2 where 2's nozzle last printed 0), one within a nozzle flushes
+/// from the filament before it, and the change G-code is told the
+/// outgoing filament's hotend-change retraction (GCode.cpp `append_tcr`,
+/// `outgoing_filament_retract_length_nc`).
+#[test]
+fn a_rack_nozzle_change_flushes_what_the_nozzle_holds() {
+    let mut settings = two_nozzles();
+    for s in &mut settings {
+        s.plate.nozzles = Some(NozzleMap {
+            extruders: vec![2, 2, 2],
+            nozzles: vec![1, 2, 1],
+            volumes: vec![0, 0, 0],
+        });
+        s.change_filament_gcode = Some(
+            "; change [current_filament_id]>[next_filament_id] L[flush_length] \
+             nozzles [current_nozzle_id]>[next_nozzle_id] O1 T[filament_retract_length_nc]\n\
+             T[next_filament_id] H[next_hotend]"
+                .into(),
+        );
+        s.variables.set_list(
+            "filament_retract_length_nc",
+            ["18", "5", "7"].iter().map(|v| Value::text(*v)).collect(),
+        );
+    }
+    let (text, _) = in_filaments(&[&[0, 1], &[1, 2], &[2, 0], &[0, 1]], &settings);
+    let changes: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("; change "))
+        .collect();
+    let area = PI * (1.75_f64 / 2.0).powi(2);
+    let length = |volume: f64| (volume as f32 / area as f32) as f64;
+    assert_eq!(changes.len(), 4, "{changes:?}");
+    assert_eq!(changes[0], "; change 0>1 L0 nozzles 1>2 O1 T18");
+    let flush = |line: &str| -> f64 {
+        let after = line.split(" L").nth(1).unwrap();
+        after.split(' ').next().unwrap().parse().unwrap()
+    };
+    // Back onto the first nozzle, which holds 0: 0 > 2 is 200 mm³.
+    assert!(changes[1].starts_with("; change 1>2 L"), "{}", changes[1]);
+    assert!(changes[1].ends_with(" nozzles 2>1 O1 T5"), "{}", changes[1]);
+    assert!(
+        (flush(changes[1]) - length(200.0)).abs() < 1e-3,
+        "{}",
+        changes[1]
+    );
+    // Within that nozzle, 2 > 0.
+    assert!(changes[2].ends_with(" nozzles 1>1 O1 T7"), "{}", changes[2]);
+    assert!(
+        (flush(changes[2]) - length(300.0)).abs() < 1e-3,
+        "{}",
+        changes[2]
+    );
+    // Onto the second nozzle again, which still holds 1: nothing.
+    assert_eq!(changes[3], "; change 0>1 L0 nozzles 1>2 O1 T18");
+}
+
 /// On Bambu's tower of a printer of two nozzles: a change onto the other
 /// nozzle rams the outgoing filament on the tower first (retracted at the
 /// model, to the ramming, pushed back, laid, then the change's own

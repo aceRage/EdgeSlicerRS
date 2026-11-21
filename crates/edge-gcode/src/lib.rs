@@ -2505,7 +2505,26 @@ impl Writer<'_> {
                 if avoid.is_some() {
                     self.variables.set("wipe_avoid_pos_x", Value::Float(110.0));
                 }
+                // The outgoing filament's hotend-change retraction, which
+                // the H2C's change G-code tells the printer on its
+                // `M620.11 O1 T[filament_retract_length_nc]` line (GCode.cpp
+                // `append_tcr`, `outgoing_filament_retract_length_nc`): one
+                // number, for this change only.
+                let retract_nc = match old {
+                    Some(old) => (self.variables.list("filament_retract_length_nc"))
+                        .map(|list| (list.to_vec(), list.get(old).cloned())),
+                    None => None,
+                };
+                if let Some((_, Some(value))) = &retract_nc
+                    && value.to_string().trim() != "nil"
+                {
+                    self.variables
+                        .set("filament_retract_length_nc", value.clone());
+                }
                 let expanded = edge_template::expand_mut(template, &mut self.variables);
+                if let Some((list, _)) = retract_nc {
+                    self.variables.set_list("filament_retract_length_nc", list);
+                }
                 if let Some(value) = avoid {
                     self.variables.set("wipe_avoid_pos_x", value);
                 }

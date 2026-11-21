@@ -2502,6 +2502,14 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // `number_of_extruders = sqrt(flush_matrix.size())`), rows out of
     // place; that is a flaw and is not followed. With one matrix for
     // both the two read the same.
+    //
+    // On the H2C's rack this is the order too, a change priced at the
+    // matrix of the new filament's extruder, as the reference orders a
+    // rack's layers (one solver over the layer's filaments). Bambu's own
+    // per-nozzle order, the one the grouping prices a map at
+    // (`edge_group::reorder_for_nozzles`), was tried and left: it was no
+    // better on the fixtures (work/tower/h2c2: more rack changes on three
+    // of four, the time within a minute either way).
     let filament_count = settings.texts("filament_colour").map_or(0, <[String]>::len);
     let mut orders = crate::order::layers(on_bed, &later, |from, to| {
         let (old, new) = (tools[from] - 1, tools[to] - 1);
