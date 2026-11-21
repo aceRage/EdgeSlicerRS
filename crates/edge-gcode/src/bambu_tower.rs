@@ -245,7 +245,18 @@ impl Writer<'_> {
             kept.push((name.to_owned(), writer.variables.value(name)));
             writer.variables.set(name, value);
         };
-        set(self, "wipe_avoid_perimeter", Value::Bool(s.tower_wall_gap));
+        // Not on a change between two nozzles of one extruder's rack, which
+        // leaves the head where it was (`append_tcr`).
+        let rack_change = s
+            .plate
+            .nozzles
+            .as_ref()
+            .is_some_and(|map| crate::two_nozzles::rack_change(map, from, to));
+        set(
+            self,
+            "wipe_avoid_perimeter",
+            Value::Bool(s.tower_wall_gap && !rack_change),
+        );
         set(self, "wipe_avoid_pos_x", Value::Float(visit.wipe_avoid_x));
         // The point the nozzle heats at for this change: 2 mm out from
         // where the purge starts (GCode.cpp `append_tcr`), for this change

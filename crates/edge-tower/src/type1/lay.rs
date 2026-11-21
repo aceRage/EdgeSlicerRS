@@ -2065,6 +2065,61 @@ mod tests {
     }
 
     #[test]
+    fn a_change_between_two_rack_nozzles_tells_the_printer_and_travels_back() {
+        // The H2C's rack: both filaments on the right extruder, on two of
+        // its nozzles. The outgoing one rams its `_nc` length inside
+        // `M632 S<new> M N` / `M633`, then goes back over the ramming lines
+        // for `filament_ramming_travel_time_nc` inside a second pair, with
+        // no pre-cooling without `enable_pre_heating` (WipeTower.cpp
+        // `ramming`; measured: work/tower/h2c2, h2c_two_22_pn).
+        let s = Settings::from_settings(
+            &Config::from_json(&super::super::plan::tests::H2D_TWO.replace(
+                r#""nozzle_temperature""#,
+                r#""filament_change_length_nc": ["4", "4"],
+                   "filament_ramming_travel_time_nc": ["5", "5"],
+                   "filament_pre_cooling_temperature_nc": ["180", "180"],
+                   "nozzle_temperature""#,
+            ))
+            .unwrap(),
+            0,
+        )
+        .unwrap();
+        let mut input = super::super::plan::tests::across(layers(4));
+        for layer in &mut input {
+            for change in &mut layer.changes {
+                let nozzle = change.nozzle_change.as_mut().unwrap();
+                nozzle.extruder_change = false;
+                nozzle.old_nozzle = change.old as i32 + 1;
+                nozzle.new_nozzle = change.new as i32 + 1;
+                nozzle.old_extruder = 1;
+            }
+        }
+        let planned = plan(&s, &input, 0).unwrap();
+        let visits = lay(&planned, &s).unwrap();
+        let change = visits[1].iter().find(|v| v.is_tool_change).unwrap();
+        let ramming = change.nozzle_change.as_ref().unwrap();
+        assert!(!ramming.extruder_change);
+        let g = &ramming.gcode;
+        assert!(
+            g.contains("; NOZZLE_CHANGE_START OF1 NF0 ON2 NN1\nM632 S0 M N\nM633\n"),
+            "{g}"
+        );
+        assert_eq!(g.matches("M632 S0 M N\n").count(), 2, "{g}");
+        assert_eq!(g.matches("M633\n").count(), 2, "{g}");
+        assert!(!g.contains("M104"), "{g}");
+        // The travel back: moves without E between the second pair.
+        let back = &g[g.rfind("M632").unwrap()..g.rfind("M633").unwrap()];
+        assert!(back.lines().skip(1).count() > 1, "{g}");
+        assert!(back.lines().skip(1).all(|l| !l.contains(" E")), "{g}");
+        assert!(
+            g.ends_with("M633\n; NOZZLE_CHANGE_END OF1 NF0 ON2 NN1\n"),
+            "{g}"
+        );
+        // No wipe back along the last line: the travel took its place.
+        assert!(ramming.wipe_path.is_empty());
+    }
+
+    #[test]
     fn a_change_onto_the_other_nozzle_carries_the_ramming_and_reheats_its_own_nozzle() {
         let s = Settings::from_settings(
             &Config::from_json(&super::super::plan::tests::H2D_TWO.replace(

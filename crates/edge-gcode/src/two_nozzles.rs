@@ -151,6 +151,12 @@ fn nozzle_of(map: &NozzleMap, filament: usize) -> usize {
     }
 }
 
+/// Whether a change from `from` to `to` goes between two nozzles of one
+/// extruder's rack (the H2C's): a rack nozzle change.
+pub(crate) fn rack_change(map: &NozzleMap, from: usize, to: usize) -> bool {
+    map.extruder(from) == map.extruder(to) && nozzle_of(map, from) != nozzle_of(map, to)
+}
+
 /// What a change between filaments on a printer of several nozzles keeps
 /// track of: the filament each nozzle holds, and how far each extruder's
 /// filament was left retracted when it was put away.
