@@ -2077,10 +2077,16 @@ its use and heated back in time for its next (`enable_pre_heating`,
 PreCoolingInjector, placed by the file's time); copies printed one after
 another take the plate's own `filament_map` (GCode.cpp `_do_export`,
 `group_by_plate_map`); a matrix to each nozzle (2 × n × n) is read per
-nozzle everywhere, where the reference reads it as one square. Refused:
-nozzles of two sizes, which the reference prints with a system process of
-each nozzle's size (EdgeSlicer's per-nozzle processes) and maybe merged
-layers. The timelapse picture on two nozzles is taken as the reference
+nozzle everywhere, where the reference reads it as one square. Nozzles
+of two sizes (0.4 + 0.6) print each filament with a system process of its
+nozzle's size (EdgeSlicer's per-nozzle processes,
+`crates/edge-engine/src/nozzle_process.rs`), each filament by the nozzle
+`filament_map` puts it on; Bambu's prime tower on them lays each
+filament's purge and ramming at its own nozzle's width over a structure
+of the finest nozzle's (WipeTower.cpp `tool_line_width`, 100 % of the
+reference's tower lines on the fixtures where the tool order agrees).
+Refused there: an automatic filament map, layers the reference would
+merge into slabs, and the rest `nozzle_process.rs` lists. The timelapse picture on two nozzles is taken as the reference
 takes it (`crates/edge-gcode/src/timelapse.rs`, below). The time
 estimate reads what the reference's does: `G28` as a move home, Bambu's
 `G29` as 260 s once, `M191` above 40 °C as 720 s, Bambu's own tool

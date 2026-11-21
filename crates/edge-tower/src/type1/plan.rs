@@ -9,13 +9,21 @@
 //! the stability table (`min_depth_per_height`), `update_all_layer_depth`,
 //! `set_nozzle_last_layer_id`, `layer_y_shifts`, `get_all_wall_skip_points`,
 //! `set_rib_offset`, `get_auto_brim_by_height`, and the footprint estimates
-//! (`estimate_tower_blocks_depth` and its company).
+//! (`estimate_tower_blocks_depth` and its company). On two nozzles of
+//! different sizes each filament plans its purge and ramming at its own
+//! nozzle's width (`tool_line_width`, Edge's per-nozzle P2) over a
+//! structure of the finest; the tower keeps one layer per print layer, as
+//! the reference keeps it on a printer whose nozzles are extruders of
+//! their own (the H2D): its ladders of merged slabs per nozzle
+//! (`set_multi_diameter_print`, `merged_fill_active`) run only where rack
+//! hotends count as extruders (Print.cpp `_make_wipe_tower`,
+//! `hotend_as_extruder`).
 //!
 //! Refused rather than planned some other way: a printer whose rack
 //! hotends count as extruders (the H3C's ladder and merged slabs,
 //! `plan_tower_ladder` / `plan_merged_slabs`, its idle cooling), more than
-//! two nozzles or two of different sizes (`tool_line_width`), the side
-//! scrape, sparse layers laid as one (`combine_sparse_wipe_tower_plan`),
+//! two nozzles, the side scrape, sparse layers laid as one
+//! (`combine_sparse_wipe_tower_plan`),
 //! and Edge's own tower interfaces (`mark_interfaces`, which Bambu's
 //! interface switch leaves idle).
 
@@ -581,12 +589,20 @@ impl Planner<'_> {
         self.settings.category(filament)
     }
 
+    /// The width `filament` lays its purge at (`tool_line_width`).
+    fn tool_width(&self, filament: usize) -> f32 {
+        self.settings.tool_line_width(filament)
+    }
+
     /// The row gap of a filament's block (`get_block_gap_width`, purge
-    /// rows): a block not planned yet lays its rows a line apart.
+    /// rows): a block not planned yet lays its rows a line apart; a
+    /// filament of another nozzle size moves the block's gap by its own
+    /// width's difference from the structure's (Edge's per-nozzle P2).
     fn gap_width(&self, filament: usize) -> f32 {
+        let own = self.tool_width(filament);
         self.gaps
             .get(&self.category(filament))
-            .map_or(self.line, |gap| gap.0)
+            .map_or(own, |gap| gap.0 + (own - self.line))
     }
 
     /// The width of the ramming lines of `filament`'s nozzle
@@ -642,7 +658,8 @@ impl Planner<'_> {
         if across <= EPSILON {
             return;
         }
-        change.wipe_length = volume_to_length(change.wipe_volume, self.line, height);
+        change.wipe_length =
+            volume_to_length(change.wipe_volume, self.tool_width(change.new), height);
         let mut depth = (change.wipe_length / across).ceil() * self.gap_width(change.new);
         change.nozzle_change_length = 0.0;
         change.nozzle_change_depth = 0.0;
@@ -651,7 +668,7 @@ impl Planner<'_> {
                 self.nozzle_change_length(change.old, nozzle.extruder_change, height);
             // The ramming box spans the tower between the outgoing
             // filament's purge lines on both sides.
-            let box_width = self.width - (self.nc_width(change.old) + self.line);
+            let box_width = self.width - (self.nc_width(change.old) + self.tool_width(change.old));
             if change.nozzle_change_length > 0.0 && box_width > EPSILON {
                 change.nozzle_change_depth =
                     (change.nozzle_change_length / box_width).ceil() * self.ramming_gap(change.old);
@@ -1073,7 +1090,7 @@ impl Planner<'_> {
                         reached[old_at].1 += nozzle_change_depth;
                     }
                 }
-                let gap = self.gaps.get(&new_category).map_or(self.line, |gap| gap.0);
+                let gap = self.gap_width(change.new);
                 let last_row = process + wipe_depth - extra * gap;
                 let point = match index % 4 {
                     0 => (0.0, process),
@@ -1183,20 +1200,6 @@ pub fn plan(settings: &Settings, layers: &[LayerIn], start_tool: usize) -> Resul
         return Err(PlanError::Unsupported(format!(
             "the Type 1 tower is not supported on {what} yet; {instead}"
         )));
-    }
-    // Two nozzles of different sizes lay each filament's purge at its own
-    // nozzle's line width (`tool_line_width`), which is not done here.
-    if settings.nozzles > 1
-        && settings
-            .nozzle_diameters
-            .windows(2)
-            .any(|pair| (pair[0] - pair[1]).abs() > 1e-6)
-    {
-        return Err(PlanError::Unsupported(
-            "nozzles of two sizes: each filament's purge at its own nozzle's line width is not \
-             done yet; use nozzles of one size or turn the prime tower off"
-                .to_owned(),
-        ));
     }
     if settings.mixed_extruders {
         return Err(PlanError::Unsupported(
@@ -1382,14 +1385,16 @@ pub fn plan(settings: &Settings, layers: &[LayerIn], start_tool: usize) -> Resul
             // for them.
             layer.extra_spacing = 1.0;
             for change in &mut layer.changes {
+                let new_pw = settings.tool_line_width(change.new);
                 let nc_width = nozzle_change_width(settings.nozzle_of(change.old));
                 let wipe_depth = (change.required_depth - change.nozzle_change_depth) * spacing;
                 let nc_depth = change.nozzle_change_depth * spacing;
                 let nc_lines = ((nc_depth + WT_EPSILON) / nc_width) as i32;
                 change.required_depth = wipe_depth + nc_depth;
-                change.wipe_length = wipe_depth / line * across;
-                change.wipe_volume = length_to_volume(change.wipe_length, line, layer.height);
-                change.nozzle_change_length = nc_lines as f32 * (planner.width - (nc_width + line));
+                change.wipe_length = wipe_depth / new_pw * across;
+                change.wipe_volume = length_to_volume(change.wipe_length, new_pw, layer.height);
+                change.nozzle_change_length = nc_lines as f32
+                    * (planner.width - (nc_width + settings.tool_line_width(change.old)));
                 change.nozzle_change_depth = nc_depth;
             }
         } else {
@@ -1397,7 +1402,11 @@ pub fn plan(settings: &Settings, layers: &[LayerIn], start_tool: usize) -> Resul
             for change in &mut layer.changes {
                 change.required_depth *= spacing;
                 change.nozzle_change_depth *= spacing;
-                change.wipe_length = volume_to_length(change.wipe_volume, line, layer.height);
+                change.wipe_length = volume_to_length(
+                    change.wipe_volume,
+                    settings.tool_line_width(change.new),
+                    layer.height,
+                );
             }
         }
     }
@@ -2220,20 +2229,22 @@ pub(crate) mod tests {
             .unwrap_err()
             .to_string();
         assert!(said.contains("turn the prime tower off"), "{said}");
-        // More than two nozzles, or two of different sizes.
-        for nozzles in [r#"["0.4", "0.4", "0.4"]"#, r#"["0.4", "0.6"]"#] {
-            let s = settings(&format!(
-                r#"{{"printer_model": "Bambu Lab H2D", "nozzle_diameter": {nozzles}}}"#
+        // More than two nozzles.
+        let three = settings(
+            r#"{"printer_model": "Bambu Lab H2D", "nozzle_diameter": ["0.4", "0.4", "0.4"]}"#,
+        );
+        assert!(matches!(
+            super::plan(&three, &layers(2, &[0, 1]), 0),
+            Err(PlanError::Unsupported(_))
+        ));
+        // Two of one size, or of two sizes, are planned.
+        for nozzles in [r#"["0.4", "0.4"]"#, r#"["0.4", "0.6"]"#] {
+            let h2d = settings(&format!(
+                r#"{{"printer_model": "Bambu Lab H2D", "nozzle_diameter": {nozzles},
+                    "filament_map": ["1", "2"]}}"#
             ));
-            assert!(matches!(
-                super::plan(&s, &layers(2, &[0, 1]), 0),
-                Err(PlanError::Unsupported(_))
-            ));
+            assert!(super::plan(&h2d, &layers(2, &[0, 1]), 0).is_ok());
         }
-        // Two of one size are planned.
-        let h2d =
-            settings(r#"{"printer_model": "Bambu Lab H2D", "nozzle_diameter": ["0.4", "0.4"]}"#);
-        assert!(super::plan(&h2d, &layers(2, &[0, 1]), 0).is_ok());
         let scrape = settings(r#"{"prime_tower_side_scrape": "1"}"#);
         assert!(matches!(
             super::plan(&scrape, &layers(2, &[0, 1]), 0),
@@ -2315,6 +2326,87 @@ pub(crate) mod tests {
             "{first:?}"
         );
         assert!((plan.skip_points[0][0].1 - 1.75).abs() < 1e-4);
+    }
+
+    /// Nozzles of two sizes (an H2D of 0.4 + 0.6, filament 2 on the 0.6):
+    /// each filament purges and rams at its own nozzle's width over a
+    /// structure of the finest (WipeTower.cpp `tool_line_width`,
+    /// `replan_toolchange`, `get_block_gap_width`; Edge's per-nozzle P2).
+    #[test]
+    fn on_nozzles_of_two_sizes_each_filament_plans_at_its_own_width() {
+        let s = settings(&H2D_TWO.replace(r#"["0.4", "0.4"]"#, r#"["0.4", "0.6"]"#));
+        assert_eq!((s.line_width, s.tool_line_width(0)), (0.5, 0.5));
+        assert_eq!(s.tool_line_width(1), 0.75);
+        let plan = super::plan(&s, &across(layers(20, &[0, 1])), 0).unwrap();
+        // The structure, and the widest ramming line (the 0.6's, 1.2 mm).
+        assert_eq!((plan.line_width, plan.nozzle_change_width), (0.5, 1.2));
+        let gaps = plan.gaps[&100];
+        for change in &plan.layers[1].changes {
+            let own = s.tool_line_width(change.new);
+            // The prime laid at the new filament's width, in whole rows of
+            // the block's gap moved by that width's difference.
+            let length = volume_to_length(change.wipe_volume, own, 0.2);
+            assert!((change.wipe_length - length).abs() < 1e-3, "{change:?}");
+            let rows = (length / (60.0 - 1.0)).ceil();
+            let wipe = change.required_depth - change.nozzle_change_depth;
+            let gap = gaps.0 + (own - 0.5);
+            assert!(
+                (wipe - rows * gap * plan.extra_spacing).abs() < 1e-3,
+                "{change:?}"
+            );
+            // The ramming box between the outgoing filament's own lines.
+            let nc = nozzle_change_width(s.nozzle_of(change.old));
+            let across = 60.0 - (nc + s.tool_line_width(change.old));
+            let lines = (change.nozzle_change_length / across).ceil();
+            let ramming_gap = gaps.1 + (nc - 1.2);
+            assert!(
+                (change.nozzle_change_depth - lines * ramming_gap * plan.extra_spacing).abs()
+                    < 1e-3,
+                "{change:?}"
+            );
+        }
+        // The first layer is solid: its rows are each filament's own width.
+        for change in &plan.layers[0].changes {
+            let own = s.tool_line_width(change.new);
+            let wipe = change.required_depth - change.nozzle_change_depth;
+            assert!(
+                (change.wipe_length - wipe / own * 59.0).abs() < 1e-2,
+                "{change:?}"
+            );
+        }
+        // `wipe_tower_filament` gives the structure its filament's width,
+        // and `prime_tower_line_width` is every filament's.
+        let forced = settings(
+            &H2D_TWO
+                .replace(r#"["0.4", "0.4"]"#, r#"["0.4", "0.6"]"#)
+                .replace(
+                    r#""initial_layer_speed""#,
+                    r#""wipe_tower_filament": "2", "initial_layer_speed""#,
+                ),
+        );
+        assert_eq!(forced.line_width, 0.75);
+        let set = settings(
+            &H2D_TWO
+                .replace(r#"["0.4", "0.4"]"#, r#"["0.4", "0.6"]"#)
+                .replace(
+                    r#""initial_layer_speed""#,
+                    r#""prime_tower_line_width": "0.6", "initial_layer_speed""#,
+                ),
+        );
+        assert_eq!((set.line_width, set.tool_line_width(1)), (0.6, 0.6));
+        // Filament 1 on the 0.6: the structure is still the finest nozzle's.
+        let swapped = settings(
+            &H2D_TWO
+                .replace(r#"["0.4", "0.4"]"#, r#"["0.4", "0.6"]"#)
+                .replace(
+                    r#""filament_map": ["1", "2"]"#,
+                    r#""filament_map": ["2", "1"]"#,
+                ),
+        );
+        assert_eq!(
+            (swapped.tool_line_width(0), swapped.line_width),
+            (0.75, 0.5)
+        );
     }
 
     #[test]

@@ -123,9 +123,16 @@ pub struct Settings {
     pub brim_width: f32,
     /// The first nozzle's diameter (`nozzle_diameter`).
     pub nozzle_diameter: f32,
-    /// The tower's line width: `prime_tower_line_width`, or 1.25 nozzle
-    /// diameters where that is 0 (`m_perimeter_width`).
+    /// The tower's structure width, of its footprint, wall, brim and
+    /// sparse fill (`m_perimeter_width`): `prime_tower_line_width`, or 1.25
+    /// nozzle diameters where that is 0. With nozzles of two sizes, that of
+    /// the filament `wipe_tower_filament` forces, else of the finest nozzle
+    /// any filament is set to ([`Settings::map_extruders`]).
     pub line_width: f32,
+    /// `prime_tower_line_width` as set (0: from each nozzle's diameter).
+    pub tower_line_width: f32,
+    /// `wipe_tower_filament`, from 1; 0 for none.
+    pub wall_filament: usize,
     /// `prime_tower_infill_gap`, as a share of a line width (1.5 = 150%).
     pub infill_gap: f32,
     /// `prime_tower_enable_framework`: every layer as deep as the first.
@@ -471,6 +478,12 @@ impl Settings {
         };
         let soluble = flags("filament_soluble");
         let support = flags("filament_is_support");
+        // Not copied: the reference's normalize (PrintConfig.cpp l.12545-12550)
+        // resets `wipe_tower_filament` to 0 when it is above the number of
+        // nozzles, a check from when every filament had its own extruder;
+        // on an H2D with four filaments it drops filament 3 or 4 as the
+        // tower's (measured: work/tower/mixt h2_mixt_wall3 and
+        // h2_mixt_ctl_wall3, the reference's G-code says 0).
         let forced = number("wipe_tower_filament", 0.0)? as usize;
         let categories = list("filament_adhesiveness_category")?;
         let prime = list("filament_prime_volume")?;
@@ -694,6 +707,8 @@ impl Settings {
             brim_width: number("prime_tower_brim_width", 3.0)? as f32,
             nozzle_diameter,
             line_width,
+            tower_line_width,
+            wall_filament: forced,
             infill_gap,
             framework: flag("prime_tower_enable_framework", false)?,
             line_ironing: flag("prime_tower_line_ironing", true)?,
@@ -768,6 +783,34 @@ impl Settings {
                 .copied()
                 .filter(|e| *e < count)
                 .unwrap_or(0);
+        }
+        // The structure width (WipeTower.cpp `set_extruder`, Edge's
+        // per-nozzle P2): the first filament's tool width, then the forced
+        // wall filament's, else the narrowest of any filament's, used or
+        // not, as the reference registers every filament.
+        let forced = self.wall_filament;
+        for index in 0..self.filaments.len() {
+            let own = self.tool_line_width(index);
+            let is_wall = forced > 0 && index == forced - 1;
+            if index == 0 || is_wall || (forced == 0 && own < self.line_width) {
+                self.line_width = own;
+            }
+        }
+    }
+
+    /// The width `filament` lays its own purge and ramming box edges at
+    /// (WipeTower.hpp `tool_line_width`): `prime_tower_line_width`, else
+    /// its nozzle's diameter times 1.25. With nozzles of one size that is
+    /// the structure width, the same number.
+    pub fn tool_line_width(&self, filament: usize) -> f32 {
+        if self.tower_line_width > 0.0 {
+            return self.tower_line_width;
+        }
+        let nozzle = self.nozzle_of(filament);
+        if nozzle > 0.0 {
+            nozzle * WIDTH_TO_NOZZLE
+        } else {
+            self.line_width
         }
     }
 

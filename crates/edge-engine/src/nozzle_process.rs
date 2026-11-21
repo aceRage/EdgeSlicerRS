@@ -42,6 +42,17 @@
 //! without the per-extruder slot layout, and without the vendor profiles
 //! to pick from. [`check_merging`] refuses a plate where the reference would
 //! print the larger nozzle's layers merged into slabs (AdaptiveLayerMerge.cpp).
+//!
+//! The prime tower (edge-tower `type1`): each filament purges and rams at
+//! its own nozzle's width over a structure of the finest (WipeTower.cpp
+//! `tool_line_width`), with the tower's nozzle of each filament by the map
+//! too, where the reference's goes by the filament's number as above
+//! (measured on h2_mix_21, map 2,1: the reference purges filament 1, on the
+//! 0.6 nozzle, 0.5 mm wide and filament 2, on the 0.4, 0.75 mm wide). One
+//! tower layer per print layer, as the reference's on an H2D: its ladders
+//! of merged slabs per nozzle (`set_multi_diameter_print`,
+//! `merged_fill_active`) run only where rack hotends count as extruders
+//! (Print.cpp `_make_wipe_tower`, the H3C), which is refused.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -1284,30 +1295,6 @@ fn filament_sizes(settings: &Settings) -> Result<Option<Vec<f64>>, Failure> {
     ))
 }
 
-/// Refuses the prime tower where the plate's filaments are set to nozzles
-/// of two sizes: the reference then lays each filament's purge at its own
-/// nozzle's width over a structure of the smallest (WipeTower.cpp
-/// `tool_line_width`, `set_extruder`) and plans the tower as each nozzle's
-/// own ladder of layers (`set_multi_diameter_print`, `merged_fill_active`,
-/// WipeTower.cpp l.4510-5500), which is not done.
-pub(crate) fn check_tower(settings: &Settings) -> Result<(), Failure> {
-    let Some(sizes) = filament_sizes(settings)? else {
-        return Ok(());
-    };
-    if sizes.iter().any(|size| (size - sizes[0]).abs() > 1e-6) {
-        return Err(format!(
-            "nozzles of two sizes: with filaments set to both the {} and the {} mm nozzle the \
-             prime tower is laid at each nozzle's own width and planned as each nozzle's own \
-             layers, which is not done yet; turn the prime tower off, or set every filament to \
-             one nozzle; no G-code was written",
-            size_text(sizes.iter().copied().fold(f64::INFINITY, f64::min)),
-            size_text(sizes.iter().copied().fold(0.0, f64::max)),
-        )
-        .into());
-    }
-    Ok(())
-}
-
 /// What the prime tower reads, where every filament is set to one nozzle
 /// of a printer whose nozzles differ in size: the settings with both
 /// nozzles of that size, as each of the tower's widths is of the nozzle of
@@ -1551,15 +1538,14 @@ mod tests {
 
     /// The tower: laid as on a printer of the one size every filament is
     /// set to (work/tower/mix, h2_mix_four_2: 100 % of the reference's
-    /// tower lines), refused with filaments on both sizes.
+    /// tower lines); with filaments on both sizes the settings serve as
+    /// they are, each filament laying at its own nozzle's width
+    /// (edge-tower `type1`).
     #[test]
     fn the_tower_takes_the_one_size_the_filaments_print_from() {
         let both = h2d("0.6", ["1", "2"]);
-        let said = check_tower(&both).unwrap_err().to_string();
-        assert!(said.contains("turn the prime tower off"), "{said}");
         assert!(tower_view(&both).unwrap().is_none());
         let right = h2d("0.6", ["2", "2"]);
-        check_tower(&right).unwrap();
         let view = tower_view(&right).unwrap().unwrap();
         assert_eq!(view.texts("nozzle_diameter").unwrap(), ["0.6", "0.6"]);
         // Nozzles of one size: nothing to do.
