@@ -138,6 +138,7 @@ mod tests {
             solid: mesh,
             negative: None,
             filament: 1,
+            cut: None,
         };
         let layers = edge_slice::slice_regions(&[body], &planes, 0).unwrap();
         (layers, planes, LayerHeights::uniform(0.2, 0.2, count))
@@ -189,6 +190,7 @@ mod tests {
             solid: &mesh,
             negative: None,
             filament: 1,
+            cut: None,
         }];
         let first = on.first_layer(&body, true, &planes, 0, &heights).unwrap();
         assert_eq!(first, layers[0].regions);
@@ -208,6 +210,7 @@ mod tests {
             solid: &mesh,
             negative: None,
             filament: 1,
+            cut: None,
         }];
         // One object of several is cut and grown by itself, and comes
         // to the same; alone on the plate, the plate's layer is its own.

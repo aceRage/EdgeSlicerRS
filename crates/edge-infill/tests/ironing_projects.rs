@@ -61,6 +61,7 @@ fn every_solid_layer_is_ironed_inside_its_outline() {
                 solid: &body.solid,
                 negative: body.negative.as_ref(),
                 filament: body.filament,
+                cut: body.cuts(),
             })
             .collect();
         let mut settings = project.settings.unwrap_or_default();

@@ -1172,10 +1172,13 @@ pub(crate) fn lay_over_parts(
                 becomes.insert(*key, regions.key(plate, filament, &overrides));
             }
             met.extend(becomes.values().copied());
-            let cut: Vec<Vec<edge_geom::ExPolygon>> = edge_slice::slice(&modifier.mesh, planes)
-                .into_par_iter()
-                .map(|layer| edge_clip::union(&layer.polygons))
-                .collect::<Result<_, _>>()?;
+            let cut: Vec<Vec<edge_geom::ExPolygon>> = match &modifier.cut {
+                Some(cut) => edge_slice::slice_cut(cut, planes),
+                None => edge_slice::slice(&modifier.mesh, planes),
+            }
+            .into_par_iter()
+            .map(|layer| edge_clip::union(&layer.polygons))
+            .collect::<Result<_, _>>()?;
             steps.push(Step {
                 span: (f64::NEG_INFINITY, f64::INFINITY),
                 cut: Some(cut),
@@ -1195,6 +1198,7 @@ pub(crate) fn lay_over_parts(
                 solid: &body.solid,
                 negative: body.negative.as_ref(),
                 filament: 1,
+                cut: body.cuts(),
             })
             .collect();
         let outline = edge_slice::slice_regions(&parts, planes, closing_radius)?;
@@ -1389,29 +1393,33 @@ pub(crate) fn support_annotations(
                     solid: &body.solid,
                     negative: body.negative.as_ref(),
                     filament: 1,
+                    cut: body.cuts(),
                 })
                 .collect();
             let outline = edge_slice::slice_regions(&parts, planes, closing_radius)?;
             for volume in volumes {
-                let cut: Vec<Vec<edge_geom::ExPolygon>> = edge_slice::slice(&volume.mesh, planes)
-                    .into_par_iter()
-                    .zip(&outline)
-                    .map(|(layer, outline)| {
-                        if layer.polygons.is_empty() {
-                            return Ok(Vec::new());
-                        }
-                        let cut = edge_clip::union(&layer.polygons)?;
-                        // A blocker is taken whole: tree branches keep out
-                        // of all of it. An enforcer asks for supports under
-                        // its own object alone (`intersection(layer.lslices,
-                        // enforcers)`).
-                        if volume.kind == PartKind::SupportBlocker {
-                            Ok(cut)
-                        } else {
-                            edge_clip::intersection(&cut, &outline.regions)
-                        }
-                    })
-                    .collect::<Result<_, edge_clip::ClipError>>()?;
+                let cut: Vec<Vec<edge_geom::ExPolygon>> = match &volume.cut {
+                    Some(cut) => edge_slice::slice_cut(cut, planes),
+                    None => edge_slice::slice(&volume.mesh, planes),
+                }
+                .into_par_iter()
+                .zip(&outline)
+                .map(|(layer, outline)| {
+                    if layer.polygons.is_empty() {
+                        return Ok(Vec::new());
+                    }
+                    let cut = edge_clip::union(&layer.polygons)?;
+                    // A blocker is taken whole: tree branches keep out
+                    // of all of it. An enforcer asks for supports under
+                    // its own object alone (`intersection(layer.lslices,
+                    // enforcers)`).
+                    if volume.kind == PartKind::SupportBlocker {
+                        Ok(cut)
+                    } else {
+                        edge_clip::intersection(&cut, &outline.regions)
+                    }
+                })
+                .collect::<Result<_, edge_clip::ClipError>>()?;
                 if volume.kind == PartKind::SupportEnforcer {
                     for (layer, areas) in annotations.enforcers.iter_mut().zip(cut) {
                         layer.extend(areas);
@@ -1477,6 +1485,7 @@ pub(crate) mod tests {
             filament: Some(1),
             settings: pairs(part),
             mesh: Mesh::default(),
+            cut: None,
         }];
         volumes.extend(extra);
         let loaded = Loaded {
@@ -1487,6 +1496,8 @@ pub(crate) mod tests {
                     filament: 1,
                     part: None,
                     object: None,
+                    cut: None,
+                    negative_cut: None,
                 },
                 edge_3mf::Body {
                     solid: cube(15.0),
@@ -1494,6 +1505,8 @@ pub(crate) mod tests {
                     filament: 1,
                     part: Some((0, 0)),
                     object: None,
+                    cut: None,
+                    negative_cut: None,
                 },
             ],
             painted: Vec::new(),
@@ -1673,6 +1686,7 @@ pub(crate) mod tests {
                 .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
                 .collect(),
             mesh: Mesh::from_triangle_soup(primitives::cuboid(low, high)),
+            cut: None,
         }
     }
 

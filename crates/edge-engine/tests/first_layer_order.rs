@@ -17,12 +17,15 @@ fn reference(path: &str) -> PathBuf {
 }
 
 /// Four blocks 10 × 20 mm in a row, 8, 6, 4 and 2 mm tall, in filaments 1
-/// to 4 from the left: parts of one object, 0.02 mm apart, a gap the
+/// to 4 from the left: parts of one object, 1/32 mm apart, a gap the
 /// slicing closes before compensating, so the four are shrunk as one.
+/// Every corner and middle is exact in single precision, and the middle of
+/// the row a whole number of units, so the four are
+/// cut the same to the unit in their object's frame.
 fn four_blocks(dir: &Path) -> Model {
     let heights = [8.0, 6.0, 4.0, 2.0];
     let soup = heights.iter().enumerate().flat_map(|(at, height)| {
-        let x = 115.0 + 10.02 * at as f32;
+        let x = 115.0 + 10.031_25 * at as f32;
         cuboid([x, 126.0, 0.0], [x + 10.0, 146.0, *height])
     });
     let mesh = Mesh::from_triangle_soup(soup);
@@ -105,10 +108,13 @@ fn the_blocks_at_the_ends_lose_more_to_elephant_foot_and_go_last() {
         first_layer_tools(&model, r#"{"elefant_foot_compensation": "0.15"}"#),
         [1, 2, 0, 3]
     );
-    // Without it the four are the same and go in the order of their
-    // filaments.
+    // Without it the four are the same in the file, but not as cut: each
+    // is cut in single precision about its object's middle, and the ends
+    // come out larger by a few square units. The pinned build gives
+    // 0, 3, 1, 2 on this plate too (the same blocks written as a project
+    // with the U1's settings, elephant foot compensation 0).
     assert_eq!(
         first_layer_tools(&model, r#"{"elefant_foot_compensation": "0"}"#),
-        [0, 1, 2, 3]
+        [0, 3, 1, 2]
     );
 }

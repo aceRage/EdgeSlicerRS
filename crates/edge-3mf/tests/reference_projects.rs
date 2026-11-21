@@ -74,6 +74,7 @@ fn every_reference_project_opens_and_slices_into_closed_contours() {
                 solid: &body.solid,
                 negative: body.negative.as_ref(),
                 filament: body.filament,
+                cut: body.cuts(),
             })
             .collect();
         let planes = edge_slice::layer_planes(min[2].into(), max[2].into(), 0.2, 0.2);

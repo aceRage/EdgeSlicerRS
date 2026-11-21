@@ -379,9 +379,13 @@ impl SpiralVase {
                     // (GCodeWriter.cpp `set_speed`), which this filter
                     // leaves; this writer puts it on the move, and without
                     // this the moves after went at the layer change's speed.
+                    // The last layer laid again flat keeps it too.
                     let feed = feed_only(&line);
                     if line.extruding(reader) && line.has_xy() && !feed.raw.is_empty() {
                         push(&mut new_gcode, &feed);
+                        if transition_out {
+                            push(&mut transition_gcode, &feed);
+                        }
                     }
                     return;
                 }
@@ -553,6 +557,21 @@ mod tests {
                      G1 X10 Y20 E.4\nG1 X10 Y10 E.4\n";
         let (text, _) = vase.process_layer(layer, false);
         assert!(text.contains("\nG1 F3000\nG1 Z"), "{text}");
+    }
+
+    #[test]
+    fn the_last_layer_laid_again_flat_keeps_the_feedrate_of_a_move_left_out() {
+        let mut vase = SpiralVase::new(plain(), 0.012);
+        vase.process_layer(&square(0.2), false);
+        vase.enable(true);
+        vase.process_layer(&square(0.4), false);
+        vase.enable(true);
+        let layer = ";LAYER_CHANGE\nG1 Z0.600 F1200\n;TYPE:Outer wall\n\
+                     G1 X10.01 Y10 E.001 F3000\nG1 X20 Y10 E.4\nG1 X20 Y20 E.4\n\
+                     G1 X10 Y20 E.4\nG1 X10 Y10 E.4\n";
+        let (text, _) = vase.process_layer(layer, true);
+        let flat = &text[text.rfind(";LAYER_CHANGE").unwrap()..];
+        assert!(flat.contains("\nG1 F3000\nG1 X20 Y10"), "{flat}");
     }
 
     #[test]

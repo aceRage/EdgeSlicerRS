@@ -86,6 +86,7 @@ fn every_reference_project_exports_well_formed_gcode_that_adds_up() {
                 solid: &body.solid,
                 negative: body.negative.as_ref(),
                 filament: body.filament,
+                cut: body.cuts(),
             })
             .collect();
         let settings = project.settings.unwrap_or_default();

@@ -13,11 +13,13 @@ pub mod raycast;
 pub mod remesh;
 pub mod selector;
 pub mod simplify;
+pub mod slicing;
 pub mod split;
 pub mod stl;
 pub mod tidy;
 mod transform;
 
+pub use slicing::SlicingMesh;
 pub use transform::Transform;
 
 use rustc_hash::FxHashMap;

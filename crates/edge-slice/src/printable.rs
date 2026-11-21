@@ -196,6 +196,7 @@ mod tests {
             solid: &mesh,
             negative: None,
             filament: 1,
+            cut: None,
         };
         slice_regions(&[body], &layer_planes(0.0, 14.0, 0.2, 0.2), 0).unwrap()
     }

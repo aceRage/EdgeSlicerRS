@@ -604,14 +604,22 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 );
             }
             let filament = materials.first().copied().unwrap_or(1);
+            let cuts = object_cuts(&bodies, objects.len());
             bodies = (objects.iter().enumerate())
                 .zip(negatives.iter().map(Some).chain(std::iter::repeat(None)))
-                .map(|((at, solid), negative)| Body {
+                .zip(cuts)
+                .map(|(((at, solid), negative), cut)| Body {
                     solid: solid.clone(),
                     negative: negative.filter(|mesh| !mesh.triangles.is_empty()).cloned(),
                     filament,
                     part: None,
                     object: Some(at),
+                    negative_cut: cut.as_ref().and_then(|_| {
+                        (bodies.iter())
+                            .find(|body| body.object == Some(at))
+                            .and_then(|body| body.negative_cut.clone())
+                    }),
+                    cut,
                 })
                 .collect();
         }
@@ -658,7 +666,20 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     if let (false, Some([min_x, min_y, max_x, max_y])) = (is_project || placed, print.bed) {
         let x = (min_x + max_x) / 2.0 - f64::from(min[0] + max[0]) / 2.0;
         let y = (min_y + max_y) / 2.0 - f64::from(min[1] + max[1]) / 2.0;
+        // Cut as the reference cuts a model of one part that it moved
+        // there, as a project saved from it is cut.
+        let cuts: Vec<Option<edge_mesh::SlicingMesh>> = (bodies.iter())
+            .map(|body| match &body.cut {
+                Some(_) => None,
+                None => Some(edge_3mf::lone_cut(&body.solid, [x, y, 0.0])),
+            })
+            .collect();
         shift(&mut bodies, x, y);
+        for (body, cut) in bodies.iter_mut().zip(cuts) {
+            if cut.is_some() {
+                body.cut = cut;
+            }
+        }
         centred = Some(((min_x + max_x) / 2.0, (min_y + max_y) / 2.0));
     }
     // Laid out from the middle of what is being printed, where it stands
@@ -905,6 +926,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                 solid: &body.solid,
                 negative: body.negative.as_ref(),
                 filament: *key,
+                cut: body.cuts(),
             })
             .collect();
         let holes = crate::holes::HoleSettings::from_settings(&settings)?;
@@ -2804,6 +2826,12 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     } else {
         objects.iter().collect()
     };
+    // And as the reference cuts them, where they are placed so.
+    let mesh_cuts: Vec<Option<edge_mesh::SlicingMesh>> = if objects.is_empty() {
+        bodies.iter().map(|body| body.cut.clone()).collect()
+    } else {
+        object_cuts(&bodies, objects.len())
+    };
     // An object's own brim, where it sets one.
     let own_brims: Vec<Option<AdhesionSettings>> = (0..meshes.len())
         .map(|object| {
@@ -2844,6 +2872,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                     solid: mesh,
                     negative: None,
                     filament: 1,
+                    cut: mesh_cuts[object].as_ref().map(|cut| (cut, None)),
                 }];
                 // The object's own first layer, grown as the plate's was
                 // where overhangs were made printable down to the bed.
@@ -4008,6 +4037,22 @@ pub(crate) fn groups_onto_nozzles(settings: &Settings) -> bool {
         .filter(|kind| !kind.is_empty())
         .collect();
     extruders <= 2 && kinds.len() > 1
+}
+
+/// Each of `count` objects' printed parts together as the reference cuts
+/// them ([`Body::cut`]), gathered by [`Body::object`]; none for an object
+/// with a part not given so.
+fn object_cuts(bodies: &[Body], count: usize) -> Vec<Option<edge_mesh::SlicingMesh>> {
+    (0..count)
+        .map(|object| {
+            let mut parts = bodies.iter().filter(|body| body.object == Some(object));
+            let mut whole = parts.next()?.cut.clone()?;
+            for body in parts {
+                whole.extend(body.cut.as_ref()?);
+            }
+            Some(whole)
+        })
+        .collect()
 }
 
 #[cfg(test)]
