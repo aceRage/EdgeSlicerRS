@@ -2218,9 +2218,6 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     let tower_view = crate::nozzle_process::tower_view(&settings)?;
     let tower_source: &Settings = tower_view.as_ref().unwrap_or(&settings);
     let mut tower_settings = TowerSettings::from_settings(&settings, plate)?;
-    if tower_settings.enabled && used.len() > 1 {
-        crate::nozzle_process::check_tower(&settings)?;
-    }
     let mut tower_moved: Option<String> = None;
     // A tower whose saved place no longer fits it is moved onto the bed
     // as the reference's command line moves it before slicing

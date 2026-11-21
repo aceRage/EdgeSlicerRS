@@ -135,6 +135,23 @@ impl Layer<'_> {
         height * (self.pw() - height * (1.0 - PI / 4.0)) / area
     }
 
+    /// The width `tool` lays its purge at (`tool_line_width`).
+    fn tool_pw(&self, tool: usize) -> f32 {
+        self.settings.tool_line_width(tool)
+    }
+
+    /// `tool_extrusion_flow`: the flow of `tool`'s own width at `height`,
+    /// exactly `flow` (the structure's at that height) where that width is
+    /// the structure's.
+    fn tool_flow_at(&self, tool: usize, height: f32, flow: f32) -> f32 {
+        let width = self.tool_pw(tool);
+        if width == self.pw() {
+            return flow;
+        }
+        let area = self.settings.filaments.first().map_or(1.0, |f| f.area);
+        height * (width - height * (1.0 - PI / 4.0)) / area
+    }
+
     fn is_first_layer(&self) -> bool {
         self.index == self.plan.first_layer
     }
@@ -670,16 +687,19 @@ impl Layer<'_> {
         }
     }
 
-    /// `wipe_line_spacing`.
+    /// `wipe_line_spacing`: the tool's own width on a solid or first
+    /// layer, else its block's gap moved by its width's difference from the
+    /// structure's (`get_block_gap_width`).
     fn row_spacing(&self, tool: usize, solid: bool) -> f32 {
+        let own = self.tool_pw(tool);
         if solid || self.is_first_layer() {
-            return self.pw();
+            return own;
         }
         let gap = self
             .plan
             .gaps
             .get(&self.category(tool))
-            .map_or(self.pw(), |gap| gap.0);
+            .map_or(own, |gap| gap.0 + (own - self.pw()));
         self.plan.layers[self.index].extra_spacing * gap
     }
 
@@ -739,7 +759,8 @@ impl Layer<'_> {
             return NozzleVisit::default();
         };
         self.cur_block = Some(block);
-        let pw = self.pw();
+        // The ramming box follows the outgoing filament's nozzle.
+        let pw = self.tool_pw(old);
         let nc_width = nozzle_change_width(self.settings.nozzle_of(old));
         let x_offset = pw + (nc_width - pw) / 2.0;
         let box_width = self.width() - 2.0 * x_offset;
@@ -1123,9 +1144,13 @@ impl Layer<'_> {
     ) {
         let tool = self.current_tool;
         let own = self.settings.filaments[tool.min(self.settings.filaments.len() - 1)].clone();
+        // The purge at the loaded tool's own width and flow; the box, the
+        // wall overlap and the flat ironing stay on the structure width.
         let pw = self.pw();
+        let tool_pw = self.tool_pw(tool);
+        let tool_width = tool_pw != pw;
         let height = self.height;
-        let tool_flow = self.flow;
+        let tool_flow = self.tool_flow_at(tool, height, self.flow);
         let first_layer = self.is_first_layer();
         writer.set_flow(
             tool_flow
@@ -1139,9 +1164,9 @@ impl Layer<'_> {
         // After a nozzle change the ramming's own width was the last one
         // announced.
         if first_layer {
-            writer.change_line_width(self.settings.first_layer_flow_ratio * pw);
-        } else if after_nozzle_change {
-            writer.change_line_width(pw);
+            writer.change_line_width(self.settings.first_layer_flow_ratio * tool_pw);
+        } else if tool_width || after_nozzle_change {
+            writer.change_line_width(tool_pw);
         }
         let retract_length = own.retract_length;
         let retract_speed = own.retract_speed * 60.0;
@@ -1175,7 +1200,7 @@ impl Layer<'_> {
             };
             let bridge = self.needs_bridge_flow(writer.y(), height);
             if bridge {
-                writer.set_flow(self.flow_at(0.2));
+                writer.set_flow(self.tool_flow_at(tool, 0.2, self.flow_at(0.2)));
                 writer.height_tag(0.2);
             }
             if i == 0 && reheat && own.cooling_before_tower > EPSILON {
@@ -1258,7 +1283,7 @@ impl Layer<'_> {
             self.left_to_right = !self.left_to_right;
         }
         writer.set_flow(self.flow);
-        if first_layer || after_nozzle_change {
+        if first_layer || tool_width || after_nozzle_change {
             writer.change_line_width(pw);
         }
     }
@@ -2071,6 +2096,60 @@ mod tests {
             .filter(|l| l.contains(" E"))
             .collect();
         assert!(rows[0].ends_with(" F3000"), "{rows:?}");
+    }
+
+    /// Nozzles of two sizes (0.4 + 0.6, filament 1 on the 0.6): the purge
+    /// of filament 1 is laid and announced at 0.75 mm and the width goes
+    /// back to the structure's 0.5 after it; the ramming of filament 1
+    /// leaving lies between its own lines (WipeTower.cpp
+    /// `toolchange_wipe_new`, `ramming`).
+    #[test]
+    fn on_nozzles_of_two_sizes_each_purge_is_laid_at_its_own_width() {
+        let json =
+            super::super::plan::tests::H2D_TWO.replace(r#"["0.4", "0.4"]"#, r#"["0.4", "0.6"]"#);
+        let s = Settings::from_settings(&Config::from_json(&json).unwrap(), 0).unwrap();
+        let planned = plan(&s, &super::super::plan::tests::across(layers(4)), 0).unwrap();
+        let visits = lay(&planned, &s).unwrap();
+        // Layer 2 changes from filament 0 to 1, layer 3 back.
+        let changes: Vec<&Visit> = visits[2..4]
+            .iter()
+            .flat_map(|layer| layer.iter().filter(|v| v.is_tool_change))
+            .collect();
+        let wide = changes
+            .iter()
+            .find(|v| {
+                v.gcode
+                    .contains("; CP TOOLCHANGE WIPE\n; LINE_WIDTH: 0.750000\n")
+            })
+            .expect("a purge at the 0.6 nozzle's width");
+        let start = wide.gcode.find("; CP TOOLCHANGE WIPE").unwrap();
+        let end = start + wide.gcode[start..].find("; WIPE_TOWER_END").unwrap();
+        let after = &wide.gcode[start..end];
+        assert_eq!(
+            after.matches("; LINE_WIDTH: 0.500000").count(),
+            1,
+            "{after}"
+        );
+        // The 0.4's purge keeps the structure width; after the ramming of
+        // the 0.6 it announces it again.
+        let narrow = changes
+            .iter()
+            .find(|v| {
+                !v.gcode
+                    .contains("; CP TOOLCHANGE WIPE\n; LINE_WIDTH: 0.750000")
+            })
+            .expect("a purge at the 0.4 nozzle's width");
+        let ramming = narrow.nozzle_change.as_ref().unwrap();
+        assert!(
+            ramming.gcode.contains("; LINE_WIDTH: 1.200000\n"),
+            "{}",
+            ramming.gcode
+        );
+        assert!(
+            narrow
+                .gcode
+                .contains("; CP TOOLCHANGE WIPE\n; LINE_WIDTH: 0.500000\n")
+        );
     }
 
     #[test]

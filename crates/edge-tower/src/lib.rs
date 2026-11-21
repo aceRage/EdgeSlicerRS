@@ -505,23 +505,6 @@ impl TowerSettings {
                     ));
                 }
             }
-            // Nozzles of more than one size (Bambu's H2D, H2C): each
-            // filament purges at its own nozzle's line width there
-            // (WipeTower.cpp `tool_line_width`).
-            let nozzles: Vec<f64> = settings
-                .floats("nozzle_diameter")?
-                .unwrap_or_default()
-                .into_iter()
-                .flatten()
-                .collect();
-            if nozzles.windows(2).any(|pair| pair[0] != pair[1]) {
-                unsupported.push(
-                    "nozzle_diameter: nozzles of more than one size on Bambu's prime tower are \
-                     planned and laid at the first nozzle's line width, where the reference lays \
-                     each filament at its own nozzle's"
-                        .to_owned(),
-                );
-            }
         }
         Ok(Self {
             enabled,
@@ -4388,8 +4371,9 @@ mod tests {
         assert_eq!(three.change_cost(2, 1), 7.0);
         assert_eq!(three.change_cost_on(2, 1, 1, 3), 17.0);
         assert_eq!(three.change_cost_on(1, 2, 0, 3), 5.0);
-        // Bambu Studio's names for its tower are read for it, and what it
-        // does that is not done here is said.
+        // Bambu Studio's names for its tower are read for it; nozzles of
+        // two sizes are laid as the reference lays them (edge-tower
+        // `type1`), so nothing is said of them.
         let named = read(&format!(
             r#"{{{base}, "printer_model": "Bambu Lab A1", "prime_tower_rib_wall": "1",
                 "prime_tower_rib_width": "6", "prime_tower_max_speed": "70",
@@ -4407,7 +4391,7 @@ mod tests {
         let said: Vec<&str> = (named.unsupported.iter())
             .map(|note| note.split(' ').next().unwrap())
             .collect();
-        assert_eq!(said, ["nozzle_diameter:"]);
+        assert!(said.is_empty(), "{said:?}");
         // Not for any other printer.
         let other = read(&format!(r#"{{{base}, "prime_tower_rib_wall": "1"}}"#));
         assert_eq!(other.wall, Wall::Box);
