@@ -204,7 +204,9 @@ impl Held {
     /// filaments each on a rack nozzle of its own: every change there is
     /// `M620.10 ... L82.7` (0 to 1) or `L265.7` (1 to 0), here `L0`, the
     /// nozzle taken holding the new filament or, at its first use,
-    /// nothing, as on the H2D); not followed.
+    /// nothing, as on the H2D); not followed. Owner's decision
+    /// (2026-11-22): a rack nozzle is flushed only when it really changes
+    /// colour. Not checked on a real H2C or against Bambu Studio.
     pub(crate) fn cross_flush(
         &self,
         map: &NozzleMap,
