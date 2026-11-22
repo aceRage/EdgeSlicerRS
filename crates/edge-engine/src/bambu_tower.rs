@@ -123,7 +123,14 @@ pub(crate) fn plan(
         let extruders: Vec<usize> = (0..t1.filaments.len())
             .map(|filament| map.extruder(filament))
             .collect();
-        t1.map_extruders(&extruders);
+        // Each filament at the size of nozzle it prints with, a rack
+        // size it is pinned to included (`crate::rack`).
+        let sizes: Vec<f32> = (crate::nozzle_process::filament_sizes(settings)?)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|size| size as f32)
+            .collect();
+        t1.map_nozzles(&extruders, &sizes);
     }
     // Print.cpp `_make_wipe_tower` (Bambu Studio's `is_need_ramming`): a
     // change between filaments on different nozzles of a Bambu Lab

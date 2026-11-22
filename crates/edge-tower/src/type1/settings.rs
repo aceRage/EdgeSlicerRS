@@ -80,6 +80,10 @@ pub struct Filament {
     /// The extruder it prints from, from 0 (`filament_map`, which the
     /// grouping sets on a printer of two nozzles; [`Settings::map_extruders`]).
     pub extruder: usize,
+    /// The size of nozzle it prints with where that is not its extruder's
+    /// (a rack nozzle of another size, [`Settings::map_nozzles`]); 0 for
+    /// its extruder's.
+    pub nozzle: f32,
     /// What it rams on the tower when it leaves its nozzle, in mm of
     /// filament: for a change onto the other extruder, and for one onto
     /// another hotend of its own (`filament_change_length`, `_nc`).
@@ -663,6 +667,7 @@ impl Settings {
                 // ([`Settings::mixed_extruders`]).
                 cooling_before_tower: at(&cooling, index, 0.0) as f32,
                 extruder: 0,
+                nozzle: 0.0,
                 change_length: (
                     (at(&change_length.0, index, 0.0) as f32).max(0.0),
                     (at(&change_length.1, index, 0.0) as f32).max(0.0),
@@ -786,6 +791,22 @@ impl Settings {
         Ok(settings)
     }
 
+    /// [`Self::map_extruders`], each filament printing with a nozzle of
+    /// `sizes` (one per filament; 0 for its extruder's): on a nozzle rack
+    /// of mixed sizes (Bambu Lab H2C), a filament pinned to a rack size
+    /// purges and rams at that size's width (WipeTower.cpp
+    /// `nozzle_diameter_for_filament`).
+    pub fn map_nozzles(&mut self, extruders: &[usize], sizes: &[f32]) {
+        for (index, filament) in self.filaments.iter_mut().enumerate() {
+            filament.nozzle = sizes
+                .get(index)
+                .copied()
+                .filter(|size| *size > 0.0)
+                .unwrap_or(0.0);
+        }
+        self.map_extruders(extruders);
+    }
+
     /// Each filament's extruder, from 0 (the grouping's `filament_map`);
     /// the first for a filament the list does not name.
     pub fn map_extruders(&mut self, extruders: &[usize]) {
@@ -830,6 +851,12 @@ impl Settings {
     /// The diameter of the nozzle `filament` prints from
     /// (`nozzle_diameter_for_filament`).
     pub fn nozzle_of(&self, filament: usize) -> f32 {
+        if let Some(own) = (self.filaments.get(filament))
+            .map(|f| f.nozzle)
+            .filter(|size| *size > 0.0)
+        {
+            return own;
+        }
         let extruder = self.filaments.get(filament).map_or(0, |f| f.extruder);
         self.nozzle_diameters
             .get(extruder)

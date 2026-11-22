@@ -3703,8 +3703,14 @@ impl Sliced {
                 }),
             })
         });
+        // A rack of mixed sizes: the file lists every nozzle, the rack's
+        // one by one (`crate::rack::physical_nozzles`).
+        let physical = crate::rack::physical_nozzles(&self.settings);
         for print in &mut prints {
             print.produced_at = Some(produced_at.to_owned());
+            if physical.is_some() {
+                print.physical_nozzles.clone_from(&physical);
+            }
             print.plate = self.plate_facts.clone();
             print.final_purge = final_purge.clone();
             print.tower_envelope = self.tower.envelope;

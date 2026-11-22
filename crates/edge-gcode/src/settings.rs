@@ -1569,6 +1569,24 @@ fn listed_per_nozzle(settings: &Settings, key: &str) -> bool {
     if key.starts_with("nozzle_") && key.ends_with("_line_width") {
         return settings.texts(key).is_some_and(|values| !values.is_empty());
     }
+    // A nozzle rack set by hand and the filaments pinned to its sizes and
+    // slots, listed only when set (GCode.cpp `per_nozzle_p4_key_unused`).
+    match key {
+        "extruder_rack_nozzle_diameter"
+        | "extruder_rack_nozzle_override"
+        | "nozzle_slot_process_presets" => {
+            return (settings.texts(key))
+                .is_some_and(|texts| texts.iter().any(|text| !text.trim().is_empty()));
+        }
+        "filament_rack_nozzle_diameter" | "filament_rack_nozzle_slot" => {
+            return (settings.texts(key)).is_some_and(|texts| {
+                texts
+                    .iter()
+                    .any(|text| text.trim().parse::<f64>().is_ok_and(|value| value > 0.0))
+            });
+        }
+        _ => {}
+    }
     matches!(key, "nozzle_process_presets" | "process_extruder_values")
         && (settings.flag("process_extruder_values").ok().flatten() == Some(true)
             || (settings.texts("nozzle_process_presets"))

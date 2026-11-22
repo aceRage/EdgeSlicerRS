@@ -7,8 +7,9 @@
 //! the grouping itself is `edge-group`'s).
 //!
 //! Refused here, where the reference would group differently from what is
-//! ported: rack hotends taken as extruders (the H3C), a rack set by hand
-//! or of mixed nozzles, a part or the prime tower where only
+//! ported: rack hotends taken as extruders (the H3C), a rack of mixed
+//! nozzle kinds, what `crate::rack` refuses of racks set by hand and pins,
+//! a part or the prime tower where only
 //! one nozzle reaches or above a nozzle's height, and a flush matrix of a
 //! length the grouping cannot read (see `edge_group::prepare_flush_matrices`).
 
@@ -16,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use edge_config::{Settings, reference_defaults};
 use edge_group::{
-    ChangeTimes, FlushMatrix, Input, Machine, Mode, Usage, VolumeType, nozzle_list,
+    ChangeTimes, FlushMatrix, Input, Machine, Mode, NozzleInfo, Usage, VolumeType, nozzle_list,
     other_layers_sequences, prepare_flush_matrices,
 };
 
@@ -87,10 +88,6 @@ fn machine(settings: &Settings) -> Result<Machine, Failure> {
     // (`nozzle_process::fill` refuses the others).
     let counts = numbers(settings, "extruder_max_nozzle_count")?;
     let count_of = |extruder: usize| counts.get(extruder).map_or(1, |c| (*c as i32).max(1));
-    let blank = |key: &str| {
-        (settings.texts(key))
-            .is_none_or(|texts| texts.iter().all(|t| t.trim().is_empty() || t.trim() == "0"))
-    };
     // Rack hotends taken one by one as extruders (Bambu Studio 2.9.1
     // `handle_hotend_as_extruder`; PrintConfig.cpp `hotend_as_extruder`
     // also says so of one extruder with a rack): the H3C.
@@ -104,39 +101,11 @@ fn machine(settings: &Settings) -> Result<Machine, Failure> {
         );
     }
     // A nozzle rack (the H2C's right extruder, `extruder_max_nozzle_count`
-    // above one): only the rack the machine has when neither the project
-    // nor the printer names one (ToolSlots.cpp `default_rack_nozzle_text`:
-    // that many nozzles of the extruder's size and kind) is followed.
+    // above one): its nozzles as the project, the printer or the machine
+    // names them (`crate::rack`), each a place a filament can be grouped
+    // onto.
     let multi_nozzle = counts.iter().any(|count| *count > 1.0);
-    {
-        for (key, what) in [
-            (
-                "extruder_rack_nozzle_override",
-                "the project's rack nozzles",
-            ),
-            (
-                "extruder_rack_nozzle_diameter",
-                "the printer's rack nozzles",
-            ),
-            (
-                "filament_rack_nozzle_diameter",
-                "a filament pinned to a rack nozzle size",
-            ),
-            (
-                "filament_rack_nozzle_slot",
-                "a filament pinned to a rack slot",
-            ),
-        ] {
-            if !blank(key) {
-                return Err(format!(
-                    "{key} ({what}): grouping filaments onto a nozzle rack set by hand is not \
-                     done yet; clear it to slice with the machine's own rack; no G-code was \
-                     written"
-                )
-                .into());
-            }
-        }
-    }
+    let racks = crate::rack::racks(settings);
     let kinds = settings.texts("nozzle_volume_type").unwrap_or_default();
     let stats = settings.texts("extruder_nozzle_stats").unwrap_or_default();
     let total_slots: i32 = (0..extruders).map(count_of).sum();
@@ -178,9 +147,22 @@ fn machine(settings: &Settings) -> Result<Machine, Failure> {
                     }
                 }
             }
-            // ToolOrdering.cpp `build_nozzle_groups` (`rack_nozzle_groups`):
-            // one group of every nozzle of the rack.
-            groups.push((text, kind, e, count));
+        }
+        // ToolSlots.cpp `rack_nozzle_groups`: an extruder with a rack has
+        // one group of each size and kind of its rack's nozzles, in rack
+        // order (the kinds are all the extruder's, `rack::validate`).
+        if let Some(rack) = racks.get(extruder).filter(|rack| !rack.is_empty()) {
+            let mut sizes: Vec<(String, i32)> = Vec::new();
+            for nozzle in rack {
+                let size = diameter_text(nozzle.diameter);
+                match sizes.iter_mut().find(|(own, _)| *own == size) {
+                    Some((_, count)) => *count += 1,
+                    None => sizes.push((size, 1)),
+                }
+            }
+            for (size, count) in sizes {
+                groups.push((size, kind, e, count));
+            }
             continue;
         }
         // "Kind#count|Kind#count" (PrintConfig.cpp `get_extruder_nozzle_stats`).
@@ -202,15 +184,49 @@ fn machine(settings: &Settings) -> Result<Machine, Failure> {
             groups.push((text, kind, e, stat.get(&kind).copied().unwrap_or(0)));
         }
     }
-    // A rack of one kind is numbered the same by physical slot
-    // (ToolSlots.cpp `grouping_nozzle_list`) as sorted (`build_nozzle_list`).
-    let nozzles = nozzle_list(&groups);
+    // A printer with a rack numbers its nozzles by physical slot
+    // (ToolSlots.cpp `grouping_nozzle_list`): an extruder's rack in rack
+    // order, any other extruder's nozzles sorted (`build_nozzle_list`),
+    // extruder 0 first; the numbers reach the G-code (`filament_nozzle_map`)
+    // and the printer checks the hotend in that slot. Without a rack the
+    // sorted list, as before.
+    let nozzles = if racks.iter().all(Vec::is_empty) {
+        nozzle_list(&groups)
+    } else {
+        let mut list = Vec::new();
+        for extruder in 0..extruders {
+            let own: Vec<NozzleInfo> = match racks.get(extruder).filter(|rack| !rack.is_empty()) {
+                Some(rack) => (rack.iter())
+                    .map(|nozzle| NozzleInfo {
+                        diameter: diameter_text(nozzle.diameter),
+                        volume_type: nozzle.kind,
+                        extruder_id: extruder as i32,
+                        group_id: 0,
+                    })
+                    .collect(),
+                None => nozzle_list(
+                    &(groups.iter())
+                        .filter(|group| group.2 == extruder as i32)
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                ),
+            };
+            for mut nozzle in own {
+                nozzle.group_id = list.len() as i32;
+                list.push(nozzle);
+            }
+        }
+        list
+    };
     let one_each = (0..extruders).all(|extruder| {
         let on = nozzles
             .iter()
             .filter(|n| n.extruder_id == extruder as i32)
             .count();
-        on == 1 || (count_of(extruder) > 1 && on == count_of(extruder) as usize)
+        on == 1
+            || racks
+                .get(extruder)
+                .is_some_and(|rack| on == rack.len() && on > 0)
     });
     if nozzles.is_empty() || !one_each {
         return Err(format!(
@@ -373,6 +389,12 @@ pub(crate) fn group(
     by_plate_map: bool,
 ) -> Result<Grouped, Failure> {
     let settings = &merged(settings);
+    let used: Vec<u32> = (layers.iter().flatten().copied())
+        .collect::<BTreeSet<u32>>()
+        .into_iter()
+        .collect();
+    // Print.cpp l.3442: a rack the slice cannot honour is refused first.
+    crate::rack::validate(settings, &used)?;
     let machine = machine(settings)?;
     let filament_count = settings.texts("filament_colour").map_or(0, <[String]>::len);
     let mode_name = if by_plate_map {
@@ -437,7 +459,20 @@ pub(crate) fn group(
             .map(|e| e as i32)
             .collect(),
     };
-    let grouping = edge_group::group_filaments(&machine, &input)?;
+    crate::rack::check_pins(settings, mode == Mode::Manual)?;
+    let mut grouping = edge_group::group_filaments(&machine, &input)?;
+    // ToolOrdering.cpp l.1985 and l.2155: on a printer with a rack, every
+    // filament onto a nozzle of the size it prints with and of the slot
+    // it is pinned to, and checked so.
+    if machine.multi_nozzle
+        && let Some(grouping) = &mut grouping
+    {
+        if crate::rack::pin(settings, &mut grouping.result) > 0 {
+            grouping.filament_map = grouping.result.extruder_map(false);
+        }
+        crate::rack::check(settings, &grouping.result)?;
+        crate::rack::check_one_size(settings, &grouping.result)?;
+    }
     Ok(Grouped {
         machine,
         input,
@@ -672,14 +707,7 @@ mod tests {
         tower.insert("enable_prime_tower", edge_config::Value::One("1".into()));
         let grouped = group(&tower, vec![vec![0, 1]; 3], &[], None, false).unwrap();
         assert_eq!(grouped.grouping.unwrap().result.nozzle_map(), [2, 1]);
-        // A rack set by hand, and rack hotends taken as extruders (H3C),
-        // are refused.
-        let mut set = rack.clone();
-        set.insert("extruder_rack_nozzle_override", many(&["", "0.4,0.6"]));
-        let said = group(&set, vec![vec![0]], &[], None, false)
-            .unwrap_err()
-            .to_string();
-        assert!(said.contains("extruder_rack_nozzle_override"), "{said}");
+        // Rack hotends taken as extruders (H3C) are refused.
         let mut h3c = h2d();
         h3c.insert("nozzle_diameter", many(&["0.4"]));
         h3c.insert("extruder_max_nozzle_count", many(&["9"]));
@@ -687,6 +715,64 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(said.contains("H3C"), "{said}");
+    }
+
+    /// A rack set by hand: the project's text over the printer's, its
+    /// nozzles numbered by physical slot (ToolSlots.cpp `grouping_nozzle_list`),
+    /// each filament moved onto a nozzle of the size it is pinned to
+    /// (work/tower/h2c3: h2c3_mix2_211_pn, the reference's map 2,0,0).
+    #[test]
+    fn a_rack_set_by_hand_is_grouped_onto_by_slot_and_size() {
+        let mut rack = h2d();
+        rack.insert("extruder_max_nozzle_count", many(&["1", "6"]));
+        rack.insert("extruder_rack_nozzle_diameter", many(&["", "0.4,0.4"]));
+        rack.insert(
+            "extruder_rack_nozzle_override",
+            many(&["", "0.4,0.6,0.4,0.6"]),
+        );
+        let machine = machine(&merged(&rack)).unwrap();
+        let sizes: Vec<&str> = machine
+            .nozzles
+            .iter()
+            .map(|n| n.diameter.as_str())
+            .collect();
+        assert_eq!(sizes, ["0.4", "0.4", "0.6", "0.4", "0.6"]);
+        let ids: Vec<i32> = machine.nozzles.iter().map(|n| n.group_id).collect();
+        assert_eq!(ids, [0, 1, 2, 3, 4]);
+        rack.insert("filament_colour", many(&["#FFFFFF", "#202020", "#C12E1F"]));
+        rack.insert("filament_diameter", many(&["1.75", "1.75", "1.75"]));
+        rack.insert(
+            "flush_volumes_matrix",
+            many(&["0", "199", "199", "639", "0", "199", "639", "639", "0"]),
+        );
+        rack.insert(
+            "filament_map_mode",
+            edge_config::Value::One("Manual".into()),
+        );
+        rack.insert("filament_map", many(&["2", "1", "1"]));
+        rack.insert("filament_rack_nozzle_diameter", many(&["0.6", "0", "0"]));
+        let grouped = group(&rack, vec![vec![0, 1, 2]; 3], &[], None, false).unwrap();
+        let grouping = grouped.grouping.unwrap();
+        assert_eq!(grouping.result.nozzle_map(), [2, 0, 0]);
+        assert_eq!(grouping.filament_map, [2, 1, 1]);
+        // Both sizes on the right: refused (the reference warns).
+        rack.insert("filament_map", many(&["2", "2", "1"]));
+        let said = group(&rack, vec![vec![0, 1, 2]; 3], &[], None, false)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            said.contains("two nozzle diameters on the same extruder rack"),
+            "{said}"
+        );
+        // A pin on an automatic map: refused.
+        rack.insert(
+            "filament_map_mode",
+            edge_config::Value::One("Auto For Flush".into()),
+        );
+        let said = group(&rack, vec![vec![0, 1, 2]; 3], &[], None, false)
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("automatic filament map"), "{said}");
     }
 
     /// Copies printed one after another take the plate's own map, the

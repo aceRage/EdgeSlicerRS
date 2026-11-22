@@ -221,7 +221,6 @@ const SILENT: &[Silent] = &[
     silent("print_extruder_nozzle_diameter", Blank),
     silent("nozzle_diameter_override", Blank),
     silent("nozzle_layer_height", Blank),
-    silent("nozzle_filament_process_slot", Blank),
     silent("nozzle_filament_tool", Blank),
     silent("filament_nozzle_variants", Blank),
     silent("tool_slot_model", Blank),
@@ -803,15 +802,16 @@ mod tests {
     /// table though a stage names them. `handle_hotend_as_extruder` is read
     /// only to say Bambu's tower interface switch where the reference acts
     /// on it (edge-tower `type1::interface_features_supported`); the rack
-    /// itself is not followed. The filament grouping (`crate::grouping`)
-    /// reads the rack's nozzle diameters only to refuse a rack, and
-    /// `flush_multiplier_fast` for the grouping's flush matrices alone.
+    /// itself is not followed. The rack's nozzles and the filaments' rack
+    /// pins are followed where filaments are grouped onto nozzles
+    /// (`crate::rack`), and `flush_multiplier_fast` is read for the
+    /// grouping's flush matrices alone.
     const PARTLY: [&str; 17] = [
         "stabilizer_supports",
         "prime_volume_mode",
         "handle_hotend_as_extruder",
-        // Refused by the nozzle grouping (`crate::grouping`) where it runs,
-        // said on a printer it does not run for.
+        // Followed where filaments are grouped onto nozzles (`crate::rack`),
+        // said on a printer they are not.
         "extruder_rack_nozzle_diameter",
         "extruder_rack_nozzle_override",
         "filament_rack_nozzle_diameter",
