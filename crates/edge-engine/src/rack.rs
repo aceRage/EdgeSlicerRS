@@ -24,7 +24,7 @@
 //! reference only warns of.
 //!
 //! Two rules differ from the pinned reference on purpose, both its errors
-//! (work/cppfix/pin/RULE.md, shared with the C++ fix, branch fix/rack-pins):
+//! (work/cppfix/pin/RULE.md, shared with the C++ fix, PR 1163):
 //! filaments pinned to a size spread over free nozzles of it ([`pin`],
 //! rule S), and a pin is honoured on an automatic filament map
 //! ([`settle_automatic`], [`pin_bars`], rules P and P2: filaments of
@@ -458,7 +458,7 @@ pub(crate) fn automatic(settings: &Settings) -> bool {
 /// pinned filament the grouping moves loses its pin without a word
 /// (measured on h2c3_mix2_auto_pn: filament 1 pinned to 0.6, saved map
 /// 1,2,1, printed from a 0.4 nozzle, map 1,0,1). A C++ fix PR is being
-/// opened for it (aceRage/EdgeSlicer, branch fix/rack-pins).
+/// opened for it (aceRage/EdgeSlicer, PR 1163).
 pub(crate) fn settle_automatic(settings: &mut Settings) {
     let racks = racks(settings);
     let extruders = numbers(settings, "nozzle_diameter").len();
@@ -707,7 +707,7 @@ fn size_on(
 /// pinned to 0.6 share one 0.6 nozzle and flush into each other though
 /// another 0.6 stands unused (h2c3_mix4_2211_pn: map 2,2,0,0 with slot 4 a
 /// free 0.6). A C++ fix PR is being opened for it (aceRage/EdgeSlicer,
-/// branch fix/rack-pins).
+/// PR 1163).
 ///
 /// Pass A, used filaments in order: a slot pin to its slot; on a rack of
 /// mixed sizes, a filament already on its size stays (but one pinned to a
