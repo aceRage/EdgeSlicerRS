@@ -2481,12 +2481,33 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
         } else {
             None
         };
+        // Printed object by object, each body's filament and outline, for
+        // the reach of a map the rack pin rules move (`grouping::group`).
+        let reach: Vec<(u32, Vec<[f64; 2]>, f64, usize)> = if by_plate_map {
+            (bodies.iter())
+                .filter_map(|body| {
+                    let (low, high) = body.solid.bounds()?;
+                    let points = (body.solid.vertices.iter())
+                        .map(|v| [f64::from(v[0]), f64::from(v[1])])
+                        .collect();
+                    Some((
+                        body.filament.checked_sub(1)? as u32,
+                        points,
+                        f64::from(high[2] - low[2]),
+                        body.object.unwrap_or(0),
+                    ))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let grouped = crate::grouping::group(
             &settings,
             lists.iter().map(|list| filaments(list)).collect(),
             if by_plate_map { &[] } else { &outlines },
             tower,
             by_plate_map,
+            &reach,
         )?;
         nozzles = grouped
             .grouping
