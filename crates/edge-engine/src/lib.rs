@@ -41,6 +41,7 @@ mod presets;
 mod preview;
 mod printable;
 pub mod pushfit;
+mod rack;
 mod regions;
 mod scene;
 mod sequential;

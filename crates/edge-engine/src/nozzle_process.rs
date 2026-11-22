@@ -262,16 +262,113 @@ fn size_text(diameter: f64) -> String {
 /// The diameters of the nozzles, when the printer is one this is done for
 /// and they differ: two extruders, not one nozzle fed by many filaments,
 /// a printer that groups filaments onto its nozzles (the H2D).
-pub(crate) fn mixed(settings: &Settings) -> Result<Option<Vec<f64>>, Failure> {
+fn extruder_sizes(settings: &Settings) -> Result<Option<Vec<f64>>, Failure> {
     let diameters: Vec<f64> = (settings.floats("nozzle_diameter")?.unwrap_or_default())
         .into_iter()
         .map(|diameter| diameter.unwrap_or(0.0))
         .collect();
-    let mixed = diameters.len() == 2
-        && (diameters[0] - diameters[1]).abs() > 1e-6
+    let fits = diameters.len() == 2
         && settings.flag("single_extruder_multi_material")? != Some(true)
         && crate::pipeline::groups_onto_nozzles(settings);
-    Ok(mixed.then_some(diameters))
+    Ok(fits.then_some(diameters))
+}
+
+/// What prints with which size: the extruders' nozzles and, on a nozzle
+/// rack holding other sizes (the H2C, `crate::rack`), each other size of
+/// its rack some filament prints with (NozzleProcess.cpp P9's size tools,
+/// "T2:0.6").
+#[derive(Clone, Debug)]
+pub(crate) struct Tools {
+    /// Each extruder's nozzle size (`nozzle_diameter`).
+    pub extruder_sizes: Vec<f64>,
+    /// Each filament's extruder, from 0 ([`extruders_of`]).
+    pub extruders: Vec<usize>,
+    /// The size each filament prints with (`rack::filament_size`).
+    pub sizes: Vec<f64>,
+    /// The rack sizes some filament prints with other than its extruder's:
+    /// extruder and size, in rack order.
+    pub size_tools: Vec<(usize, f64)>,
+    /// For each filament, its size tool, if any.
+    pub tool_of: Vec<Option<usize>>,
+}
+
+impl Tools {
+    /// "T2" or "T2:0.6" (`nozzle_tool_id`, `nozzle_size_group_id`).
+    fn id(&self, tool: usize) -> String {
+        match tool.checked_sub(self.extruder_sizes.len()) {
+            None => format!("T{}", tool + 1),
+            Some(size) => {
+                let (extruder, diameter) = self.size_tools[size];
+                format!("T{}:{}", extruder + 1, size_text(diameter))
+            }
+        }
+    }
+
+    /// The tool (an extruder, then the size tools) each filament prints with.
+    fn filament_tools(&self) -> Vec<usize> {
+        (self.extruders.iter().zip(&self.tool_of))
+            .map(|(extruder, tool)| tool.map_or(*extruder, |t| self.extruder_sizes.len() + t))
+            .collect()
+    }
+
+    fn all_sizes(&self) -> Vec<f64> {
+        let mut all: Vec<f64> = Vec::new();
+        for size in self
+            .extruder_sizes
+            .iter()
+            .chain(self.size_tools.iter().map(|(_, d)| d))
+        {
+            if !all.iter().any(|own| (own - size).abs() < 0.001) {
+                all.push(*size);
+            }
+        }
+        all
+    }
+}
+
+/// The tools, where a filament prints with another size than another's
+/// (two extruders of different sizes, or a filament pinned to a rack size
+/// other than its extruder's); none where every nozzle is of one size.
+pub(crate) fn mixed(settings: &Settings) -> Result<Option<Tools>, Failure> {
+    let Some(extruder_sizes) = extruder_sizes(settings)? else {
+        return Ok(None);
+    };
+    let extruders = extruders_of(settings, 2);
+    let racks = crate::rack::racks(settings);
+    let sizes: Vec<f64> = (0..extruders.len())
+        .map(|filament| crate::rack::filament_size(settings, &racks, filament))
+        .collect();
+    let mut size_tools: Vec<(usize, f64)> = Vec::new();
+    for (extruder, rack) in racks.iter().enumerate() {
+        for nozzle in rack {
+            let used = (extruders.iter().zip(&sizes)).any(|(e, size)| {
+                *e == extruder
+                    && crate::rack::same(*size, nozzle.diameter)
+                    && !crate::rack::same(*size, extruder_sizes[extruder])
+            });
+            if used
+                && !(size_tools.iter())
+                    .any(|(e, d)| *e == extruder && crate::rack::same(*d, nozzle.diameter))
+            {
+                size_tools.push((extruder, nozzle.diameter));
+            }
+        }
+    }
+    let tool_of: Vec<Option<usize>> = (extruders.iter().zip(&sizes))
+        .map(|(extruder, size)| {
+            (size_tools.iter()).position(|(e, d)| e == extruder && crate::rack::same(*d, *size))
+        })
+        .collect();
+    if (extruder_sizes[0] - extruder_sizes[1]).abs() <= 1e-6 && size_tools.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(Tools {
+        extruder_sizes,
+        extruders,
+        sizes,
+        size_tools,
+        tool_of,
+    }))
 }
 
 /// The extruder each filament prints from, from 0: the one `filament_map`
@@ -657,19 +754,48 @@ type Sources = Vec<Option<Settings>>;
 
 /// Works out each nozzle's process and fills the settings with what each
 /// nozzle and filament prints with (NozzleProcess.cpp
-/// `fill_nozzle_process_slots`, `resolve_nozzle_line_widths`). Does
-/// nothing unless the nozzles differ in size ([`mixed`]). Returns notes.
+/// `fill_nozzle_process_slots`, `resolve_nozzle_line_widths`; the command
+/// line's resolving of each tool, Snapmaker_Orca.cpp l.4040-4171). Does
+/// nothing unless some filament prints with another size than another
+/// ([`mixed`]). Returns notes.
+///
+/// The tools are the extruders ("T1", "T2") and, on a rack of mixed sizes,
+/// each other size of the rack a filament is pinned to ("T2:0.6", named
+/// in `nozzle_slot_process_presets` or picked for its size as an extruder's
+/// is). A filament on such a size prints with its tool's process: its
+/// widths and region settings per filament, its speeds from slots of its
+/// own added to the extruder's (`nozzle_filament_process_slot`), as the
+/// reference lays them out.
 pub(crate) fn fill(
     settings: &mut Settings,
     profiles: Option<&Path>,
 ) -> Result<Vec<String>, Failure> {
-    let Some(diameters) = mixed(settings)? else {
+    // Each filament's own slot is worked out anew: a project's would point
+    // into the layout it was saved with (NozzleProcess.cpp
+    // `fill_nozzle_process_slots` clears it first).
+    if extruder_sizes(settings)?.is_some() {
+        settings.remove("nozzle_filament_process_slot");
+    }
+    let Some(tools) = mixed(settings)? else {
         return Ok(Vec::new());
     };
+    let all = tools.all_sizes();
     let sizes = format!(
-        "nozzles of two sizes ({} and {} mm)",
-        size_text(diameters[0]),
-        size_text(diameters[1])
+        "nozzles of {} sizes ({} mm)",
+        match all.len() {
+            2 => "two".to_owned(),
+            3 => "three".to_owned(),
+            n => n.to_string(),
+        },
+        {
+            let mut words: Vec<String> = all.iter().map(|size| size_text(*size)).collect();
+            let last = words.pop().unwrap_or_default();
+            if words.is_empty() {
+                last
+            } else {
+                format!("{} and {last}", words.join(", "))
+            }
+        }
     );
     let refuse =
         |what: &str| -> Failure { format!("{sizes}: {what}; no G-code was written").into() };
@@ -699,10 +825,6 @@ pub(crate) fn fill(
         (
             "nozzle_diameter_override",
             "a nozzle size set in the project",
-        ),
-        (
-            "nozzle_slot_process_presets",
-            "processes for a nozzle rack's sizes",
         ),
     ] {
         if !blank(key) {
@@ -758,20 +880,46 @@ pub(crate) fn fill(
         }
     }
     let mut notes = Vec::new();
-    let names: Vec<String> = (0..2)
-        .map(|extruder| {
-            settings
-                .texts("nozzle_process_presets")
-                .and_then(|names| names.get(extruder))
-                .map(|name| name.trim().to_owned())
-                .unwrap_or_default()
+    // Each tool's process named in the project: an extruder's in
+    // `nozzle_process_presets`, a rack size's in `nozzle_slot_process_presets`
+    // ("T2:0.6" and the name on the next line, NozzleProcess.cpp
+    // `nozzle_slot_process_names`).
+    let slot_names: Vec<(String, String)> = (settings.texts("nozzle_slot_process_presets"))
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|entry| {
+            let (id, name) = entry.split_once('\n')?;
+            let (id, name) = (id.trim(), name.trim());
+            (!id.is_empty() && !name.is_empty()).then(|| (id.to_owned(), name.to_owned()))
+        })
+        .collect();
+    let tool_count = tools.extruder_sizes.len() + tools.size_tools.len();
+    let names: Vec<String> = (0..tool_count)
+        .map(|tool| {
+            if tool < tools.extruder_sizes.len() {
+                (settings.texts("nozzle_process_presets"))
+                    .and_then(|names| names.get(tool))
+                    .map(|name| name.trim().to_owned())
+                    .unwrap_or_default()
+            } else {
+                let id = tools.id(tool);
+                (slot_names.iter())
+                    .find(|(own, _)| *own == id)
+                    .map(|(_, name)| name.clone())
+                    .unwrap_or_default()
+            }
         })
         .collect();
     let defaults = edge_config::reference_defaults();
-    let mut sources: Sources = vec![None, None];
-    for (extruder, diameter) in diameters.iter().enumerate() {
-        let chosen = !names[extruder].is_empty();
-        let mut name = names[extruder].clone();
+    let mut sources: Sources = vec![None; tool_count];
+    for tool in 0..tool_count {
+        let (extruder, diameter) = match tool.checked_sub(tools.extruder_sizes.len()) {
+            None => (tool, tools.extruder_sizes[tool]),
+            Some(size) => tools.size_tools[size],
+        };
+        let id = tools.id(tool);
+        let chosen = !names[tool].is_empty();
+        let mut name = names[tool].clone();
         if name.is_empty()
             && claim > 0.0
             && (claim - diameter).abs() > EPSILON
@@ -812,17 +960,28 @@ pub(crate) fn fill(
                 &plate_name
             };
             name = pick(&candidates, plate_layer_height, base).ok_or_else(|| {
-                refuse(&format!(
-                    "{tool} has a {size} mm nozzle, and neither the plate's process nor any \
-                     process of this printer is made for {size} mm nozzles",
-                    tool = tool_name(extruder),
-                    size = size_text(*diameter)
-                ))
+                refuse(&if tool < tools.extruder_sizes.len() {
+                    format!(
+                        "{tool} has a {size} mm nozzle, and neither the plate's process nor any \
+                         process of this printer is made for {size} mm nozzles",
+                        tool = tool_name(extruder),
+                        size = size_text(diameter)
+                    )
+                } else {
+                    // NozzleProcess.cpp `nozzle_size_group_missing_error`.
+                    format!(
+                        "{side} {size} (the rack's {size} mm nozzles): neither the plate's \
+                         process nor any process of this printer is made for {size} mm nozzles; \
+                         choose one for {id} in nozzle_slot_process_presets, or change the \
+                         rack's nozzles",
+                        side = if extruder == 0 { "Left" } else { "Right" },
+                        size = size_text(diameter)
+                    )
+                })
             })?;
             notes.push(format!(
-                "per-nozzle process: T{} ({} mm) uses '{name}', picked for its size",
-                extruder + 1,
-                size_text(*diameter)
+                "per-nozzle process: {id} ({} mm) uses '{name}', picked for its size",
+                size_text(diameter)
             ));
         }
         if name.is_empty() {
@@ -851,8 +1010,7 @@ pub(crate) fn fill(
         }
         let Some(base) = base else {
             return Err(refuse(&format!(
-                "the process \"{name}\" named for T{} is not one of the vendors' presets",
-                extruder + 1
+                "the process \"{name}\" named for {id} is not one of the vendors' presets"
             )));
         };
         if chosen
@@ -860,27 +1018,26 @@ pub(crate) fn fill(
             && (own - plate_layer_height).abs() > EPSILON
         {
             return Err(refuse(&format!(
-                "the process \"{name}\" named for T{} has a layer height of its own ({own} mm), \
+                "the process \"{name}\" named for {id} has a layer height of its own ({own} mm), \
                  which the reference prints as that nozzle's layers merged into slabs; that is \
-                 not done",
-                extruder + 1
+                 not done"
             )));
         }
-        let mut tool = defaults.clone();
-        tool.overlay(&base);
-        let differs = tool.iter().any(|(key, value)| {
+        let mut process = defaults.clone();
+        process.overlay(&base);
+        let differs = process.iter().any(|(key, value)| {
             per_tool(key) && settings.get(key).is_none_or(|plate| !same(value, plate))
         });
         if differs {
-            sources[extruder] = Some(tool);
+            sources[tool] = Some(process);
         }
     }
-    let filaments = extruders_of(settings, 2);
+    let filament_tools = tools.filament_tools();
     if sources.iter().all(Option::is_none) {
         // No nozzle has a process of its own: the plate's widths, scaled
         // for a nozzle of another size (Print::apply's
         // `resolve_nozzle_line_widths`), and only when one changes.
-        let arrays = width_arrays(settings, &sources, &filaments, &diameters);
+        let arrays = width_arrays(settings, &sources, &filament_tools, &tools);
         let changed = arrays
             .iter()
             .zip(WIDTH_ARRAYS)
@@ -898,11 +1055,11 @@ pub(crate) fn fill(
         }
         return Ok(notes);
     }
-    fill_slots(settings, &sources).map_err(|what| refuse(&what))?;
-    for (array, values) in width_arrays(settings, &sources, &filaments, &diameters) {
+    fill_slots(settings, &sources, &filament_tools, &tools).map_err(|what| refuse(&what))?;
+    for (array, values) in width_arrays(settings, &sources, &filament_tools, &tools) {
         settings.insert(array, Value::Many(values));
     }
-    let regions = region_values(settings, &sources, &filaments);
+    let regions = region_values(settings, &sources, &filament_tools);
     settings.insert("nozzle_region_values", Value::Many(regions));
     let differ = slots_differ(settings);
     let split = settings.flag("process_extruder_values")? == Some(true);
@@ -920,22 +1077,22 @@ pub(crate) fn fill(
 }
 
 /// NozzleProcess.cpp `fill_nozzle_line_widths`: per filament, each width
-/// of the process of the nozzle it prints from.
+/// of the process of the tool it prints with (`filament_tools`), or the
+/// plate's scaled to its nozzle's size.
 fn width_arrays(
     settings: &Settings,
     sources: &Sources,
-    filaments: &[usize],
-    diameters: &[f64],
+    filament_tools: &[usize],
+    tools: &Tools,
 ) -> Vec<(String, Vec<String>)> {
     WIDTH_ARRAYS
         .iter()
         .map(|(array, key)| {
-            let values = filaments
-                .iter()
-                .map(|extruder| {
-                    let diameter = diameters[*extruder];
-                    let Some(source) = &sources[*extruder] else {
-                        return plate_width_for(settings, key, diameter, diameters).0;
+            let values = (filament_tools.iter().enumerate())
+                .map(|(filament, tool)| {
+                    let diameter = tools.sizes[filament];
+                    let Some(source) = &sources[*tool] else {
+                        return plate_width_for(settings, key, diameter, &tools.extruder_sizes).0;
                     };
                     let own =
                         |key: &str| source.texts(key).and_then(|texts| texts.first()).cloned();
@@ -965,9 +1122,9 @@ fn width_arrays(
 }
 
 /// NozzleProcess.cpp `fill_nozzle_region_values`: the region settings some
-/// nozzle's process sets otherwise than the plate, per filament as
+/// tool's process sets otherwise than the plate, per filament as
 /// "key = value" lines.
-fn region_values(settings: &Settings, sources: &Sources, filaments: &[usize]) -> Vec<String> {
+fn region_values(settings: &Settings, sources: &Sources, filament_tools: &[usize]) -> Vec<String> {
     let keys: Vec<&str> = region_keys()
         .filter(|key| {
             settings.get(key).is_some_and(|plate| {
@@ -981,12 +1138,12 @@ fn region_values(settings: &Settings, sources: &Sources, filaments: &[usize]) ->
     if keys.is_empty() {
         return Vec::new();
     }
-    filaments
+    filament_tools
         .iter()
-        .map(|extruder| {
+        .map(|tool| {
             keys.iter()
                 .map(|key| {
-                    let value = sources[*extruder]
+                    let value = sources[*tool]
                         .as_ref()
                         .and_then(|source| source.get(key))
                         .or_else(|| settings.get(key))
@@ -1002,8 +1159,17 @@ fn region_values(settings: &Settings, sources: &Sources, filaments: &[usize]) ->
 
 /// NozzleProcess.cpp `fill_nozzle_process_slots`, the speeds part: every
 /// per-nozzle list laid out per extruder slot, a nozzle with a process of
-/// its own taking that process's values.
-fn fill_slots(settings: &mut Settings, sources: &Sources) -> Result<(), String> {
+/// its own taking that process's values. The filaments of a rack size
+/// whose process is not their extruder's get slots of their own, one per
+/// flow mode of the extruder, right after the extruder's
+/// (`print_extruder_id` 1, 1, 1, 2, 2, 2, 2), and each such filament its
+/// slot (`nozzle_filament_process_slot`; -1 for the others).
+fn fill_slots(
+    settings: &mut Settings,
+    sources: &Sources,
+    filament_tools: &[usize],
+    tools: &Tools,
+) -> Result<(), String> {
     let plate = Layout::of(settings);
     if plate.extruder_count() != 2 {
         return Err(
@@ -1013,6 +1179,61 @@ fn fill_slots(settings: &mut Settings, sources: &Sources) -> Result<(), String> 
         );
     }
     let split = settings.flag("process_extruder_values").ok().flatten() == Some(true);
+    let extruder_tools = tools.extruder_sizes.len();
+    // Each slot: its extruder, variant, place in the plate's layout (none
+    // for an added one) and the tool whose process it holds.
+    struct Slot {
+        extruder: usize,
+        variant: String,
+        orig: Option<usize>,
+        tool: usize,
+    }
+    let mut slots: Vec<Slot> = (plate.ids.iter().zip(&plate.variants).enumerate())
+        .map(|(orig, (id, variant))| Slot {
+            extruder: id - 1,
+            variant: variant.clone(),
+            orig: Some(orig),
+            tool: id - 1,
+        })
+        .collect();
+    // The groups, in filament order: a size tool whose process differs
+    // from its extruder's (both the plate's is no group).
+    let mut groups: Vec<usize> = Vec::new();
+    for (filament, tool) in filament_tools.iter().enumerate() {
+        let extruder = tools.extruders[filament];
+        if *tool < extruder_tools
+            || (sources[*tool].is_none() && sources[extruder].is_none())
+            || groups.contains(tool)
+        {
+            continue;
+        }
+        groups.push(*tool);
+    }
+    for tool in &groups {
+        let extruder = tools.size_tools[tool - extruder_tools].0;
+        let mut modes: Vec<String> = Vec::new();
+        let mut at = 0;
+        for (index, slot) in slots.iter().enumerate() {
+            if slot.extruder == extruder {
+                if slot.orig.is_some() && !modes.contains(&slot.variant) {
+                    modes.push(slot.variant.clone());
+                }
+                at = index + 1;
+            }
+        }
+        for variant in modes {
+            slots.insert(
+                at,
+                Slot {
+                    extruder,
+                    variant,
+                    orig: None,
+                    tool: *tool,
+                },
+            );
+            at += 1;
+        }
+    }
     let layout = plate.ids.len();
     let source_layouts: Vec<Option<Layout>> = sources
         .iter()
@@ -1026,28 +1247,74 @@ fn fill_slots(settings: &mut Settings, sources: &Sources) -> Result<(), String> 
             continue;
         }
         let in_place = plate_values.len() == layout;
-        let mut values = Vec::with_capacity(layout);
-        for slot in 0..layout {
-            let extruder = plate.ids[slot] - 1;
-            let mode = fill_mode(&plate.variants[slot]);
+        let mut values = Vec::with_capacity(slots.len());
+        for slot in &slots {
+            let extruder = slot.extruder;
+            let mode = fill_mode(&slot.variant);
             if let (Some(Some(source)), Some(Some(own_layout))) =
-                (sources.get(extruder), source_layouts.get(extruder))
+                (sources.get(slot.tool), source_layouts.get(slot.tool))
                 && let Some(own) = source.texts(key).filter(|own| !own.is_empty())
             {
                 values.push(own[own_layout.index(own.len(), extruder, mode)].clone());
                 continue;
             }
-            let index = if !in_place {
-                plate.index(plate_values.len(), extruder, mode)
-            } else if split || extruder == 0 {
-                slot
-            } else {
-                plate.column(plate_values.len(), mode)
+            let index = match slot.orig {
+                _ if !in_place => plate.index(plate_values.len(), extruder, mode),
+                None if split => plate.index(plate_values.len(), extruder, mode),
+                None => plate.column(plate_values.len(), mode),
+                Some(orig) if split || extruder == 0 => orig,
+                Some(_) => plate.column(plate_values.len(), mode),
             };
             values.push(plate_values[index].clone());
         }
         settings.insert(key, Value::Many(values));
     }
+    if groups.is_empty() {
+        return Ok(());
+    }
+    let many = |values: Vec<String>| Value::Many(values);
+    let diameters = settings
+        .texts("print_extruder_nozzle_diameter")
+        .filter(|values| values.len() == layout)
+        .map(<[String]>::to_vec);
+    settings.insert(
+        "print_extruder_nozzle_diameter",
+        many(match diameters {
+            Some(own) => (slots.iter())
+                .map(|slot| {
+                    slot.orig
+                        .map_or_else(|| "0".to_owned(), |orig| own[orig].clone())
+                })
+                .collect(),
+            None => vec!["0".to_owned()],
+        }),
+    );
+    settings.insert(
+        "print_extruder_id",
+        many(
+            slots
+                .iter()
+                .map(|slot| (slot.extruder + 1).to_string())
+                .collect(),
+        ),
+    );
+    settings.insert(
+        "print_extruder_variant",
+        many(slots.iter().map(|slot| slot.variant.clone()).collect()),
+    );
+    let modes = filament_modes(settings, filament_tools.len());
+    let own: Vec<String> = (filament_tools.iter().enumerate())
+        .map(|(filament, tool)| {
+            let mine: Vec<usize> = (0..slots.len())
+                .filter(|s| slots[*s].orig.is_none() && slots[*s].tool == *tool)
+                .collect();
+            let slot = (mine.iter())
+                .find(|s| flow_mode(&slots[**s].variant) == Some(modes[filament]))
+                .or(mine.first());
+            slot.map_or(-1, |s| *s as i64).to_string()
+        })
+        .collect();
+    settings.insert("nozzle_filament_process_slot", many(own));
     Ok(())
 }
 
@@ -1090,9 +1357,10 @@ fn slots_differ(settings: &Settings) -> bool {
 pub(crate) fn filament_overrides(
     settings: &Settings,
 ) -> Result<Option<Vec<BTreeMap<String, String>>>, Failure> {
-    let Some(diameters) = mixed(settings)? else {
+    let Some(tools) = mixed(settings)? else {
         return Ok(None);
     };
+    let diameters = &tools.extruder_sizes;
     let count = settings
         .texts("filament_diameter")
         .map_or(0, <[String]>::len);
@@ -1104,10 +1372,18 @@ pub(crate) fn filament_overrides(
     if count == 0 || !filled("nozzle_outer_wall_line_width") {
         return Ok(None);
     }
-    let extruders = extruders_of(settings, 2);
+    let extruders = &tools.extruders;
     let modes = filament_modes(settings, count);
     let layout = Layout::of(settings);
     let split = settings.flag("process_extruder_values")? == Some(true);
+    // A filament of a rack size with a process of its own reads its own
+    // slot (PrintConfig.cpp `process_config_idx`, P9), whatever
+    // `process_extruder_values` says.
+    let own_slots: Vec<i64> = (settings.texts("nozzle_filament_process_slot"))
+        .unwrap_or_default()
+        .iter()
+        .map(|slot| slot.trim().parse().unwrap_or(-1))
+        .collect();
     let regions = settings.texts("nozzle_region_values").unwrap_or_default();
     let mut unfollowed = Vec::new();
     let mut out = Vec::with_capacity(count);
@@ -1136,8 +1412,9 @@ pub(crate) fn filament_overrides(
         }
         // Flow, bridges and widths given as a share are of the nozzle the
         // filament prints from; every stage reads the first nozzle's size.
-        if (diameters[extruder] - diameters[0]).abs() > 1e-9 {
-            own.insert("nozzle_diameter".to_owned(), size_text(diameters[extruder]));
+        let size = tools.sizes[filament];
+        if (size - diameters[0]).abs() > 1e-9 {
+            own.insert("nozzle_diameter".to_owned(), size_text(size));
         }
         if let Some(entry) = regions.get(filament) {
             for line in entry.lines() {
@@ -1152,12 +1429,20 @@ pub(crate) fn filament_overrides(
                 }
             }
         }
-        if split {
+        let own_slot = own_slots
+            .get(filament)
+            .and_then(|slot| usize::try_from(*slot).ok());
+        if split || own_slot.is_some() {
             for key in per_nozzle_keys() {
                 let Some(values) = settings.texts(key) else {
                     continue;
                 };
-                let value = &values[slot_of(&layout, values.len(), extruder, modes[filament])];
+                let slot = match own_slot {
+                    Some(slot) if slot < values.len() && values.len() == layout.ids.len() => slot,
+                    _ if !split => continue,
+                    _ => slot_of(&layout, values.len(), extruder, modes[filament]),
+                };
+                let value = &values[slot];
                 // What the G-code writer reads for the filament otherwise
                 // (`edge_gcode::PrintSettings::for_filament`).
                 let read = values
@@ -1219,14 +1504,15 @@ pub(crate) fn check_merging(
     used: &[usize],
     layer_height: f64,
 ) -> Result<(), Failure> {
-    let Some(diameters) = mixed(settings)? else {
+    let Some(tools) = mixed(settings)? else {
         return Ok(());
     };
-    let extruders = extruders_of(settings, 2);
+    let extruders = &tools.extruders;
     let size_of = |filament: usize| {
-        extruders
+        (tools.sizes)
             .get(filament.wrapping_sub(1))
-            .map_or(diameters[0], |extruder| diameters[*extruder])
+            .copied()
+            .unwrap_or(tools.extruder_sizes[0])
     };
     // Print.cpp `uses_multiple_nozzle_diameters`: the plate prints from
     // nozzles of two sizes at all.
@@ -1253,14 +1539,28 @@ pub(crate) fn check_merging(
             .and_then(|index| extruders.get(index))
             .copied()
             .unwrap_or(0);
-        let diameter = diameters[extruder];
+        let diameter = size_of(*filament);
         let (mut min, mut max) = (0.2 * diameter, 0.7 * diameter);
-        // The extruder's own limits, unless they leave no window.
+        // The extruder's own limits, unless they leave no window; they
+        // are its own nozzle's, so a rack nozzle of another size has none
+        // (AdaptiveLayerMerge.cpp `adaptive_layer_height_range_for_nozzle`,
+        // `extruder_limits_apply`: measured on h2c3_ms8_2111_pn, a 0.8 rack
+        // nozzle on the 0.4 printer laid as slabs of 0.4 mm).
         let (window_min, window_max) = (min, max);
-        if let Some(own) = mins.get(extruder).filter(|own| **own > EPSILON) {
+        let limits_apply = tools
+            .extruder_sizes
+            .get(extruder)
+            .is_some_and(|own| (own - diameter).abs() < EPSILON);
+        if let Some(own) = mins
+            .get(extruder)
+            .filter(|own| limits_apply && **own > EPSILON)
+        {
             min = min.max(*own);
         }
-        if let Some(own) = maxs.get(extruder).filter(|own| **own > EPSILON) {
+        if let Some(own) = maxs
+            .get(extruder)
+            .filter(|own| limits_apply && **own > EPSILON)
+        {
             max = max.min(*own);
         }
         if min > max + EPSILON {
@@ -1284,15 +1584,8 @@ pub(crate) fn check_merging(
 
 /// The diameter of the nozzle each filament prints from, on a printer
 /// whose nozzles differ in size; none on any other.
-fn filament_sizes(settings: &Settings) -> Result<Option<Vec<f64>>, Failure> {
-    let Some(diameters) = mixed(settings)? else {
-        return Ok(None);
-    };
-    Ok(Some(
-        (extruders_of(settings, 2).into_iter())
-            .map(|extruder| diameters[extruder])
-            .collect(),
-    ))
+pub(crate) fn filament_sizes(settings: &Settings) -> Result<Option<Vec<f64>>, Failure> {
+    Ok(mixed(settings)?.map(|tools| tools.sizes))
 }
 
 /// What the prime tower reads, where every filament is set to one nozzle
@@ -1465,6 +1758,69 @@ mod tests {
         let mut same = h2d("0.4", ["1", "2"]);
         assert!(fill(&mut same, Some(&profiles())).unwrap().is_empty());
         assert!(same.get("nozzle_outer_wall_line_width").is_none());
+    }
+
+    /// An H2C whose right rack holds 0.4 and 0.6 nozzles, filament 1
+    /// pinned to 0.6 on the right: it prints with the 0.6 process picked
+    /// for its size, from slots of its own after the right extruder's, as
+    /// the reference writes it (work/tower/h2c3, h2c3_mix2_211_pn: the same
+    /// `print_extruder_id`, `inner_wall_speed` and widths in its file).
+    #[test]
+    fn a_rack_size_prints_with_its_own_process() {
+        let vendor = Vendor::open(&profiles(), "BBL").unwrap();
+        let mut settings = vendor
+            .resolve(Kind::Machine, "Bambu Lab H2C 0.4 nozzle")
+            .unwrap();
+        settings.overlay(
+            &vendor
+                .resolve(Kind::Process, "0.20mm Standard @BBL H2C")
+                .unwrap(),
+        );
+        let many =
+            |items: &[&str]| Value::Many(items.iter().map(|item| (*item).to_owned()).collect());
+        settings.insert(
+            "print_settings_id",
+            Value::One("0.20mm Standard @BBL H2C".into()),
+        );
+        settings.insert("filament_diameter", many(&["1.75", "1.75", "1.75"]));
+        settings.insert("filament_map", many(&["2", "1", "1"]));
+        settings.insert("filament_map_mode", Value::One("Manual".into()));
+        settings.insert(
+            "extruder_rack_nozzle_override",
+            many(&["", "0.4,0.6,0.4,0.6"]),
+        );
+        settings.insert("filament_rack_nozzle_diameter", many(&["0.6", "0", "0"]));
+        settings.insert("nozzle_filament_process_slot", many(&["1", "1", "1"]));
+        let notes = fill(&mut settings, Some(&profiles())).unwrap();
+        assert!(
+            notes[0].contains("T2:0.6 (0.6 mm) uses '0.30mm Standard @BBL H2C 0.6 nozzle'"),
+            "{notes:?}"
+        );
+        let texts = |key: &str| settings.texts(key).unwrap().to_vec();
+        assert_eq!(
+            texts("print_extruder_id"),
+            ["1", "1", "1", "2", "2", "2", "2"]
+        );
+        assert_eq!(
+            texts("inner_wall_speed"),
+            ["300", "600", "600", "300", "300", "300", "600"]
+        );
+        assert_eq!(texts("nozzle_filament_process_slot"), ["5", "-1", "-1"]);
+        assert_eq!(
+            texts("nozzle_outer_wall_line_width"),
+            ["0.62", "0.42", "0.42"]
+        );
+        let own = filament_overrides(&settings).unwrap().unwrap();
+        assert_eq!(own[0]["nozzle_diameter"], "0.6");
+        assert_eq!(own[0]["outer_wall_line_width"], "0.62");
+        // The left's filaments keep their widths and read their own slot's
+        // speeds (Left, Standard), not their number's.
+        assert!(!own[1].contains_key("outer_wall_line_width"), "{own:?}");
+        assert_eq!(own[1]["inner_wall_speed"], "300");
+        // Nothing pinned: every filament prints 0.4 and nothing is filled.
+        let mut plain = settings.clone();
+        plain.insert("filament_rack_nozzle_diameter", many(&["0"]));
+        assert!(mixed(&plain).unwrap().is_none());
     }
 
     #[test]

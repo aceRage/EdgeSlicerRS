@@ -2070,8 +2070,14 @@ and X1 now pull the filament back before the cut, `M620.11 S1 … E-18`),
 a list of choices as its number (`z_hop_types[…] == 0`), and every
 number as a C++ stream writes it (six significant digits: `F523.843`).
 A Bambu Lab printer of two nozzles is sliced on the H2D (the filament
-grouping, `crates/edge-group`, and Bambu's tower on two nozzles); a nozzle
-rack (H2C, H3C) is refused. On the H2D: the idle nozzle is cooled after
+grouping, `crates/edge-group`, and Bambu's tower on two nozzles), and on
+the H2C, whose right extruder has a rack of six hotends: changes between
+rack hotends, racks set by hand (the project's
+`extruder_rack_nozzle_override` over the printer's
+`extruder_rack_nozzle_diameter` over the machine's own) and filaments
+pinned to a rack size or slot (`crates/edge-engine/src/rack.rs`); a
+rack of mixed nozzle kinds and the H3C (rack hotends as extruders) are
+refused. On the H2D: the idle nozzle is cooled after
 its use and heated back in time for its next (`enable_pre_heating`,
 `crates/edge-gcode/src/pre_heating.rs`, the reference's
 PreCoolingInjector, placed by the file's time); copies printed one after
@@ -2085,8 +2091,12 @@ nozzle's size (EdgeSlicer's per-nozzle processes,
 filament's purge and ramming at its own nozzle's width over a structure
 of the finest nozzle's (WipeTower.cpp `tool_line_width`, 100 % of the
 reference's tower lines on the fixtures where the tool order agrees).
+A filament pinned to a rack nozzle of another size prints the same way,
+with a process of that size (the reference's size tools, "T2:0.6").
 Refused there: an automatic filament map, layers the reference would
-merge into slabs, and the rest `nozzle_process.rs` lists. The timelapse picture on two nozzles is taken as the reference
+merge into slabs, filaments of one rack on nozzles of two sizes (the
+H2C's firmware refuses that change; the reference only warns), and the
+rest `nozzle_process.rs` and `rack.rs` list. The timelapse picture on two nozzles is taken as the reference
 takes it (`crates/edge-gcode/src/timelapse.rs`, below). The time
 estimate reads what the reference's does: `G28` as a move home, Bambu's
 `G29` as 260 s once, `M191` above 40 °C as 720 s, Bambu's own tool
