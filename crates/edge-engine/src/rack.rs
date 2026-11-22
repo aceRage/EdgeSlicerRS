@@ -27,7 +27,8 @@
 //! (work/cppfix/pin/RULE.md, shared with the C++ fix, branch fix/rack-pins):
 //! filaments pinned to a size spread over free nozzles of it ([`pin`],
 //! rule S), and a pin is honoured on an automatic filament map
-//! ([`settle_automatic`], [`barred`], rule P).
+//! ([`settle_automatic`], [`pin_bars`], rules P and P2: filaments of
+//! another size kept off a rack its pins put on one size).
 
 use edge_config::Settings;
 use edge_group::{GroupResult, NozzleInfo, VolumeType};
@@ -443,9 +444,12 @@ pub(crate) fn automatic(settings: &Settings) -> bool {
 /// size it is sliced for (`filament_size`, `crate::nozzle_process`) and
 /// every later reading of its pin go by that extruder, its "pin extruder"
 /// (RULE.md); the grouping then bars the extruders that cannot take it
-/// ([`barred`]). A plate printed object by object reads this map as set by
-/// hand, as RULE.md has it. Unchanged where no extruder has a rack, on a
-/// manual map and on a printer of fewer than two extruders.
+/// ([`pin_bars`], with rule P2). A plate printed object by object reads
+/// this map as set by hand, the pin bars moving a used filament off an
+/// extruder they keep it off (`crate::grouping::group`); this map is
+/// settled for unused pinned filaments too, where RULE.md leaves their
+/// entries. Unchanged where no extruder has a rack, on a manual map and on
+/// a printer of fewer than two extruders.
 ///
 /// On purpose not the pinned reference: it reads the pin through the
 /// project's `filament_map` as saved, not the map the grouping works out
@@ -500,21 +504,18 @@ pub(crate) fn check_automatic(settings: &Settings, used: &[u32]) -> Result<(), F
             continue;
         };
         let slot = slot_pin(settings, f);
+        // A slot no extruder shows: `validate`'s own message on the pin
+        // extruder (the saved one here), as RULE.md has it.
+        if allowed.is_empty() && slot > 0 {
+            continue;
+        }
         if allowed.is_empty() {
-            return Err(if slot > 0 {
-                format!(
-                    "Filament {} is set to print on rack slot {slot}, but no extruder's rack has \
-                     {slot} nozzles. (filament_rack_nozzle_slot); no G-code was written",
-                    f + 1
-                )
-            } else {
-                format!(
-                    "Filament {} asks for a {} mm rack nozzle, but no extruder has one. \
-                     (filament_rack_nozzle_diameter); no G-code was written",
-                    f + 1,
-                    size_text(size_pin(settings, &racks, f))
-                )
-            }
+            return Err(format!(
+                "Filament {} asks for a {} mm rack nozzle, but no extruder has one. \
+                 (filament_rack_nozzle_diameter); no G-code was written",
+                f + 1,
+                size_text(size_pin(settings, &racks, f))
+            )
             .into());
         }
         let pin = size_pin(settings, &racks, f);
@@ -534,25 +535,104 @@ pub(crate) fn check_automatic(settings: &Settings, used: &[u32]) -> Result<(), F
     Ok(())
 }
 
-/// Rule P in the grouping: for each extruder, the used pinned filaments
-/// (from 0) it cannot take, to bar them from it (RULE.md "Grouping on an
-/// automatic map"); empty sets on a manual map or without a rack.
-pub(crate) fn barred(settings: &Settings, used: &[u32], extruders: usize) -> Vec<Vec<u32>> {
-    let mut bars = vec![Vec::new(); extruders];
+/// Rules P and P2 in the grouping (work/cppfix/pin/RULE.md): for each
+/// extruder, the used filaments (from 0) barred from it, over `limits`, the
+/// filaments it cannot print already (from 0). None on a manual map, with
+/// fewer than two extruders, or without a rack.
+///
+/// - P: a used pinned filament is barred from every extruder that cannot
+///   take its pin; one barred from all (with `limits`) is refused (E2).
+/// - P2 (owner, 2026-11-22: "keep them off"): an extruder whose pinned
+///   filaments (by their pin extruder) are all of one size d keeps off it
+///   every other used filament that would print there with another size
+///   (a pinned one its pinned size, any other the extruder's own), unless
+///   that would leave it no extruder; then it is left free and the plate is
+///   refused for two sizes on one rack ([`check_one_size`]) if the grouping
+///   puts it there. The H2C's firmware will not change between rack
+///   nozzles of two sizes in a print, so this keeps a pin on an automatic
+///   map printable.
+///
+/// Both differ from the pinned reference on purpose; see
+/// [`settle_automatic`].
+pub(crate) fn pin_bars(
+    settings: &Settings,
+    used: &[u32],
+    extruders: usize,
+    limits: &[std::collections::BTreeSet<i32>],
+) -> Result<Vec<std::collections::BTreeSet<u32>>, Failure> {
+    let mut bars = vec![std::collections::BTreeSet::new(); extruders];
     let racks = racks(settings);
     if !automatic(settings) || racks.iter().all(Vec::is_empty) || extruders < 2 {
-        return bars;
+        return Ok(bars);
     }
+    let limited = |bars: &[std::collections::BTreeSet<u32>], e: usize, f: u32| {
+        bars[e].contains(&f) || limits.get(e).is_some_and(|set| set.contains(&(f as i32)))
+    };
+    // P.
+    let mut pinned: Vec<(u32, usize, f64)> = Vec::new();
     for filament in used {
-        if let Some(allowed) = pin_extruders(settings, &racks, *filament as usize) {
-            for (extruder, bar) in bars.iter_mut().enumerate() {
-                if !allowed.contains(&extruder) {
-                    bar.push(*filament);
-                }
+        let f = *filament as usize;
+        let Some(allowed) = pin_extruders(settings, &racks, f) else {
+            continue;
+        };
+        for (extruder, bar) in bars.iter_mut().enumerate() {
+            if !allowed.contains(&extruder) {
+                bar.insert(*filament);
             }
         }
+        if (0..extruders).all(|e| limited(&bars, e, *filament)) {
+            let slot = slot_pin(settings, f);
+            return Err(if slot > 0 {
+                format!(
+                    "Filament {} is pinned to rack slot {slot}, but no extruder with that slot \
+                     can print it.; no G-code was written",
+                    f + 1
+                )
+            } else {
+                format!(
+                    "Filament {} is pinned to a {} mm rack nozzle, but no extruder that has one \
+                     can print it.; no G-code was written",
+                    f + 1,
+                    size_text(size_pin(settings, &racks, f))
+                )
+            }
+            .into());
+        }
+        pinned.push((
+            *filament,
+            extruder_of(settings, f),
+            size_pin(settings, &racks, f),
+        ));
     }
-    bars
+    // P2.
+    let nozzles = numbers(settings, "nozzle_diameter");
+    for extruder in 0..extruders {
+        let mut sizes: Vec<f64> = Vec::new();
+        for (_, own, size) in &pinned {
+            if *own == extruder && !sizes.iter().any(|d| same(*d, *size)) {
+                sizes.push(*size);
+            }
+        }
+        let [d] = sizes[..] else {
+            continue;
+        };
+        for filament in used {
+            if limited(&bars, extruder, *filament) {
+                continue;
+            }
+            let size = (pinned.iter())
+                .find(|(f, _, _)| f == filament)
+                .map_or_else(|| nozzles.get(extruder).copied().unwrap_or(0.0), |p| p.2);
+            if same(size, d) {
+                continue;
+            }
+            if (0..extruders).all(|e| e == extruder || limited(&bars, e, *filament)) {
+                continue;
+            }
+            bars[extruder].insert(*filament);
+        }
+    }
+    Ok(bars)
 }
 
 /// A filament pinned to a rack size or slot on an automatic filament map,
@@ -987,13 +1067,18 @@ mod tests {
         );
         settle_automatic(&mut manual);
         assert_eq!(manual.texts("filament_map").unwrap(), ["1", "1", "1"]);
-        assert!(barred(&manual, &[0, 1, 2], 2).iter().all(Vec::is_empty));
+        let bars = pin_bars(&manual, &[0, 1, 2], 2, &[]).unwrap();
+        assert!(bars.iter().all(std::collections::BTreeSet::is_empty));
         // Automatic (the default): filaments 1 and 3 can only go right, 2
         // keeps its saved extruder, which can take it.
         settle_automatic(&mut settings);
         assert_eq!(settings.texts("filament_map").unwrap(), ["2", "1", "2"]);
         assert_eq!(filament_size(&settings, &racks, 0), 0.6);
-        assert_eq!(barred(&settings, &[0, 1, 2], 2), [vec![0, 2], vec![]]);
+        // P bars 1 and 3 from the left; P2: the right's pins are all 0.6,
+        // so filament 2 (pinned 0.4, its pin extruder the left) is kept off
+        // it; the left's are its own 0.4, which bars nothing more.
+        let bars = pin_bars(&settings, &[0, 1, 2], 2, &[]).unwrap();
+        assert_eq!(bars, [[0, 2].into(), [1].into()]);
         check_automatic(&settings, &[0, 1, 2]).unwrap();
         validate(&settings, &[0, 1, 2]).unwrap();
         // E1: no extruder can take the pin.
@@ -1004,15 +1089,65 @@ mod tests {
             "{said}"
         );
         settings.insert("filament_rack_nozzle_slot", many(&["0", "0", "6"]));
-        let said = check_automatic(&settings, &[2]).unwrap_err().to_string();
+        // A slot no extruder shows: the existing message, on the pin
+        // extruder (RULE.md, CHANGED).
+        check_automatic(&settings, &[2]).unwrap();
+        let said = validate(&settings, &[2]).unwrap_err().to_string();
         assert!(
-            said.starts_with(
-                "Filament 3 is set to print on rack slot 6, but no extruder's rack has 6 nozzles."
-            ),
+            said.starts_with("Filament 3 is set to print on Right slot 6, but that rack has 4"),
             "{said}"
         );
         // An unused filament's pin is not checked.
         check_automatic(&settings, &[1]).unwrap();
+    }
+
+    /// Rule P2 (RULE.md, its ambiguity example and example 4): an extruder
+    /// the pins put on one size keeps the filaments of another size off,
+    /// unless they could go nowhere else.
+    #[test]
+    fn filaments_of_another_size_are_kept_off_a_pinned_rack() {
+        let mut settings = h2c();
+        settings.insert(
+            "extruder_rack_nozzle_override",
+            many(&["", "0.4,0.6,0.4,0.6"]),
+        );
+        settings.insert("filament_rack_nozzle_diameter", many(&["0.6", "0.4", "0"]));
+        let all = [0, 1, 2];
+        // Saved map 2,2,1: filament 2's pin extruder is the right, whose
+        // pins are then of two sizes: P2 adds nothing.
+        settings.insert("filament_map", many(&["2", "2", "1"]));
+        settle_automatic(&mut settings);
+        let bars = pin_bars(&settings, &all, 2, &[]).unwrap();
+        assert_eq!(bars, [[0].into(), [].into()]);
+        // Saved 2,1,1: the right is all 0.6; filaments 2 (0.4) and 3 (the
+        // right's own 0.4) are kept off it.
+        settings.insert("filament_map", many(&["2", "1", "1"]));
+        let bars = pin_bars(&settings, &all, 2, &[]).unwrap();
+        assert_eq!(bars, [[0].into(), [1, 2].into()]);
+        // Filament 3 cannot print on the left: it is left free (the
+        // grouping may then put two sizes on the rack, refused later).
+        let limits = [std::collections::BTreeSet::from([2]), Default::default()];
+        let bars = pin_bars(&settings, &all, 2, &limits).unwrap();
+        assert_eq!(bars, [[0].into(), [1].into()]);
+        // E2: filament 1 can only take the right, which it cannot print on.
+        let limits = [Default::default(), std::collections::BTreeSet::from([0])];
+        let said = pin_bars(&settings, &all, 2, &limits)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            said.starts_with(
+                "Filament 1 is pinned to a 0.6 mm rack nozzle, but no extruder that has one can \
+                 print it."
+            ),
+            "{said}"
+        );
+        // A manual map: nothing.
+        settings.insert(
+            "filament_map_mode",
+            edge_config::Value::One("Manual".into()),
+        );
+        let bars = pin_bars(&settings, &all, 2, &[]).unwrap();
+        assert!(bars.iter().all(std::collections::BTreeSet::is_empty));
     }
 
     fn nozzles(sizes: &[(&str, i32)]) -> Vec<NozzleInfo> {

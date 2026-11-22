@@ -457,35 +457,12 @@ pub(crate) fn group(
             .collect(),
         geometric: {
             let mut sets = geometric(settings, objects, tower)?;
-            // Rule P: on an automatic map, a pinned filament barred from
-            // the extruders that cannot take its pin (`rack::barred`).
+            // Rules P and P2: on an automatic map, filaments barred from
+            // the extruders the pins keep them off (`rack::pin_bars`).
             if mode != Mode::Manual {
-                let bars = crate::rack::barred(settings, &used, machine.extruders);
-                for (extruder, bar) in bars.iter().enumerate() {
-                    for filament in bar {
-                        if let Some(set) = sets.get_mut(extruder) {
-                            set.insert(*filament as i32);
-                        }
-                    }
-                }
-                for filament in &used {
-                    let f = *filament as i32;
-                    if bars.iter().any(|bar| bar.contains(filament))
-                        && sets.iter().all(|set| set.contains(&f))
-                    {
-                        let racks = crate::rack::racks(settings);
-                        return Err(format!(
-                            "Filament {} is pinned to a {} mm rack nozzle, but no extruder that \
-                             has one can print it.; no G-code was written",
-                            f + 1,
-                            crate::rack::size_text(crate::rack::size_pin(
-                                settings,
-                                &racks,
-                                *filament as usize
-                            ))
-                        )
-                        .into());
-                    }
+                let bars = crate::rack::pin_bars(settings, &used, machine.extruders, &sets)?;
+                for (set, bar) in sets.iter_mut().zip(&bars) {
+                    set.extend(bar.iter().map(|f| *f as i32));
                 }
             }
             sets
@@ -495,10 +472,33 @@ pub(crate) fn group(
             float("machine_load_filament_time")?,
             float("machine_unload_filament_time")?,
         ),
-        manual_map: whole("filament_map")?
-            .into_iter()
-            .map(|e| e as i32)
-            .collect(),
+        manual_map: {
+            let mut map: Vec<i32> = whole("filament_map")?
+                .into_iter()
+                .map(|e| e as i32)
+                .collect();
+            // Objects one after another on an automatic map (RULE.md): the
+            // pin bars of P and P2 over the plate's map, and every used
+            // filament barred from its extruder there moved to the lowest
+            // not barred; nothing moved where the bars give an error.
+            if by_plate_map
+                && let Ok(bars) = crate::rack::pin_bars(settings, &used, machine.extruders, &[])
+            {
+                for filament in &used {
+                    let Some(entry) = map.get_mut(*filament as usize) else {
+                        continue;
+                    };
+                    let barred = |e: usize| bars.get(e).is_some_and(|bar| bar.contains(filament));
+                    if *entry >= 1
+                        && barred(*entry as usize - 1)
+                        && let Some(free) = (0..machine.extruders).find(|e| !barred(*e))
+                    {
+                        *entry = free as i32 + 1;
+                    }
+                }
+            }
+            map
+        },
     };
     crate::rack::check_pins(settings, mode == Mode::Manual)?;
     let mut grouping = edge_group::group_filaments(&machine, &input)?;
@@ -805,9 +805,23 @@ mod tests {
             said.contains("two nozzle diameters on the same extruder rack"),
             "{said}"
         );
-        // A pin on an automatic map (rule P): the saved map puts filament 1
-        // on the left, which has no 0.6; it goes right, onto a 0.6, the
-        // other filament where the grouping wants it (h2c4_two_auto_pn).
+        // A pin on an automatic map (rules P and P2): the saved map puts
+        // filament 1 on the left, which has no 0.6; it goes right, onto a
+        // 0.6, the others kept off the right (RULE.md example 4).
+        rack.insert(
+            "filament_map_mode",
+            edge_config::Value::One("Auto For Flush".into()),
+        );
+        rack.insert("filament_map", many(&["1", "2", "1"]));
+        let grouped = group(&rack, vec![vec![0, 1, 2]; 3], &[], None, false).unwrap();
+        let grouping = grouped.grouping.unwrap();
+        assert_eq!(grouping.filament_map, [2, 1, 1]);
+        assert_eq!(grouping.result.nozzle_map(), [2, 0, 0]);
+        // Objects one after another: the plate's map, filament 1 put right
+        // and filament 2 moved off the right to the left.
+        let grouped = group(&rack, vec![vec![0, 1, 2]; 3], &[], None, true).unwrap();
+        assert_eq!(grouped.grouping.unwrap().filament_map, [2, 1, 1]);
+        // Two filaments (h2c4_two_auto_pn).
         rack.insert(
             "filament_map_mode",
             edge_config::Value::One("Auto For Flush".into()),
