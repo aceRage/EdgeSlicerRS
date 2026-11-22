@@ -7,12 +7,13 @@
 //!
 //! The grouping itself (which nozzle) is worked out before the writer
 //! (edge-engine `grouping`; for copies printed one after another, the
-//! plate's own map) and handed over in [`Plate::nozzles`]. The H2C's rack
-//! comes here only with each extruder printing from one of its nozzles,
-//! which is the two-nozzle print; a change between two nozzles of one
-//! extruder's rack (M632 / M633) is not done, and the grouping refuses a
-//! plate that needs one. On Bambu's tower the ramming before a change onto the
-//! other nozzle is laid by `bambu_tower`.
+//! plate's own map) and handed over in [`Plate::nozzles`]. On the H2C's
+//! rack (one nozzle on the left, six on the right) a filament may print from
+//! any nozzle of its extruder's rack: a change between two of them is a
+//! rack nozzle change, and the nozzle taken from the rack is flushed of what
+//! it last held ([`Held`]). On Bambu's tower the ramming before a change
+//! onto another nozzle (`M632` / `M633` inside one extruder's rack) is laid
+//! by `bambu_tower`.
 
 use edge_template::{Value, Variables};
 
@@ -97,10 +98,67 @@ pub(crate) fn start(variables: &mut Variables, map: &NozzleMap, layers: &[Layer<
     };
     variables.set_list("first_filaments", to_physical(&first));
     variables.set_list("first_non_support_filaments", to_physical(&first_model));
+    by_nozzle_id(variables, map);
 }
 
-/// What a change between filaments on a two-nozzle printer keeps track of:
-/// the filament each extruder's nozzle holds, and how far each extruder's
+/// On a nozzle rack the templates index each nozzle's diameter and kind by
+/// the nozzle's number (`nozzle_diameter_at_nozzle_id[next_nozzle_id]`;
+/// GCode.cpp `get_nozzle_diameters_by_nozzle_id`,
+/// `get_nozzle_volume_types_by_nozzle_id`), which reaches past the one
+/// entry to each extruder `bambu_vars` gives: every nozzle a filament prints
+/// from is given its extruder's. Nothing changes with one nozzle to each
+/// extruder.
+fn by_nozzle_id(variables: &mut Variables, map: &NozzleMap) {
+    let Some(last) = map.nozzles.iter().copied().max().filter(|n| *n >= 0) else {
+        return;
+    };
+    let count = last as usize + 1;
+    for name in ["nozzle_diameter_at_nozzle_id", "nozzle_volume_types"] {
+        let Some(list) = variables.list(name).map(<[Value]>::to_vec) else {
+            continue;
+        };
+        if list.len() >= count || list.is_empty() {
+            continue;
+        }
+        // Each nozzle's extruder, from a filament on it; a nozzle no
+        // filament prints from is never asked for and keeps the last
+        // extruder's.
+        let mut extruder_of = vec![list.len() - 1; count];
+        for (filament, nozzle) in map.nozzles.iter().enumerate() {
+            if *nozzle >= 0 {
+                extruder_of[*nozzle as usize] = map.extruder(filament);
+            }
+        }
+        let values = (0..count)
+            .map(|nozzle| {
+                if nozzle < list.len() && map.nozzles.iter().all(|n| *n != nozzle as i32) {
+                    return list[nozzle].clone();
+                }
+                list[extruder_of[nozzle].min(list.len() - 1)].clone()
+            })
+            .collect();
+        variables.set_list(name, values);
+    }
+}
+
+/// The nozzle a filament prints from, by number (`filament_nozzle_map`),
+/// or its extruder's where the map names none. On the H2D the two are the
+/// same; on the H2C's rack an extruder has several.
+fn nozzle_of(map: &NozzleMap, filament: usize) -> usize {
+    match map.nozzles.get(filament) {
+        Some(nozzle) if *nozzle >= 0 => *nozzle as usize,
+        _ => map.extruder(filament),
+    }
+}
+
+/// Whether a change from `from` to `to` goes between two nozzles of one
+/// extruder's rack (the H2C's): a rack nozzle change.
+pub(crate) fn rack_change(map: &NozzleMap, from: usize, to: usize) -> bool {
+    map.extruder(from) == map.extruder(to) && nozzle_of(map, from) != nozzle_of(map, to)
+}
+
+/// What a change between filaments on a printer of several nozzles keeps
+/// track of: the filament each nozzle holds, and how far each extruder's
 /// filament was left retracted when it was put away.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Held {
@@ -116,20 +174,39 @@ impl Held {
         }
     }
 
-    /// The filament now printing is in its extruder's nozzle
-    /// (GCode.cpp `note_filament_loaded`).
+    /// The filament now printing is in its nozzle (GCode.cpp
+    /// `note_filament_loaded`; on a rack, the nozzle of the extruder's
+    /// rack it prints from).
     pub(crate) fn loaded(&mut self, map: &NozzleMap, filament: usize) {
-        if let Some(slot) = self.filament.get_mut(map.extruder(filament)) {
-            *slot = Some(filament);
+        let nozzle = nozzle_of(map, filament);
+        if self.filament.len() <= nozzle {
+            self.filament.resize(nozzle + 1, None);
         }
+        self.filament[nozzle] = Some(filament);
     }
 
     /// What a change from `from` to `to` flushes, in mm³, where the two
-    /// are on different extruders (GCode.cpp
+    /// print from different nozzles (GCode.cpp
     /// `cross_extruder_flush_volume`): what `to`'s nozzle still holds
     /// flushed into it, nothing where it holds nothing or `to` already.
-    /// None for a change within one extruder, which flushes as on a
-    /// printer of one nozzle.
+    /// None for a change within one nozzle, which flushes as on a printer
+    /// of one nozzle.
+    ///
+    /// On the H2C's rack this holds for a change onto another nozzle of
+    /// the same extruder too: the nozzle taken from the rack still holds
+    /// the filament it last printed, which is what the new one pushes out.
+    /// The reference flushes there from the filament put away instead
+    /// (Print.cpp `_make_wipe_tower`: its nozzle tracker,
+    /// `HotendFilamentTracker`, runs on the H3C alone; GCode.cpp
+    /// `append_tcr` zeroes only changes onto another extruder), which
+    /// flushes a full colour change into a nozzle that already holds the
+    /// new filament (measured: work/tower/h2c2, h2c_two_22_pn, two
+    /// filaments each on a rack nozzle of its own: every change there is
+    /// `M620.10 ... L82.7` (0 to 1) or `L265.7` (1 to 0), here `L0`, the
+    /// nozzle taken holding the new filament or, at its first use,
+    /// nothing, as on the H2D); not followed. Owner's decision
+    /// (2026-11-22): a rack nozzle is flushed only when it really changes
+    /// colour. Not checked on a real H2C or against Bambu Studio.
     pub(crate) fn cross_flush(
         &self,
         map: &NozzleMap,
@@ -137,7 +214,7 @@ impl Held {
         to: usize,
         s: &PrintSettings,
     ) -> Option<f64> {
-        let (old, new) = (map.extruder(from), map.extruder(to));
+        let (old, new) = (nozzle_of(map, from), nozzle_of(map, to));
         if old == new {
             return None;
         }
@@ -270,4 +347,42 @@ pub(crate) fn listed_pre_heating(settings: &edge_config::Settings, key: &str) ->
         "filament_preheat_temperature_delta",
     ];
     KEYS.contains(&key) && settings.flag("enable_pre_heating").ok().flatten() == Some(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_rack_nozzle_is_known_by_its_number_in_the_templates_lists() {
+        let mut variables = Variables::default();
+        variables.set_list(
+            "nozzle_diameter_at_nozzle_id",
+            vec![Value::text("0.4"), Value::text("0.6")],
+        );
+        variables.set_list("nozzle_volume_types", vec![Value::Int(0), Value::Int(1)]);
+        // The left nozzle and nozzles 2 and 4 of the right extruder's rack.
+        let map = NozzleMap {
+            extruders: vec![1, 2, 2],
+            nozzles: vec![0, 4, 2],
+            volumes: vec![0, 1, 1],
+        };
+        by_nozzle_id(&mut variables, &map);
+        let diameters: Vec<String> = (variables.list("nozzle_diameter_at_nozzle_id").unwrap())
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(diameters, ["0.4", "0.6", "0.6", "0.6", "0.6"]);
+        assert_eq!(variables.list("nozzle_volume_types").unwrap().len(), 5);
+        // One nozzle to each extruder (the H2D): nothing changes.
+        let mut two = Variables::default();
+        two.set_list("nozzle_diameter_at_nozzle_id", vec![Value::text("0.4"); 2]);
+        let h2d = NozzleMap {
+            extruders: vec![1, 2],
+            nozzles: vec![0, 1],
+            volumes: vec![0, 0],
+        };
+        by_nozzle_id(&mut two, &h2d);
+        assert_eq!(two.list("nozzle_diameter_at_nozzle_id").unwrap().len(), 2);
+    }
 }

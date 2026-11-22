@@ -1,9 +1,11 @@
 //! The reference's Type 1 tower as rewritten at the pin (WipeTower.cpp,
 //! Bambu Studio 2.9.1's block planner by way of Orca), for Bambu Lab
 //! printers of one nozzle (A1, A1 mini, P1S, X1C) and of two nozzles of one
-//! size, one to each extruder (the H2D): there a change onto the other
-//! nozzle rams the outgoing filament on the tower first, and Bambu's tower
-//! interface features act on its contact layers.
+//! size, one to each extruder (the H2D) or with a nozzle rack (the H2C):
+//! there a change onto another nozzle rams the outgoing filament on the
+//! tower first (between two nozzles of one rack inside `M632` / `M633`,
+//! by the `_nc` lengths), and Bambu's tower interface features act on its
+//! contact layers.
 //!
 //! What the tower reads ([`Settings`]), its planner ([`plan()`]): blocks,
 //! depths, where it stands; and how it is laid ([`lay()`]), as the
