@@ -710,14 +710,16 @@ fn size_on(
 /// branch fix/rack-pins).
 ///
 /// Pass A, used filaments in order: a slot pin to its slot; on a rack of
-/// mixed sizes, a filament already on its size stays, one not pinned to a
-/// size goes to the first nozzle of its size (of its current nozzle's
-/// kind where there is one), as the reference; one pinned to a size waits
-/// for pass B. Pass B, those in order: of the nozzles of its extruder of
-/// its size, the one with the least (other kind, in use, number), "in use"
-/// being given to a used filament other than the ones of pass B not
-/// placed yet. So a free nozzle of the size first, the lowest slot; when
-/// every one is in use, the lowest (shared).
+/// mixed sizes, a filament already on its size stays (but one pinned to a
+/// size, on the nozzle a lower size-pinned filament stayed on, waits for
+/// pass B: RULE.md step 3b), one not pinned to a size goes to the first
+/// nozzle of its size (of its current nozzle's kind where there is one),
+/// as the reference; one pinned to a size waits for pass B. Pass B, those
+/// in order: of the nozzles of its extruder of its size, the one with the
+/// least (other kind, in use, not its current one, number), "in use" being
+/// given to a used filament other than the ones of pass B not placed yet.
+/// So a free nozzle of the size first, the lowest slot; when every one is
+/// in use, the one it is on (3b) or else the lowest (shared).
 pub(crate) fn pin(settings: &Settings, result: &mut GroupResult) -> usize {
     let racks = racks(settings);
     let slot_pins = has_slot_pins(settings);
@@ -744,6 +746,7 @@ pub(crate) fn pin(settings: &Settings, result: &mut GroupResult) -> usize {
     };
     let mut moved = 0;
     let mut movers = Vec::new();
+    let mut stayed: Vec<i32> = Vec::new();
     for filament in result.used.clone() {
         let f = filament as usize;
         let Some((current, now)) = now_of(result, f) else {
@@ -763,10 +766,18 @@ pub(crate) fn pin(settings: &Settings, result: &mut GroupResult) -> usize {
             continue;
         }
         let want = size_on(settings, &racks, f, now.extruder_id.max(0) as usize);
+        let pinned = size_pin(settings, &racks, f) > 0.0;
         if positive(&now.diameter).is_some_and(|have| same(have, want)) {
+            // 3b: a size-pinned filament on the nozzle a lower one pinned to
+            // a size stayed on moves too, if a nozzle of its size is free.
+            if pinned && stayed.contains(&current) {
+                movers.push(f);
+            } else if pinned {
+                stayed.push(current);
+            }
             continue;
         }
-        if size_pin(settings, &racks, f) > 0.0 {
+        if pinned {
             movers.push(f);
             continue;
         }
@@ -797,6 +808,7 @@ pub(crate) fn pin(settings: &Settings, result: &mut GroupResult) -> usize {
                 (
                     result.nozzles[*n].volume_type != now.volume_type,
                     in_use(*n),
+                    *n as i32 != current,
                     *n,
                 )
             });
@@ -1251,6 +1263,11 @@ mod tests {
         // takes slot 4, which filament 2 (pinned to 0.4) leaves.
         let mixed = ["0.6", "0.4", "0.6", "0"];
         assert_eq!(spread(&mixed, &none, vec![1, 4, 2, 0]), [4, 1, 2, 0]);
+        // 3b (RULE.md, h2c4_onsize_2211's C++ grouping): two pinned to 0.6
+        // left on one 0.6 by the grouping: the second to the free 0.6.
+        assert_eq!(spread(&six, &none, vec![2, 2, 0, 0]), [2, 4, 0, 0]);
+        // ... and stays where no other 0.6 is free.
+        assert_eq!(spread(&six3, &none, vec![2, 2, 4, 0]), [2, 2, 4, 0]);
         // A filament not pinned goes to the first nozzle of its size, in use
         // or not, as the reference.
         assert_eq!(spread(&none, &none, vec![1, 2, 0, 0]), [1, 1, 0, 0]);
