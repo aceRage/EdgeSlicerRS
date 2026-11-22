@@ -383,6 +383,10 @@ pub fn prepare(mut loaded: Loaded, chosen: &Chosen, overrides: &Overrides) -> Re
     // fill the rest in, as the reference's command line fills its config
     // from the project's settings alone: a per-nozzle setting the project
     // does not hold is not laid out per nozzle.
+    // A rack pin on an automatic filament map: the pinned filament on an
+    // extruder that can take its pin before its walls are laid with that
+    // pin's size (`crate::rack::settle_automatic`, rule P).
+    crate::rack::settle_automatic(&mut settings);
     remarks.extend(crate::nozzle_process::fill(
         &mut settings,
         overrides.profiles.as_deref(),

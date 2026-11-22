@@ -36,6 +36,7 @@
 //!
 //! Refused here (an error, no G-code): an automatic filament map (which
 //! nozzle a filament prints from is only settled after the walls are laid),
+//! except where rack pins settle it (`settled_by_pins`),
 //! the project's own changes to a nozzle's process (`nozzle_process_edits`),
 //! line widths per nozzle set by hand (`process_nozzle_line_widths`),
 //! `nozzle_diameter_override`, a nozzle no process is made for, a process
@@ -369,6 +370,30 @@ pub(crate) fn mixed(settings: &Settings) -> Result<Option<Tools>, Failure> {
         size_tools,
         tool_of,
     }))
+}
+
+/// Whether an automatic filament map leaves nothing [`fill`] lays out to
+/// the grouping (rule P, `crate::rack::settle_automatic`): the extruders'
+/// nozzles of one size, so a filament not pinned prints the same size and
+/// process on either; every filament of a rack size of its own pinned to
+/// it on the one extruder that can take the pin, which the grouping keeps
+/// it on; and the process's per-extruder slots alike
+/// (`process_extruder_values` off, `slots_differ`), as a filament not
+/// pinned reads its extruder's slot, which only the grouping settles.
+fn settled_by_pins(settings: &Settings, tools: &Tools) -> Result<bool, Failure> {
+    let sizes = &tools.extruder_sizes;
+    if sizes.iter().any(|size| !crate::rack::same(*size, sizes[0])) {
+        return Ok(false);
+    }
+    let racks = crate::rack::racks(settings);
+    let pinned = (tools.tool_of.iter().enumerate())
+        .filter(|(_, tool)| tool.is_some())
+        .all(|(filament, _)| {
+            crate::rack::pin_extruders(settings, &racks, filament)
+                .is_some_and(|allowed| allowed == [tools.extruders[filament]])
+        });
+    let split = settings.flag("process_extruder_values")? == Some(true);
+    Ok(pinned && !split && !slots_differ(settings))
 }
 
 /// The extruder each filament prints from, from 0: the one `filament_map`
@@ -802,7 +827,7 @@ pub(crate) fn fill(
     let mode = settings
         .text("filament_map_mode")
         .unwrap_or("Auto For Flush");
-    if mode != "Manual" {
+    if mode != "Manual" && !settled_by_pins(settings, &tools)? {
         return Err(refuse(&format!(
             "with filament_map_mode \"{mode}\" which nozzle each filament prints from, and so \
              the process its walls and fill are laid with, is only settled after they are laid; \
