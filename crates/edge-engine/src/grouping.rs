@@ -388,12 +388,19 @@ pub(crate) fn group(
     tower: Option<[f64; 4]>,
     by_plate_map: bool,
 ) -> Result<Grouped, Failure> {
-    let settings = &merged(settings);
+    let mut settings = merged(settings);
+    // A rack pin on an automatic map: the pinned filament's extruder one
+    // that can take its pin (`crate::rack::settle_automatic`, done before
+    // the walls are laid too; it changes nothing a second time).
+    crate::rack::settle_automatic(&mut settings);
+    let settings = &settings;
     let used: Vec<u32> = (layers.iter().flatten().copied())
         .collect::<BTreeSet<u32>>()
         .into_iter()
         .collect();
-    // Print.cpp l.3442: a rack the slice cannot honour is refused first.
+    // Print.cpp l.3442: a rack the slice cannot honour is refused first,
+    // a pin no extruder can take on an automatic map before that.
+    crate::rack::check_automatic(settings, &used)?;
     crate::rack::validate(settings, &used)?;
     let machine = machine(settings)?;
     let filament_count = settings.texts("filament_colour").map_or(0, <[String]>::len);
@@ -448,7 +455,41 @@ pub(crate) fn group(
             .into_iter()
             .map(|d| d as f32)
             .collect(),
-        geometric: geometric(settings, objects, tower)?,
+        geometric: {
+            let mut sets = geometric(settings, objects, tower)?;
+            // Rule P: on an automatic map, a pinned filament barred from
+            // the extruders that cannot take its pin (`rack::barred`).
+            if mode != Mode::Manual {
+                let bars = crate::rack::barred(settings, &used, machine.extruders);
+                for (extruder, bar) in bars.iter().enumerate() {
+                    for filament in bar {
+                        if let Some(set) = sets.get_mut(extruder) {
+                            set.insert(*filament as i32);
+                        }
+                    }
+                }
+                for filament in &used {
+                    let f = *filament as i32;
+                    if bars.iter().any(|bar| bar.contains(filament))
+                        && sets.iter().all(|set| set.contains(&f))
+                    {
+                        let racks = crate::rack::racks(settings);
+                        return Err(format!(
+                            "Filament {} is pinned to a {} mm rack nozzle, but no extruder that \
+                             has one can print it.; no G-code was written",
+                            f + 1,
+                            crate::rack::size_text(crate::rack::size_pin(
+                                settings,
+                                &racks,
+                                *filament as usize
+                            ))
+                        )
+                        .into());
+                    }
+                }
+            }
+            sets
+        },
         sequences,
         times: ChangeTimes::from_machine(
             float("machine_load_filament_time")?,
@@ -764,15 +805,24 @@ mod tests {
             said.contains("two nozzle diameters on the same extruder rack"),
             "{said}"
         );
-        // A pin on an automatic map: refused.
+        // A pin on an automatic map (rule P): the saved map puts filament 1
+        // on the left, which has no 0.6; it goes right, onto a 0.6, the
+        // other filament where the grouping wants it (h2c4_two_auto_pn).
         rack.insert(
             "filament_map_mode",
             edge_config::Value::One("Auto For Flush".into()),
         );
-        let said = group(&rack, vec![vec![0, 1, 2]; 3], &[], None, false)
+        rack.insert("filament_map", many(&["1", "1", "1"]));
+        let grouped = group(&rack, vec![vec![0, 1]; 3], &[], None, false).unwrap();
+        let grouping = grouped.grouping.unwrap();
+        assert_eq!(grouping.filament_map[0], 2);
+        assert_eq!(grouping.result.nozzle_map()[0], 2);
+        // A pin no extruder can take: refused (E1).
+        rack.insert("filament_rack_nozzle_diameter", many(&["0.8", "0", "0"]));
+        let said = group(&rack, vec![vec![0, 1]; 3], &[], None, false)
             .unwrap_err()
             .to_string();
-        assert!(said.contains("automatic filament map"), "{said}");
+        assert!(said.contains("but no extruder has one"), "{said}");
     }
 
     /// Copies printed one after another take the plate's own map, the

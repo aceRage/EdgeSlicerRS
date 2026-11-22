@@ -18,9 +18,16 @@
 //! What is refused here, each with what to do: a rack text on an extruder
 //! that holds fewer nozzles (the reference takes the text as it is), a
 //! rack of mixed nozzle kinds (Hybrid, ":high_flow" entries: not done
-//! yet), a pin on an automatic filament map (see [`check_pins`]), and a
-//! grouping that puts one extruder's filaments on rack nozzles of two
-//! sizes ([`check_one_size`]), which the reference only warns of.
+//! yet), a pin no extruder can take on an automatic filament map
+//! ([`check_automatic`]), and a grouping that puts one extruder's
+//! filaments on rack nozzles of two sizes ([`check_one_size`]), which the
+//! reference only warns of.
+//!
+//! Two rules differ from the pinned reference on purpose, both its errors
+//! (work/cppfix/pin/RULE.md, shared with the C++ fix, branch fix/rack-pins):
+//! filaments pinned to a size spread over free nozzles of it ([`pin`],
+//! rule S), and a pin is honoured on an automatic filament map
+//! ([`settle_automatic`], [`barred`], rule P).
 
 use edge_config::Settings;
 use edge_group::{GroupResult, NozzleInfo, VolumeType};
@@ -375,22 +382,189 @@ pub(crate) fn validate(settings: &Settings, used: &[u32]) -> Result<(), Failure>
     Ok(())
 }
 
-/// A filament pinned to a rack size or slot on an automatic filament map
-/// is refused. The reference reads the pin through the project's
-/// `filament_map` as saved, not through the map it is grouping: measured
-/// on h2c3_mix2_auto_pn (filament 1 pinned to 0.6, saved map 1,2,1), it
-/// grouped filament 1 onto the right extruder and printed it from a 0.4
-/// nozzle, its pin dropped without a word (ToolSlots.cpp l.497
-/// `filament_rack_pin`, `physical_extruder_of` on the config's map). Which
-/// extruder a pinned filament may go to is not something the grouping
-/// knows; that is left out.
+/// Whether `extruder` shows rack slot `slot` (from 1): it holds more than
+/// one nozzle and its rack lists at least two and at least `slot`
+/// (ToolSlots.cpp `rack_slot_count`).
+fn has_slot(settings: &Settings, racks: &[Vec<RackNozzle>], extruder: usize, slot: usize) -> bool {
+    let holds = counts(settings).get(extruder).copied().unwrap_or(1);
+    let listed = racks.get(extruder).map_or(0, Vec::len);
+    holds > 1 && listed >= 2 && listed >= slot
+}
+
+/// The extruders (from 0) that can take a pinned filament's pin, none
+/// where it is not pinned (work/cppfix/pin/RULE.md, "Which extruders can
+/// take a pin"): for a slot pin, the one extruder the slot belongs to (the
+/// saved extruder where it shows that slot, else the lowest that does);
+/// for a size pin, every extruder with a nozzle of that size (in its rack,
+/// or its own nozzle where it has no rack).
+pub(crate) fn pin_extruders(
+    settings: &Settings,
+    racks: &[Vec<RackNozzle>],
+    filament: usize,
+) -> Option<Vec<usize>> {
+    let nozzles = numbers(settings, "nozzle_diameter");
+    let slot = slot_pin(settings, filament);
+    if slot > 0 {
+        let saved = extruder_of(settings, filament);
+        let owner = if has_slot(settings, racks, saved, slot) {
+            Some(saved)
+        } else {
+            (0..nozzles.len()).find(|e| has_slot(settings, racks, *e, slot))
+        };
+        return Some(owner.into_iter().collect());
+    }
+    let size = numbers(settings, "filament_rack_nozzle_diameter")
+        .get(filament)
+        .copied()
+        .filter(|pin| *pin > 0.0)?;
+    Some(
+        (0..nozzles.len())
+            .filter(|e| match racks.get(*e).filter(|rack| !rack.is_empty()) {
+                Some(rack) => rack.iter().any(|nozzle| same(nozzle.diameter, size)),
+                None => same(nozzles[*e], size),
+            })
+            .collect(),
+    )
+}
+
+/// Whether the filament map is worked out by the grouping (any
+/// `filament_map_mode` but "Manual"; the reference's default is
+/// "Auto For Flush", `reference_defaults`).
+pub(crate) fn automatic(settings: &Settings) -> bool {
+    settings
+        .text("filament_map_mode")
+        .unwrap_or("Auto For Flush")
+        != "Manual"
+}
+
+/// Rule P, before the walls are laid: on an automatic filament map, a
+/// pinned filament whose saved extruder (`filament_map`) cannot take its
+/// pin is put on the lowest extruder that can, in `filament_map`, so the
+/// size it is sliced for (`filament_size`, `crate::nozzle_process`) and
+/// every later reading of its pin go by that extruder, its "pin extruder"
+/// (RULE.md); the grouping then bars the extruders that cannot take it
+/// ([`barred`]). A plate printed object by object reads this map as set by
+/// hand, as RULE.md has it. Unchanged where no extruder has a rack, on a
+/// manual map and on a printer of fewer than two extruders.
+///
+/// On purpose not the pinned reference: it reads the pin through the
+/// project's `filament_map` as saved, not the map the grouping works out
+/// (ToolSlots.cpp l.497 `filament_rack_pin`, l.196 `physical_extruder_of`;
+/// the grouping, ToolOrdering.cpp l.1985, knows nothing of pins), so a
+/// pinned filament the grouping moves loses its pin without a word
+/// (measured on h2c3_mix2_auto_pn: filament 1 pinned to 0.6, saved map
+/// 1,2,1, printed from a 0.4 nozzle, map 1,0,1). A C++ fix PR is being
+/// opened for it (aceRage/EdgeSlicer, branch fix/rack-pins).
+pub(crate) fn settle_automatic(settings: &mut Settings) {
+    let racks = racks(settings);
+    let extruders = numbers(settings, "nozzle_diameter").len();
+    if !automatic(settings) || racks.iter().all(Vec::is_empty) || extruders < 2 {
+        return;
+    }
+    let mut map: Vec<usize> = crate::nozzle_process::extruders_of(settings, extruders);
+    let mut changed = false;
+    for (filament, extruder) in map.iter_mut().enumerate() {
+        let Some(allowed) = pin_extruders(settings, &racks, filament) else {
+            continue;
+        };
+        if !allowed.contains(extruder)
+            && let Some(&lowest) = allowed.first()
+        {
+            *extruder = lowest;
+            changed = true;
+        }
+    }
+    if changed {
+        settings.insert(
+            "filament_map",
+            edge_config::Value::Many(map.iter().map(|e| (e + 1).to_string()).collect()),
+        );
+    }
+}
+
+/// Rule P's errors before the grouping, for the filaments the plate prints
+/// (`used`, from 0) on an automatic map (RULE.md E1), and what this engine
+/// cannot do besides: a pin to a size other than its extruder's own that
+/// more than one extruder could take (the process its walls are laid with
+/// would be settled only by the grouping; no printer this is done for has
+/// two racks).
+pub(crate) fn check_automatic(settings: &Settings, used: &[u32]) -> Result<(), Failure> {
+    let racks = racks(settings);
+    if !automatic(settings) || racks.iter().all(Vec::is_empty) || racks.len() < 2 {
+        return Ok(());
+    }
+    let nozzles = numbers(settings, "nozzle_diameter");
+    for filament in used {
+        let f = *filament as usize;
+        let Some(allowed) = pin_extruders(settings, &racks, f) else {
+            continue;
+        };
+        let slot = slot_pin(settings, f);
+        if allowed.is_empty() {
+            return Err(if slot > 0 {
+                format!(
+                    "Filament {} is set to print on rack slot {slot}, but no extruder's rack has \
+                     {slot} nozzles. (filament_rack_nozzle_slot); no G-code was written",
+                    f + 1
+                )
+            } else {
+                format!(
+                    "Filament {} asks for a {} mm rack nozzle, but no extruder has one. \
+                     (filament_rack_nozzle_diameter); no G-code was written",
+                    f + 1,
+                    size_text(size_pin(settings, &racks, f))
+                )
+            }
+            .into());
+        }
+        let pin = size_pin(settings, &racks, f);
+        let own = |e: usize| nozzles.get(e).copied().unwrap_or(0.0);
+        if allowed.len() > 1 && allowed.iter().any(|e| !same(own(*e), pin)) {
+            return Err(format!(
+                "Filament {} is pinned to a {} mm rack nozzle, which more than one extruder has, \
+                 on an automatic filament map: which process its walls are laid with would only \
+                 be settled by the grouping; set the filaments' nozzles by hand (Manual); no \
+                 G-code was written",
+                f + 1,
+                size_text(pin)
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// Rule P in the grouping: for each extruder, the used pinned filaments
+/// (from 0) it cannot take, to bar them from it (RULE.md "Grouping on an
+/// automatic map"); empty sets on a manual map or without a rack.
+pub(crate) fn barred(settings: &Settings, used: &[u32], extruders: usize) -> Vec<Vec<u32>> {
+    let mut bars = vec![Vec::new(); extruders];
+    let racks = racks(settings);
+    if !automatic(settings) || racks.iter().all(Vec::is_empty) || extruders < 2 {
+        return bars;
+    }
+    for filament in used {
+        if let Some(allowed) = pin_extruders(settings, &racks, *filament as usize) {
+            for (extruder, bar) in bars.iter_mut().enumerate() {
+                if !allowed.contains(&extruder) {
+                    bar.push(*filament);
+                }
+            }
+        }
+    }
+    bars
+}
+
+/// A filament pinned to a rack size or slot on an automatic filament map,
+/// on a printer without a nozzle rack, is refused as before: there is no
+/// rack nozzle to pin it to.
 pub(crate) fn check_pins(settings: &Settings, manual: bool) -> Result<(), Failure> {
-    if !manual && any_pins(settings) {
+    let rackless = racks(settings).iter().all(Vec::is_empty);
+    if !manual && rackless && any_pins(settings) {
         return Err(
             "a filament is pinned to a rack nozzle size or slot (filament_rack_nozzle_diameter, \
-             filament_rack_nozzle_slot) on an automatic filament map: which extruder it prints \
-             from is only settled by the grouping, which does not know the pin; set the \
-             filaments' nozzles by hand (Manual); no G-code was written"
+             filament_rack_nozzle_slot), but no extruder of this printer has a nozzle rack; \
+             clear the pin; no G-code was written"
                 .into(),
         );
     }
@@ -407,12 +581,63 @@ fn slot_index(nozzles: &[NozzleInfo], extruder: i32, slot: usize) -> Option<usiz
         .nth(slot.checked_sub(1)?)
 }
 
+/// The size `filament` (from 0) prints with on `extruder` (from 0): the
+/// rack size it is pinned to where that extruder's rack has it, else the
+/// extruder's own ([`filament_size`] for the extruder the grouping put it
+/// on, which on an automatic map is not the saved `filament_map`'s).
+fn size_on(
+    settings: &Settings,
+    racks: &[Vec<RackNozzle>],
+    filament: usize,
+    extruder: usize,
+) -> f64 {
+    let nozzles = numbers(settings, "nozzle_diameter");
+    let own = nozzles.get(extruder).copied().unwrap_or(0.0);
+    let Some(rack) = racks.get(extruder).filter(|rack| !rack.is_empty()) else {
+        return own;
+    };
+    let slot = slot_pin(settings, filament);
+    let pin = if slot > 0 {
+        rack.get(slot - 1).map_or(0.0, |nozzle| nozzle.diameter)
+    } else {
+        numbers(settings, "filament_rack_nozzle_diameter")
+            .get(filament)
+            .copied()
+            .unwrap_or(0.0)
+    };
+    if pin <= 0.0 {
+        return own;
+    }
+    rack.iter()
+        .find(|nozzle| same(nozzle.diameter, pin))
+        .map_or(own, |nozzle| nozzle.diameter)
+}
+
 /// ToolSlots.cpp `pin_rack_nozzle_diameters`: a used filament pinned to a
 /// slot goes to that slot's nozzle of the extruder the grouping put it on;
-/// on a rack of mixed sizes, one on a nozzle of another size than it
-/// prints with ([`filament_size`]) goes to the first nozzle of its
-/// extruder of that size (of the same kind where there is one). Returns how
+/// on a rack of mixed sizes, one on a nozzle of another size than it is
+/// sliced for goes to a nozzle of its extruder of that size. Returns how
 /// many moved.
+///
+/// Where a filament pinned to a size goes differs from the pinned
+/// reference on purpose (owner: "we should spread the pinned filaments
+/// sharing a nozzle one if another one is unused"; rule S of
+/// work/cppfix/pin/RULE.md, to the letter): the reference moves it to the
+/// FIRST nozzle of its size (ToolSlots.cpp l.619-669), so two filaments
+/// pinned to 0.6 share one 0.6 nozzle and flush into each other though
+/// another 0.6 stands unused (h2c3_mix4_2211_pn: map 2,2,0,0 with slot 4 a
+/// free 0.6). A C++ fix PR is being opened for it (aceRage/EdgeSlicer,
+/// branch fix/rack-pins).
+///
+/// Pass A, used filaments in order: a slot pin to its slot; on a rack of
+/// mixed sizes, a filament already on its size stays, one not pinned to a
+/// size goes to the first nozzle of its size (of its current nozzle's
+/// kind where there is one), as the reference; one pinned to a size waits
+/// for pass B. Pass B, those in order: of the nozzles of its extruder of
+/// its size, the one with the least (other kind, in use, number), "in use"
+/// being given to a used filament other than the ones of pass B not
+/// placed yet. So a free nozzle of the size first, the lowest slot; when
+/// every one is in use, the lowest (shared).
 pub(crate) fn pin(settings: &Settings, result: &mut GroupResult) -> usize {
     let racks = racks(settings);
     let slot_pins = has_slot_pins(settings);
@@ -420,17 +645,28 @@ pub(crate) fn pin(settings: &Settings, result: &mut GroupResult) -> usize {
     if !mixed && !slot_pins {
         return 0;
     }
-    let mut moved = 0;
-    for filament in result.used.clone() {
-        let f = filament as usize;
-        let Some(&current) = result.map.get(f) else {
-            continue;
-        };
-        let Some(now) = usize::try_from(current)
+    let now_of = |result: &GroupResult, f: usize| -> Option<(i32, NozzleInfo)> {
+        let current = *result.map.get(f)?;
+        let now = usize::try_from(current)
             .ok()
             .and_then(|n| result.nozzles.get(n))
-            .cloned()
-        else {
+            .cloned()?;
+        Some((current, now))
+    };
+    let of_size = |result: &GroupResult, extruder: i32, want: f64| -> Vec<usize> {
+        (0..result.nozzles.len())
+            .filter(|n| {
+                let nozzle = &result.nozzles[*n];
+                nozzle.extruder_id == extruder
+                    && positive(&nozzle.diameter).is_some_and(|d| same(d, want))
+            })
+            .collect()
+    };
+    let mut moved = 0;
+    let mut movers = Vec::new();
+    for filament in result.used.clone() {
+        let f = filament as usize;
+        let Some((current, now)) = now_of(result, f) else {
             continue;
         };
         let slot = if slot_pins { slot_pin(settings, f) } else { 0 };
@@ -446,23 +682,49 @@ pub(crate) fn pin(settings: &Settings, result: &mut GroupResult) -> usize {
         if !mixed {
             continue;
         }
-        let want = filament_size(settings, &racks, f);
+        let want = size_on(settings, &racks, f, now.extruder_id.max(0) as usize);
         if positive(&now.diameter).is_some_and(|have| same(have, want)) {
             continue;
         }
-        let of_size: Vec<usize> = (0..result.nozzles.len())
-            .filter(|n| {
-                let nozzle = &result.nozzles[*n];
-                nozzle.extruder_id == now.extruder_id
-                    && positive(&nozzle.diameter).is_some_and(|d| same(d, want))
-            })
-            .collect();
-        let target = (of_size.iter())
+        if size_pin(settings, &racks, f) > 0.0 {
+            movers.push(f);
+            continue;
+        }
+        let candidates = of_size(result, now.extruder_id, want);
+        let target = (candidates.iter())
             .find(|n| result.nozzles[**n].volume_type == now.volume_type)
-            .or(of_size.first());
+            .or(candidates.first());
         if let Some(target) = target {
             result.map[f] = *target as i32;
             moved += 1;
+        }
+    }
+    for (place, f) in movers.iter().copied().enumerate() {
+        let Some((current, now)) = now_of(result, f) else {
+            continue;
+        };
+        let want = size_on(settings, &racks, f, now.extruder_id.max(0) as usize);
+        let waiting = &movers[place..];
+        let in_use = |n: usize| {
+            (result.used.iter())
+                .map(|other| *other as usize)
+                .filter(|other| !waiting.contains(other))
+                .any(|other| result.map.get(other) == Some(&(n as i32)))
+        };
+        let target = of_size(result, now.extruder_id, want)
+            .into_iter()
+            .min_by_key(|n| {
+                (
+                    result.nozzles[*n].volume_type != now.volume_type,
+                    in_use(*n),
+                    *n,
+                )
+            });
+        if let Some(target) = target {
+            result.map[f] = target as i32;
+            if target as i32 != current {
+                moved += 1;
+            }
         }
     }
     moved
@@ -684,8 +946,73 @@ mod tests {
         settings.insert("filament_rack_nozzle_slot", many(&["0", "0", "2"]));
         let said = validate(&settings, &[2]).unwrap_err().to_string();
         assert!(said.contains("Left slot 2, but that rack has 0"), "{said}");
-        assert!(check_pins(&settings, false).is_err());
+        // A pin on an automatic map is honoured where there is a rack
+        // (rule P); refused only on a printer with none.
+        check_pins(&settings, false).unwrap();
+        settings.insert("extruder_max_nozzle_count", many(&["1", "1"]));
+        settings.insert("extruder_rack_nozzle_override", many(&["", ""]));
+        let said = check_pins(&settings, false).unwrap_err().to_string();
+        assert!(
+            said.contains("no extruder of this printer has a nozzle rack"),
+            "{said}"
+        );
         check_pins(&settings, true).unwrap();
+    }
+
+    /// Rule P (work/cppfix/pin/RULE.md): which extruders can take a pin,
+    /// the pin extruder put into the map on an automatic map, E1, and the
+    /// extruders barred in the grouping.
+    #[test]
+    fn a_pin_on_an_automatic_map_goes_to_an_extruder_that_can_take_it() {
+        let mut settings = h2c();
+        settings.insert(
+            "extruder_rack_nozzle_override",
+            many(&["", "0.4,0.6,0.4,0.6"]),
+        );
+        settings.insert("filament_map", many(&["1", "1", "1"]));
+        settings.insert("filament_rack_nozzle_diameter", many(&["0.6", "0.4", "0"]));
+        let racks = racks(&settings);
+        assert_eq!(pin_extruders(&settings, &racks, 0), Some(vec![1]));
+        // 0.4: the left's own nozzle and in the right's rack.
+        assert_eq!(pin_extruders(&settings, &racks, 1), Some(vec![0, 1]));
+        assert_eq!(pin_extruders(&settings, &racks, 2), None);
+        // A slot belongs to the one extruder that shows it.
+        settings.insert("filament_rack_nozzle_slot", many(&["0", "0", "4"]));
+        assert_eq!(pin_extruders(&settings, &racks, 2), Some(vec![1]));
+        // A manual map is left as it is.
+        let mut manual = settings.clone();
+        manual.insert(
+            "filament_map_mode",
+            edge_config::Value::One("Manual".into()),
+        );
+        settle_automatic(&mut manual);
+        assert_eq!(manual.texts("filament_map").unwrap(), ["1", "1", "1"]);
+        assert!(barred(&manual, &[0, 1, 2], 2).iter().all(Vec::is_empty));
+        // Automatic (the default): filaments 1 and 3 can only go right, 2
+        // keeps its saved extruder, which can take it.
+        settle_automatic(&mut settings);
+        assert_eq!(settings.texts("filament_map").unwrap(), ["2", "1", "2"]);
+        assert_eq!(filament_size(&settings, &racks, 0), 0.6);
+        assert_eq!(barred(&settings, &[0, 1, 2], 2), [vec![0, 2], vec![]]);
+        check_automatic(&settings, &[0, 1, 2]).unwrap();
+        validate(&settings, &[0, 1, 2]).unwrap();
+        // E1: no extruder can take the pin.
+        settings.insert("filament_rack_nozzle_diameter", many(&["0.8", "0", "0"]));
+        let said = check_automatic(&settings, &[0]).unwrap_err().to_string();
+        assert!(
+            said.starts_with("Filament 1 asks for a 0.8 mm rack nozzle, but no extruder has one."),
+            "{said}"
+        );
+        settings.insert("filament_rack_nozzle_slot", many(&["0", "0", "6"]));
+        let said = check_automatic(&settings, &[2]).unwrap_err().to_string();
+        assert!(
+            said.starts_with(
+                "Filament 3 is set to print on rack slot 6, but no extruder's rack has 6 nozzles."
+            ),
+            "{said}"
+        );
+        // An unused filament's pin is not checked.
+        check_automatic(&settings, &[1]).unwrap();
     }
 
     fn nozzles(sizes: &[(&str, i32)]) -> Vec<NozzleInfo> {
@@ -730,5 +1057,67 @@ mod tests {
         assert_eq!(pin(&settings, &mut result), 2);
         assert_eq!(result.map, [1, 1, 0]);
         check_one_size(&settings, &result).unwrap();
+    }
+
+    fn four_filaments(sizes: &[&str], slots: &[&str]) -> Settings {
+        let mut settings = h2c();
+        settings.insert(
+            "extruder_rack_nozzle_override",
+            many(&["", "0.4,0.6,0.4,0.6"]),
+        );
+        settings.insert("filament_diameter", many(&["1.75"; 4]));
+        settings.insert("filament_map", many(&["2", "2", "2", "1"]));
+        settings.insert("filament_rack_nozzle_diameter", many(sizes));
+        settings.insert("filament_rack_nozzle_slot", many(slots));
+        settings
+    }
+
+    /// Rule S (work/cppfix/pin/RULE.md, its worked examples 1-3 on the
+    /// rack 0.4,0.6,0.4,0.6: nozzles 0 left, 1-4 the right's slots).
+    fn spread(sizes: &[&str], slots: &[&str], map: Vec<i32>) -> Vec<i32> {
+        let settings = four_filaments(sizes, slots);
+        let list = nozzles(&[("0.4", 0), ("0.4", 1), ("0.6", 1), ("0.4", 1), ("0.6", 1)]);
+        let used = (0..map.len() as u32).collect();
+        let mut result = GroupResult::create(map, list, used).unwrap();
+        pin(&settings, &mut result);
+        check(&settings, &result).unwrap();
+        result.map
+    }
+
+    #[test]
+    fn filaments_pinned_to_a_size_spread_over_its_free_nozzles() {
+        let none = ["0"; 4];
+        // 1: two pinned to 0.6 with two free 0.6 nozzles: one to each (the
+        // reference: both on the first).
+        let six = ["0.6", "0.6", "0", "0"];
+        assert_eq!(spread(&six, &none, vec![1, 3, 0, 0]), [2, 4, 0, 0]);
+        // 2: three pinned, two nozzles: the third shares the lowest.
+        let six3 = ["0.6", "0.6", "0.6", "0"];
+        assert_eq!(spread(&six3, &none, vec![1, 1, 3, 0]), [2, 4, 2, 0]);
+        // 3: one already on its size stays; the other to the free one.
+        assert_eq!(spread(&six, &none, vec![4, 1, 0, 0]), [4, 2, 0, 0]);
+        // A slot pin is placed first and counts as in use, whatever order.
+        let size2 = ["0", "0.6", "0", "0"];
+        assert_eq!(
+            spread(&size2, &["2", "0", "0", "0"], vec![1, 3, 0, 0]),
+            [2, 4, 0, 0]
+        );
+        let size1 = ["0.6", "0", "0", "0"];
+        assert_eq!(
+            spread(&size1, &["0", "2", "0", "0"], vec![1, 1, 0, 0]),
+            [4, 2, 0, 0]
+        );
+        // A slot pin keeps its slot even where it shares.
+        assert_eq!(
+            spread(&size1, &["0", "2", "0", "0"], vec![2, 1, 0, 0]),
+            [2, 2, 0, 0]
+        );
+        // A filament still to move does not hold its nozzle: filament 1
+        // takes slot 4, which filament 2 (pinned to 0.4) leaves.
+        let mixed = ["0.6", "0.4", "0.6", "0"];
+        assert_eq!(spread(&mixed, &none, vec![1, 4, 2, 0]), [4, 1, 2, 0]);
+        // A filament not pinned goes to the first nozzle of its size, in use
+        // or not, as the reference.
+        assert_eq!(spread(&none, &none, vec![1, 2, 0, 0]), [1, 1, 0, 0]);
     }
 }
