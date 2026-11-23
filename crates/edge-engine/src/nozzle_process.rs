@@ -827,7 +827,7 @@ pub(crate) fn fill(
     let mode = settings
         .text("filament_map_mode")
         .unwrap_or("Auto For Flush");
-    if mode != "Manual" && !settled_by_pins(settings, &tools)? {
+    if !crate::rack::hand_set(mode) && !settled_by_pins(settings, &tools)? {
         return Err(refuse(&format!(
             "with filament_map_mode \"{mode}\" which nozzle each filament prints from, and so \
              the process its walls and fill are laid with, is only settled after they are laid; \

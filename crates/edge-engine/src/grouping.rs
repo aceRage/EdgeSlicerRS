@@ -258,19 +258,13 @@ fn machine(settings: &Settings) -> Result<Machine, Failure> {
     })
 }
 
-/// Where the parts and the prime tower lie for the nozzles: the
-/// filaments each extruder cannot print (Print.cpp, before the tower,
-/// `detect_extruder_geometric_unprintables` and the tower's reach). Every
-/// set is empty when each part and the tower lie where both nozzles reach
-/// and below both nozzles' heights; anything else is refused, as working
-/// out which filaments print there is not done.
-fn geometric(
-    settings: &Settings,
-    objects: &[(Vec<[f64; 2]>, f64)],
-    tower: Option<[f64; 4]>,
-) -> Result<Vec<BTreeSet<i32>>, Failure> {
-    let extruders = numbers(settings, "nozzle_diameter")?.len();
-    let empty = vec![BTreeSet::new(); extruders];
+/// Where each nozzle reaches (`extruder_printable_area`, a missing or
+/// degenerate one the whole bed) and how high it prints
+/// (`extruder_printable_height`, 0 for no limit of its own); none where the
+/// printer gives fewer than two areas.
+type Reach = (Vec<Vec<[f64; 2]>>, Vec<f64>);
+
+fn reach_areas(settings: &Settings) -> Result<Option<Reach>, Failure> {
     let point = |text: &str| -> Option<[f64; 2]> {
         let (x, y) = text.trim().split_once('x')?;
         Some([x.trim().parse().ok()?, y.trim().parse().ok()?])
@@ -294,20 +288,42 @@ fn geometric(
         areas.push(second);
     }
     if areas.len() < 2 || bed.len() < 3 {
-        return Ok(empty);
+        return Ok(None);
     }
     // A missing or degenerate area is the whole bed.
     let areas: Vec<Vec<[f64; 2]>> = (areas.into_iter())
         .map(|area| if area.len() >= 3 { area } else { bed.clone() })
         .collect();
     let heights = numbers(settings, "extruder_printable_height")?;
-    let limit = |e: usize| {
-        heights
-            .get(e)
-            .copied()
-            .filter(|h| h.is_finite() && *h > 0.0)
-            .unwrap_or(0.0)
+    let heights = (0..areas.len())
+        .map(|e| {
+            heights
+                .get(e)
+                .copied()
+                .filter(|h| h.is_finite() && *h > 0.0)
+                .unwrap_or(0.0)
+        })
+        .collect();
+    Ok(Some((areas, heights)))
+}
+
+/// Where the parts and the prime tower lie for the nozzles: the
+/// filaments each extruder cannot print (Print.cpp, before the tower,
+/// `detect_extruder_geometric_unprintables` and the tower's reach). Every
+/// set is empty when each part and the tower lie where both nozzles reach
+/// and below both nozzles' heights; anything else is refused, as working
+/// out which filaments print there is not done.
+fn geometric(
+    settings: &Settings,
+    objects: &[(Vec<[f64; 2]>, f64)],
+    tower: Option<[f64; 4]>,
+) -> Result<Vec<BTreeSet<i32>>, Failure> {
+    let extruders = numbers(settings, "nozzle_diameter")?.len();
+    let empty = vec![BTreeSet::new(); extruders];
+    let Some((areas, heights)) = reach_areas(settings)? else {
+        return Ok(empty);
     };
+    let limit = |e: usize| heights[e];
     let limited = areas.len() >= 2 && (1..areas.len()).any(|e| (limit(e) - limit(0)).abs() > 1e-6);
     for (hull, top) in objects {
         for (e, area) in areas.iter().enumerate() {
@@ -372,6 +388,78 @@ fn inside(area: &[[f64; 2]], p: [f64; 2], tolerance: f64) -> bool {
     true
 }
 
+/// Review change R1 (work/cppfix/pin/RULE.md): printed object by object
+/// on an automatic map, the pin rules move filaments off the plate's map
+/// (`crate::rack::settle_automatic`, `crate::rack::pin_bars`), and the
+/// map they give is the slice's; it is refused where a filament lands on a
+/// nozzle that cannot reach a part printed in it, with the reference's
+/// words (Print.cpp l.2924). Only where the pin rules apply (an automatic
+/// map, a rack, a used filament pinned): elsewhere by object nothing is
+/// moved and nothing new is checked. `map` is each filament's extruder
+/// from 1.
+fn reach_on_moved_map(
+    settings: &Settings,
+    map: &[i32],
+    bodies: &[(u32, Vec<[f64; 2]>, f64, usize)],
+) -> Result<(), Failure> {
+    let racks = crate::rack::racks(settings);
+    let pinned = bodies.iter().any(|(filament, ..)| {
+        crate::rack::pin_extruders(settings, &racks, *filament as usize).is_some()
+    });
+    if !crate::rack::automatic(settings) || racks.iter().all(Vec::is_empty) || !pinned {
+        return Ok(());
+    }
+    let Some((areas, heights)) = reach_areas(settings)? else {
+        return Ok(());
+    };
+    let printable_height = settings.float("printable_height")?.unwrap_or(0.0);
+    for (filament, points, top, object) in bodies {
+        let Some(extruder) = (map.get(*filament as usize))
+            .and_then(|e| usize::try_from(e - 1).ok())
+            .filter(|e| *e < areas.len())
+        else {
+            continue;
+        };
+        let area = &areas[extruder];
+        let height = if heights[extruder] > 0.0 {
+            heights[extruder]
+        } else {
+            printable_height
+        };
+        let high = height > 0.0 && *top > height + 0.01;
+        if !high && points.iter().all(|p| inside(area, *p, 1e-6)) {
+            continue;
+        }
+        let name = if areas.len() == 2 {
+            if extruder == 0 { "left" } else { "right" }.to_owned()
+        } else {
+            format!("nozzle {}", extruder + 1)
+        };
+        let (mut low, mut high) = ([f64::MAX; 2], [f64::MIN; 2]);
+        for p in area {
+            for axis in 0..2 {
+                low[axis] = low[axis].min(p[axis]);
+                high[axis] = high[axis].max(p[axis]);
+            }
+        }
+        return Err(format!(
+            "Filament {} is assigned to the {name} nozzle, but object {} is outside what that \
+             nozzle can reach (X:{:.0}-{:.0}, Y:{:.0}-{:.0}, Z:0-{:.0}). Move the object into the \
+             area the {name} nozzle reaches, or assign the filament to the other nozzle.; no \
+             G-code was written",
+            filament + 1,
+            object + 1,
+            low[0],
+            high[0],
+            low[1],
+            high[1],
+            height
+        )
+        .into());
+    }
+    Ok(())
+}
+
 /// The grouping for a plate on a printer the reference groups filaments
 /// onto two nozzles for. `layers` is each layer's filaments, from 0, in
 /// the order the layer lists them before it is put in order; `orders` the
@@ -380,13 +468,16 @@ fn inside(area: &[[f64; 2]], p: [f64; 2], tolerance: f64) -> bool {
 /// `by_plate_map`: the plate's own `filament_map` is taken whatever
 /// `filament_map_mode` says, as the reference groups copies printed one
 /// after another (GCode.cpp `_do_export`, ToolOrdering.cpp
-/// `group_by_plate_map`: the manual mode, nothing unprintable).
+/// `group_by_plate_map`: the manual mode, nothing unprintable); `bodies`,
+/// each printed body's filament (from 0), outline points, top and object
+/// (from 0), for the reach of a map the pin rules move there (R1).
 pub(crate) fn group(
     settings: &Settings,
     layers: Vec<Vec<u32>>,
     objects: &[(Vec<[f64; 2]>, f64)],
     tower: Option<[f64; 4]>,
     by_plate_map: bool,
+    bodies: &[(u32, Vec<[f64; 2]>, f64, usize)],
 ) -> Result<Grouped, Failure> {
     let mut settings = merged(settings);
     // A rack pin on an automatic map: the pinned filament's extruder one
@@ -404,12 +495,18 @@ pub(crate) fn group(
     crate::rack::validate(settings, &used)?;
     let machine = machine(settings)?;
     let filament_count = settings.texts("filament_colour").map_or(0, <[String]>::len);
-    let mode_name = if by_plate_map {
-        "Manual"
-    } else {
-        settings
-            .text("filament_map_mode")
-            .unwrap_or("Auto For Flush")
+    // A map set by hand, "Nozzle Manual" too, is grouped as "Manual"
+    // (`crate::rack::hand_set`, review change R3): on purpose not the
+    // pinned reference, whose grouping regroups a Nozzle Manual map for
+    // flush (ToolOrdering.cpp `get_recommended_filament_maps` tests
+    // `fmmManual` alone) while its checks take it as binding.
+    let mode_name = match settings
+        .text("filament_map_mode")
+        .unwrap_or("Auto For Flush")
+    {
+        _ if by_plate_map => "Manual",
+        own if crate::rack::hand_set(own) => "Manual",
+        own => own,
     };
     let mode = Mode::from_name(mode_name).ok_or_else(|| {
         format!("filament_map_mode \"{mode_name}\": not a grouping mode the reference knows")
@@ -500,6 +597,9 @@ pub(crate) fn group(
             map
         },
     };
+    if by_plate_map {
+        reach_on_moved_map(settings, &input.manual_map, bodies)?;
+    }
     crate::rack::check_pins(settings, mode == Mode::Manual)?;
     let mut grouping = edge_group::group_filaments(&machine, &input)?;
     // ToolOrdering.cpp l.1985 and l.2155: on a printer with a rack, every
@@ -690,7 +790,7 @@ mod tests {
             "filament_volume_map",
             edge_config::Value::Many(vec!["0".into(), "0".into(), "5".into()]),
         );
-        let grouped = group(&settings, vec![vec![0, 1]; 2], &[], None, false).unwrap();
+        let grouped = group(&settings, vec![vec![0, 1]; 2], &[], None, false, &[]).unwrap();
         let map = nozzle_map(&settings, grouped.grouping.as_ref().unwrap());
         assert_eq!(map.extruders, [2, 1, 2]);
         assert_eq!(map.nozzles, [1, 0, 1]);
@@ -703,7 +803,7 @@ mod tests {
 
     #[test]
     fn two_filaments_on_an_h2d_go_one_to_each_nozzle() {
-        let grouped = group(&h2d(), vec![vec![0, 1]; 3], &[], None, false).unwrap();
+        let grouped = group(&h2d(), vec![vec![0, 1]; 3], &[], None, false, &[]).unwrap();
         // Either way round costs the same, and the first tried wins:
         // filament 1 on the right nozzle. The reference, reading the one
         // matrix as half a matrix to each nozzle, gives [1, 2]
@@ -730,7 +830,7 @@ mod tests {
             edge_config::Value::One("Manual".into()),
         );
         rack.insert("filament_map", many(&["1", "2"]));
-        let grouped = group(&rack, vec![vec![0, 1]; 3], &[], None, false).unwrap();
+        let grouped = group(&rack, vec![vec![0, 1]; 3], &[], None, false, &[]).unwrap();
         assert_eq!(grouped.grouping.unwrap().result.nozzle_map(), [0, 1]);
         // Both on the right with a flush between them: the grouping puts
         // them on two of the rack's nozzles, which with the tower off are
@@ -741,18 +841,18 @@ mod tests {
             many(&["0", "199", "639", "0", "0", "199", "639", "0"]),
         );
         rack.insert("enable_prime_tower", edge_config::Value::One("0".into()));
-        let grouped = group(&rack, vec![vec![0, 1]; 3], &[], None, false).unwrap();
+        let grouped = group(&rack, vec![vec![0, 1]; 3], &[], None, false, &[]).unwrap();
         assert_eq!(grouped.grouping.unwrap().result.nozzle_map(), [2, 1]);
         // With the tower on too, which rams the outgoing filament first.
         let mut tower = rack.clone();
         tower.insert("enable_prime_tower", edge_config::Value::One("1".into()));
-        let grouped = group(&tower, vec![vec![0, 1]; 3], &[], None, false).unwrap();
+        let grouped = group(&tower, vec![vec![0, 1]; 3], &[], None, false, &[]).unwrap();
         assert_eq!(grouped.grouping.unwrap().result.nozzle_map(), [2, 1]);
         // Rack hotends taken as extruders (H3C) are refused.
         let mut h3c = h2d();
         h3c.insert("nozzle_diameter", many(&["0.4"]));
         h3c.insert("extruder_max_nozzle_count", many(&["9"]));
-        let said = group(&h3c, vec![vec![0]], &[], None, false)
+        let said = group(&h3c, vec![vec![0]], &[], None, false, &[])
             .unwrap_err()
             .to_string();
         assert!(said.contains("H3C"), "{said}");
@@ -792,13 +892,13 @@ mod tests {
         );
         rack.insert("filament_map", many(&["2", "1", "1"]));
         rack.insert("filament_rack_nozzle_diameter", many(&["0.6", "0", "0"]));
-        let grouped = group(&rack, vec![vec![0, 1, 2]; 3], &[], None, false).unwrap();
+        let grouped = group(&rack, vec![vec![0, 1, 2]; 3], &[], None, false, &[]).unwrap();
         let grouping = grouped.grouping.unwrap();
         assert_eq!(grouping.result.nozzle_map(), [2, 0, 0]);
         assert_eq!(grouping.filament_map, [2, 1, 1]);
         // Both sizes on the right: refused (the reference warns).
         rack.insert("filament_map", many(&["2", "2", "1"]));
-        let said = group(&rack, vec![vec![0, 1, 2]; 3], &[], None, false)
+        let said = group(&rack, vec![vec![0, 1, 2]; 3], &[], None, false, &[])
             .unwrap_err()
             .to_string();
         assert!(
@@ -813,27 +913,80 @@ mod tests {
             edge_config::Value::One("Auto For Flush".into()),
         );
         rack.insert("filament_map", many(&["1", "2", "1"]));
-        let grouped = group(&rack, vec![vec![0, 1, 2]; 3], &[], None, false).unwrap();
+        let grouped = group(&rack, vec![vec![0, 1, 2]; 3], &[], None, false, &[]).unwrap();
         let grouping = grouped.grouping.unwrap();
         assert_eq!(grouping.filament_map, [2, 1, 1]);
         assert_eq!(grouping.result.nozzle_map(), [2, 0, 0]);
         // Objects one after another: the plate's map, filament 1 put right
         // and filament 2 moved off the right to the left.
-        let grouped = group(&rack, vec![vec![0, 1, 2]; 3], &[], None, true).unwrap();
+        let grouped = group(&rack, vec![vec![0, 1, 2]; 3], &[], None, true, &[]).unwrap();
         assert_eq!(grouped.grouping.unwrap().filament_map, [2, 1, 1]);
+        // ... where the moved map is checked for reach (review change R1):
+        // filament 1, moved right (x 25-350), prints a part at x 10-50.
+        let part = |x: f64| vec![[x, 100.0], [x + 40.0, 100.0], [x + 40.0, 120.0], [x, 120.0]];
+        let inside = [(0, part(100.0), 20.0, 0), (1, part(10.0), 20.0, 1)];
+        group(&rack, vec![vec![0, 1, 2]; 3], &[], None, true, &inside).unwrap();
+        let outside = [(0, part(100.0), 20.0, 0), (0, part(10.0), 20.0, 1)];
+        let said = group(&rack, vec![vec![0, 1, 2]; 3], &[], None, true, &outside)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            said.starts_with(
+                "Filament 1 is assigned to the right nozzle, but object 2 is outside what that \
+                 nozzle can reach (X:25-350, Y:0-320, Z:0-325)."
+            ),
+            "{said}"
+        );
+        // A map set by hand is not checked here (nothing moves it).
+        let mut manual = rack.clone();
+        manual.insert(
+            "filament_map_mode",
+            edge_config::Value::One("Manual".into()),
+        );
+        manual.insert("filament_map", many(&["2", "1", "1"]));
+        group(&manual, vec![vec![0, 1, 2]; 3], &[], None, true, &outside).unwrap();
+        // Nozzle Manual is a map set by hand (review change R3): grouped as
+        // Manual, the pin read through it, not regrouped.
+        let mut nozzle_manual = manual.clone();
+        nozzle_manual.insert(
+            "filament_map_mode",
+            edge_config::Value::One("Nozzle Manual".into()),
+        );
+        let grouped = group(
+            &nozzle_manual,
+            vec![vec![0, 1, 2]; 3],
+            &[],
+            None,
+            false,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(grouped.grouping.unwrap().result.nozzle_map(), [2, 0, 0]);
+        nozzle_manual.insert("filament_map", many(&["1", "2", "1"]));
+        let said = group(
+            &nozzle_manual,
+            vec![vec![0, 1, 2]; 3],
+            &[],
+            None,
+            false,
+            &[],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(said.contains("but the Left extruder has none"), "{said}");
         // Two filaments (h2c4_two_auto_pn).
         rack.insert(
             "filament_map_mode",
             edge_config::Value::One("Auto For Flush".into()),
         );
         rack.insert("filament_map", many(&["1", "1", "1"]));
-        let grouped = group(&rack, vec![vec![0, 1]; 3], &[], None, false).unwrap();
+        let grouped = group(&rack, vec![vec![0, 1]; 3], &[], None, false, &[]).unwrap();
         let grouping = grouped.grouping.unwrap();
         assert_eq!(grouping.filament_map[0], 2);
         assert_eq!(grouping.result.nozzle_map()[0], 2);
         // A pin no extruder can take: refused (E1).
         rack.insert("filament_rack_nozzle_diameter", many(&["0.8", "0", "0"]));
-        let said = group(&rack, vec![vec![0, 1]; 3], &[], None, false)
+        let said = group(&rack, vec![vec![0, 1]; 3], &[], None, false, &[])
             .unwrap_err()
             .to_string();
         assert!(said.contains("but no extruder has one"), "{said}");
@@ -849,7 +1002,7 @@ mod tests {
             "filament_map",
             edge_config::Value::Many(vec!["1".into(), "1".into()]),
         );
-        let grouped = group(&settings, vec![vec![0, 1]; 3], &[], None, true).unwrap();
+        let grouped = group(&settings, vec![vec![0, 1]; 3], &[], None, true, &[]).unwrap();
         let grouping = grouped.grouping.unwrap();
         assert_eq!(grouping.filament_map, [1, 1]);
         assert_eq!(nozzle_map(&settings, &grouping).nozzles, [0, 0]);
@@ -872,7 +1025,7 @@ mod tests {
             "filament_map",
             edge_config::Value::Many(vec!["2".into(), "1".into()]),
         );
-        let grouped = group(&mixed, vec![vec![0, 1]], &[], None, false).unwrap();
+        let grouped = group(&mixed, vec![vec![0, 1]], &[], None, false, &[]).unwrap();
         assert_eq!(grouped.grouping.unwrap().filament_map, [2, 1]);
     }
 }
