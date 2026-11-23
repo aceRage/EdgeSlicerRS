@@ -2524,21 +2524,58 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // place; that is a flaw and is not followed. With one matrix for
     // both the two read the same.
     //
-    // On the H2C's rack this is the order too, a change priced at the
-    // matrix of the new filament's extruder, as the reference orders a
-    // rack's layers (one solver over the layer's filaments). Bambu's own
-    // per-nozzle order, the one the grouping prices a map at
-    // (`edge_group::reorder_for_nozzles`), was tried and left: it was no
-    // better on the fixtures (work/tower/h2c2: more rack changes on three
-    // of four, the time within a minute either way).
+    // Where the grouping placed the filaments on two extruders and the
+    // order goes by the matrix (a Bambu tower, or purging in the tower on
+    // one nozzle), the layers are instead ordered nozzle by nozzle, each
+    // nozzle from what it last held, by Bambu Studio's routine the
+    // grouping scores its maps with (`crate::order::by_nozzle`): on
+    // purpose not the pinned reference, whose layers take the chain below
+    // (ToolOrdering.cpp l.2266-2318); C++ fix PR aceRage/EdgeSlicer#1169
+    // brings it to the same order (ToolOrdering.cpp
+    // `order_layers_by_nozzle`, `reorder_extruders_for_minimum_flush_volume`).
+    // The chain stays for every other plate: one extruder, a toolchanger
+    // (the U1: no grouping), cyclic tool changes (every layer fixed, so
+    // the order is the cyclic one either way), and a plate printed object
+    // by object, which the reference orders object by object with no
+    // grouping to read (GCode.cpp l.4139, `ToolOrdering(const PrintObject&)`
+    // has no Print, so `order_layers_by_nozzle` is never reached there,
+    // whatever the matrix).
     let filament_count = settings.texts("filament_colour").map_or(0, <[String]>::len);
-    let mut orders = crate::order::layers(on_bed, &later, |from, to| {
-        let (old, new) = (tools[from] - 1, tools[to] - 1);
-        match &nozzles {
-            Some(map) => tower_settings.change_cost_on(old, new, map.extruder(new), filament_count),
-            None => tower_settings.change_cost(old, new),
+    let cyclic = settings.text("toolchange_ordering") == Some("cyclic");
+    let nozzle_orders = match &grouped_for_watch {
+        Some(grouped)
+            if tower_settings.order_by_flush
+                && !cyclic
+                && !crate::sequential::by_object(&settings) =>
+        {
+            (grouped.grouping.as_ref()).and_then(|grouping| {
+                crate::order::by_nozzle(
+                    &grouping.result,
+                    &grouped.input.flush,
+                    &grouped.input.layer_filaments,
+                )
+            })
         }
-    });
+        _ => None,
+    };
+    let mut orders = match nozzle_orders {
+        Some(sequences) => (sequences.iter())
+            .map(|layer| {
+                (layer.iter())
+                    .filter_map(|filament| tools.binary_search(&(*filament as usize + 1)).ok())
+                    .collect()
+            })
+            .collect(),
+        None => crate::order::layers(on_bed, &later, |from, to| {
+            let (old, new) = (tools[from] - 1, tools[to] - 1);
+            match &nozzles {
+                Some(map) => {
+                    tower_settings.change_cost_on(old, new, map.extruder(new), filament_count)
+                }
+                None => tower_settings.change_cost(old, new),
+            }
+        }),
+    };
     // Cyclic tool changes: every layer above the first, and the first
     // too where asked, in one fixed order (ToolOrdering.cpp
     // `reorder_extruders_for_minimum_flush_volume`, `get_custom_seq`).

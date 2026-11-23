@@ -2,7 +2,20 @@
 //! what it flushes (GCode/ToolOrderUtils.cpp `solve_extruder_order`,
 //! `get_extruders_order`, `reorder_filaments_for_minimum_flush_volume_base`,
 //! `reorder_filaments_for_multi_nozzle_extruder`). The grouping scores a
-//! way of putting filaments on nozzles by it.
+//! way of putting filaments on nozzles by it, and a plate the grouping has
+//! placed is printed in the order it gives (edge-engine `order::by_nozzle`),
+//! one implementation for both.
+//!
+//! The routine Bambu Studio orders a rack with (ToolOrderUtils.cpp l.1553,
+//! pinned) orders each nozzle by `reorder_filaments_for_minimum_flush_volume_base`
+//! (l.1019), which never looks a layer ahead (`use_forcast` is false there)
+//! and keeps one cache per nozzle keyed by the layer's filaments and the
+//! filament in hand. The look one layer ahead for five filaments or fewer
+//! (`solve_extruder_order_with_forcast`, l.826) belongs to
+//! `reorder_filaments_for_minimum_flush_volume` (l.1127), called only from
+//! the other overload of `reorder_filaments_for_multi_nozzle_extruder`
+//! (l.1406), which is compiled only under `DEBUG_MULTI_NOZZLE_MCMF`
+//! (l.1308-1551): nothing the reference runs reaches it, so it is not here.
 //!
 //! The reference adds a float to an int total, which rounds the float sum
 //! towards zero after each addition; that is kept (`add`), since the totals
@@ -291,7 +304,11 @@ fn reorder_base(
 /// nozzle's extruder, and the order they are taken in on each layer: one
 /// extruder's nozzles after the other's, starting with the extruder the
 /// layer before ended on (`reorder_filaments_for_multi_nozzle_extruder`,
-/// with nothing loaded at the start).
+/// ToolOrderUtils.cpp l.1553-1710, with nothing loaded at the start: an
+/// empty `NozzleStatusRecorder`, as both the grouping and the layer order
+/// call it). `custom` gives a layer's fixed order, filaments from 1: the
+/// layer keeps it, and the nozzles go on from it. More than twenty
+/// filaments on a nozzle are ordered greedily (`extruders_order`).
 pub fn reorder_for_nozzles(
     filaments: &[u32],
     grouping: &GroupResult,
@@ -460,5 +477,160 @@ mod tests {
         // and from 0: 0, 2 (100): 260, the half dropped.
         assert_eq!(cost, 260);
         assert_eq!(sequences, [vec![0, 2, 1], vec![1, 2, 0], vec![0, 2, 1]]);
+    }
+
+    fn two_nozzles() -> Vec<crate::nozzle::NozzleInfo> {
+        nozzle_list(&[
+            ("0.4".into(), VolumeType::STANDARD, 0, 1),
+            ("0.4".into(), VolumeType::STANDARD, 1, 1),
+        ])
+    }
+
+    /// Each nozzle flushing from what it last held, by its own matrix:
+    /// what the printer flushes for `order` after `held`.
+    fn rule_flush(order: &[u32], map: &[i32], flush: &[Vec<Vec<f32>>], held: [i64; 2]) -> f32 {
+        let mut held = held;
+        let mut total = 0.0;
+        for filament in order {
+            let e = map[*filament as usize] as usize;
+            if held[e] >= 0 && held[e] != i64::from(*filament) {
+                total += flush[e][held[e] as usize][*filament as usize];
+            }
+            held[e] = i64::from(*filament);
+        }
+        total
+    }
+
+    /// The C++ fix's own case (aceRage/EdgeSlicer#1169,
+    /// tests/libslic3r/test_flush_matrix_reading.cpp "The layer order reads
+    /// the matrix of the nozzle each change happens on"): filaments 0 and 1
+    /// on the left nozzle, 2 on the right, one matrix each; the first layer
+    /// fixed at filament 2, then a layer of all three.
+    #[test]
+    fn a_layer_is_ordered_nozzle_by_nozzle_from_the_fixed_first_layer() {
+        let left = vec![
+            vec![0.0, 290.0, 650.0],
+            vec![740.0, 0.0, 750.0],
+            vec![650.0, 550.0, 0.0],
+        ];
+        let right = vec![
+            vec![0.0, 240.0, 340.0],
+            vec![240.0, 0.0, 710.0],
+            vec![540.0, 60.0, 0.0],
+        ];
+        let flush = [left, right];
+        let map = [0, 0, 1];
+        let grouping = GroupResult::create(map.to_vec(), two_nozzles(), vec![0, 1, 2]).unwrap();
+        let layers = vec![vec![2], vec![0, 1, 2]];
+        let fixed = |layer: usize| (layer == 0).then(|| vec![3]);
+        let (_, sequences) = reorder_for_nozzles(&[0, 1, 2], &grouping, &layers, &flush, &fixed);
+        assert_eq!(sequences, [vec![2], vec![2, 0, 1]]);
+        assert_eq!(rule_flush(&sequences[1], &map, &flush, [-1, 2]), 290.0);
+        // No order of the layer flushes less.
+        for order in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            assert!(
+                rule_flush(&sequences[1], &map, &flush, [-1, 2])
+                    <= rule_flush(&order, &map, &flush, [-1, 2])
+            );
+        }
+    }
+
+    /// A nozzle's answer for a layer is kept by the layer's filaments and
+    /// the filament in hand (`caches` in
+    /// `reorder_filaments_for_minimum_flush_volume_base`): met again in
+    /// another order, the layer gets the first answer, though the solver,
+    /// whose ties fall by the order it is handed, would give another.
+    #[test]
+    fn a_layer_met_again_takes_the_answer_it_got_before() {
+        let mut matrix = vec![vec![45.0; 4]; 4];
+        for (at, row) in matrix.iter_mut().enumerate() {
+            row[at] = 0.0;
+        }
+        let grouping = GroupResult::create(vec![0; 4], two_nozzles(), vec![0, 1, 2, 3]).unwrap();
+        let layers = vec![vec![3], vec![0, 1, 2], vec![3], vec![2, 1, 0]];
+        let flush = [matrix.clone(), matrix.clone()];
+        let (_, sequences) =
+            reorder_for_nozzles(&[0, 1, 2, 3], &grouping, &layers, &flush, &|_| None);
+        assert_eq!(sequences[1], [2, 1, 0]);
+        assert_eq!(sequences[3], [2, 1, 0]);
+        // Uncached, the last layer from 3 would come out the other way.
+        let (order, _) = extruders_order(&matrix, &[2, 1, 0], Some(3));
+        assert_eq!(order, [0, 1, 2]);
+    }
+
+    /// More than twenty filaments on one nozzle are taken greedily, the
+    /// cheapest next each time (`solve_extruder_order_with_greedy`).
+    #[test]
+    fn more_than_twenty_filaments_are_taken_greedily() {
+        let count = 21;
+        let matrix: Vec<Vec<f32>> = (0..count)
+            .map(|from| {
+                (0..count)
+                    .map(|to| match to {
+                        _ if to == from => 0.0,
+                        _ if to == from + 1 => 1.0,
+                        _ => 100.0,
+                    })
+                    .collect()
+            })
+            .collect();
+        let tools: Vec<usize> = (0..count).rev().collect();
+        // From nothing in hand: the first handed, then the cheapest each
+        // time, a tie to the first handed (the dynamic programme would go
+        // 0, 1, ... 20 for 20).
+        let (order, cost) = extruders_order(&matrix, &tools, None);
+        assert_eq!(order, tools);
+        assert_eq!(cost, 2000.0);
+        let (order, cost) = extruders_order(&matrix, &tools, Some(0));
+        assert_eq!(order, (0..count).collect::<Vec<_>>());
+        assert_eq!(cost, 20.0);
+    }
+
+    /// Sixteen filaments on one nozzle and one on the other, 200 layers of
+    /// them, a quarter of the layers one short (the C++ fix's timing case):
+    /// every layer comes back whole, and a nozzle's order is cached.
+    #[test]
+    fn sixteen_filaments_on_one_nozzle_come_back_whole() {
+        let count = 17;
+        let matrix = |e: usize| -> Vec<Vec<f32>> {
+            (0..count)
+                .map(|from| {
+                    (0..count)
+                        .map(|to| {
+                            if from == to {
+                                0.0
+                            } else {
+                                (50 + (from * 37 + to * 11 + e * 5) % 500) as f32
+                            }
+                        })
+                        .collect()
+                })
+                .collect()
+        };
+        let mut map = vec![0; count];
+        map[count - 1] = 1;
+        let used: Vec<u32> = (0..count as u32).collect();
+        let grouping = GroupResult::create(map, two_nozzles(), used.clone()).unwrap();
+        let mut layers = vec![used.clone(); 200];
+        for layer in (0..layers.len()).step_by(4) {
+            layers[layer].remove(layer / 4 % count);
+        }
+        let (_, sequences) =
+            reorder_for_nozzles(&used, &grouping, &layers, &[matrix(0), matrix(1)], &|_| {
+                None
+            });
+        assert_eq!(sequences.len(), layers.len());
+        for (got, asked) in sequences.iter().zip(&layers) {
+            let mut got = got.clone();
+            got.sort_unstable();
+            assert_eq!(&got, asked);
+        }
     }
 }

@@ -114,6 +114,79 @@ pub(crate) fn layers(
     orders
 }
 
+/// Every layer's order nozzle by nozzle on a printer of two extruders whose
+/// filaments the grouping has placed (the H2D, H2C, X2D), as filaments
+/// from 0: each nozzle's filaments in the order its extruder's flush
+/// matrix (`flush`, multiplier applied, as the grouping reads it) makes
+/// cheapest from the filament that nozzle last held, one extruder's
+/// nozzles after the other's, starting with the extruder the layer before
+/// ended on. This is Bambu Studio's `reorder_filaments_for_multi_nozzle_extruder`
+/// (pinned GCode/ToolOrderUtils.cpp l.1553-1710), the routine the
+/// grouping scores its maps with (`edge_group::reorder_for_nozzles`, one
+/// implementation for both), so the order printed is the order the map
+/// was chosen for.
+///
+/// `lists` is each layer's filaments as the solver is handed them (the
+/// first layer in its settled order, the others as `handed` turns them;
+/// ties fall by it); the first layer keeps its order and the nozzles start
+/// from it. Nothing is loaded before it, as the reference has it
+/// (an empty `NozzleStatusRecorder`).
+///
+/// A deliberate difference from the pinned reference, whose layers are
+/// ordered by one chain over the whole layer whatever nozzle a filament
+/// prints from (ToolOrdering.cpp l.2266-2318,
+/// `reorder_extruders_for_minimum_flush_volume`, `get_extruders_order`):
+/// C++ fix PR aceRage/EdgeSlicer#1169 (3d8a87128a,
+/// `ToolOrdering::order_layers_by_nozzle`) brings the reference to this
+/// order. As there, none (the chain orders the plate) where a filament is
+/// numbered 32 or more (the routine keys its cache on a bit per
+/// filament), has no nozzle or lies outside its extruder's matrix, where
+/// there are not two matrices, or where a layer does not come back as the
+/// same filaments.
+pub(crate) fn by_nozzle(
+    grouping: &edge_group::GroupResult,
+    flush: &[edge_group::FlushMatrix],
+    lists: &[Vec<u32>],
+) -> Option<Vec<Vec<u32>>> {
+    if flush.len() != 2 || lists.is_empty() {
+        return None;
+    }
+    let used: Vec<u32> = (lists.iter().flatten().copied())
+        .collect::<std::collections::BTreeSet<u32>>()
+        .into_iter()
+        .collect();
+    for filament in &used {
+        let nozzle = grouping.nozzle_for(i64::from(*filament))?;
+        let matrix = usize::try_from(nozzle.extruder_id)
+            .ok()
+            .and_then(|extruder| flush.get(extruder))?;
+        if *filament >= 32 || *filament as usize >= matrix.len() {
+            return None;
+        }
+    }
+    // The first layer is fixed: its order is the bed's (`first_layer`)
+    // or the plate's own, and the reference hands the routine the same
+    // (`order_layers_by_nozzle`'s `fixed`). The plate's orders for its
+    // other layers are not followed here (see the notes the slice
+    // writes), and cyclic tool changes fix every layer, so the caller
+    // does not come here with them.
+    let first: Vec<i64> = lists[0].iter().map(|f| i64::from(*f) + 1).collect();
+    let fixed = |layer: usize| (layer == 0 && !first.is_empty()).then(|| first.clone());
+    let (_, sequences) = edge_group::reorder_for_nozzles(&used, grouping, lists, flush, &fixed);
+    if sequences.len() != lists.len() {
+        return None;
+    }
+    for (got, asked) in sequences.iter().zip(lists) {
+        let (mut got, mut asked) = (got.clone(), asked.clone());
+        got.sort_unstable();
+        asked.sort_unstable();
+        if got != asked {
+            return None;
+        }
+    }
+    Some(sequences)
+}
+
 /// The fixed order of cyclic tool changes (`toolchange_ordering`
 /// "cyclic"), as filament numbers from 1: `toolchange_cyclic_order`'s
 /// numbers ("3,2,1,4"), each kept once and only if it is one of the
@@ -201,6 +274,81 @@ mod tests {
 
     fn same(_: usize, _: usize) -> f32 {
         45.0
+    }
+
+    fn grouping(map: Vec<i32>, used: Vec<u32>) -> edge_group::GroupResult {
+        let nozzles = edge_group::nozzle_list(&[
+            ("0.4".into(), edge_group::VolumeType::STANDARD, 0, 1),
+            ("0.4".into(), edge_group::VolumeType::STANDARD, 1, 1),
+        ]);
+        edge_group::GroupResult::create(map, nozzles, used).unwrap()
+    }
+
+    /// The left nozzle's matrix of the C++ fix's case, on both nozzles.
+    fn matrix() -> Vec<Vec<f32>> {
+        vec![
+            vec![0.0, 290.0, 650.0],
+            vec![740.0, 0.0, 750.0],
+            vec![650.0, 550.0, 0.0],
+        ]
+    }
+
+    #[test]
+    fn nozzle_by_nozzle_keeps_the_first_layer_and_turns_no_nozzle_back() {
+        // 0 and 1 on the left, 2 on the right. The first layer starts on
+        // the left and keeps its order; the next starts on the extruder the
+        // first ended on and changes extruder once.
+        let grouping = grouping(vec![0, 0, 1], vec![0, 1, 2]);
+        let flush = vec![matrix(), matrix()];
+        let lists = vec![vec![0, 1], vec![2, 0, 1], vec![0, 1, 2]];
+        let orders = by_nozzle(&grouping, &flush, &lists).unwrap();
+        assert_eq!(orders[0], [0, 1]);
+        assert_eq!(orders[1], [1, 0, 2]);
+        // From 0 on the left and 2 on the right, ending on the right.
+        assert_eq!(orders[2], [2, 0, 1]);
+    }
+
+    #[test]
+    fn a_change_onto_the_other_nozzle_is_not_charged() {
+        // 0 and 1 on the left, 2 on the right; the first layer leaves 1 on
+        // the left and 2 on the right. The chain over the whole layer
+        // charges 2 -> 0 and 2 -> 1 though the right nozzle keeps 2, and
+        // takes 2, 0, 1 (10 + 500), which flushes 1 -> 0 -> 1 on the left:
+        // 600. Nozzle by nozzle: 2, then 1, 0 on the left: 100.
+        let matrix = vec![
+            vec![0.0, 500.0, 300.0],
+            vec![100.0, 0.0, 300.0],
+            vec![10.0, 1000.0, 0.0],
+        ];
+        let grouping = grouping(vec![0, 0, 1], vec![0, 1, 2]);
+        let lists = vec![vec![1, 2], vec![2, 0, 1]];
+        let orders = by_nozzle(&grouping, &[matrix.clone(), matrix.clone()], &lists).unwrap();
+        assert_eq!(orders, [vec![1, 2], vec![2, 1, 0]]);
+        let chain = layers(vec![1, 2], &[vec![0, 1, 2]], |a, b| matrix[a][b]);
+        assert_eq!(chain[1], [2, 0, 1]);
+    }
+
+    #[test]
+    fn plates_the_routine_cannot_take_keep_the_chain() {
+        let flush = vec![matrix(), matrix()];
+        let lists = vec![vec![0, 1], vec![0, 1, 2]];
+        // A filament with no nozzle.
+        let unplaced = grouping(vec![0, 0], vec![0, 1]);
+        assert!(by_nozzle(&unplaced, &flush, &lists).is_none());
+        // A filament outside its extruder's matrix.
+        let placed = grouping(vec![0, 0, 1], vec![0, 1, 2]);
+        let short = vec![matrix(), vec![vec![0.0; 2]; 2]];
+        assert!(by_nozzle(&placed, &short, &lists).is_none());
+        // Not two matrices.
+        assert!(by_nozzle(&placed, &flush[..1], &lists).is_none());
+        // A filament numbered 32 or more: the routine keys on a bit each.
+        let mut map = vec![0; 33];
+        map[32] = 1;
+        let big = grouping(map, vec![0, 32]);
+        let wide: Vec<Vec<f32>> = vec![vec![10.0; 33]; 33];
+        let far = vec![vec![0], vec![32, 0]];
+        assert!(by_nozzle(&big, &[wide.clone(), wide], &far).is_none());
+        assert!(by_nozzle(&placed, &flush, &[]).is_none());
     }
 
     #[test]
