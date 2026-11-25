@@ -94,7 +94,7 @@ fn each_nozzle_is_ordered_from_the_filament_it_holds() {
     // Filaments 1 and 2 on the left, 3 on the right. From 3 the chain over
     // the whole layer takes 3, 1, 2 (10 + 500 by this matrix), charging
     // 3 -> 1 though the right nozzle keeps 3, and flushes 2 -> 1 -> 2 on
-    // the left (600 mm³); nozzle by nozzle the layer is 3, then 2, 1 on the
+    // the left (600 mm³); extruder by extruder the layer is 3, then 2, 1 on the
     // left (100 mm³), and the next layer goes on from 1 on the left.
     let set = r##"{
         "filament_colour": ["#FF0000", "#00FF00", "#0000FF"],
