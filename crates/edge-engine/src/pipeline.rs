@@ -2525,21 +2525,23 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
     // both the two read the same.
     //
     // Where the grouping placed the filaments on two extruders and the
-    // order goes by the matrix (a Bambu tower, or purging in the tower on
-    // one nozzle), the layers are instead ordered nozzle by nozzle, each
-    // nozzle from what it last held, by Bambu Studio's routine the
-    // grouping scores its maps with (`crate::order::by_nozzle`): on
-    // purpose not the pinned reference, whose layers take the chain below
-    // (ToolOrdering.cpp l.2266-2318); C++ fix PR aceRage/EdgeSlicer#1169
-    // brings it to the same order (ToolOrdering.cpp
-    // `order_layers_by_nozzle`, `reorder_extruders_for_minimum_flush_volume`).
+    // order goes by the matrix (a Bambu tower, on or off, or purging in
+    // the tower on one nozzle), the layers are instead ordered by the
+    // routine Bambu Studio orders the printer with (`crate::order::by_nozzle`):
+    // extruder by extruder, looking one layer ahead, on the H2D and X2D
+    // (ToolOrderUtils.cpp `reorder_filaments_for_minimum_flush_volume`);
+    // nozzle by nozzle, as the grouping scores its maps, where an extruder
+    // has a nozzle rack (the H2C, `reorder_filaments_for_multi_nozzle_extruder`).
+    // On purpose not the pinned reference, whose layers take the chain
+    // below (ToolOrdering.cpp l.2266-2318); C++ fix PR aceRage/EdgeSlicer#1169
+    // brings it to the same order (work/cppfix/order/ORDER_RULE.md).
     // The chain stays for every other plate: one extruder, a toolchanger
     // (the U1: no grouping), cyclic tool changes (every layer fixed, so
-    // the order is the cyclic one either way), and a plate printed object
-    // by object, which the reference orders object by object with no
-    // grouping to read (GCode.cpp l.4139, `ToolOrdering(const PrintObject&)`
-    // has no Print, so `order_layers_by_nozzle` is never reached there,
-    // whatever the matrix).
+    // the order is the cyclic one either way), and every plate printed
+    // object by object, one object or several, whatever the matrix (the
+    // reference's own by-object G-code takes each object's
+    // `ToolOrdering(const PrintObject&)`, GCode.cpp l.4139, and PR 1169
+    // keeps the chain for the tower and the export alike).
     let filament_count = settings.texts("filament_colour").map_or(0, <[String]>::len);
     let cyclic = settings.text("toolchange_ordering") == Some("cyclic");
     let nozzle_orders = match &grouped_for_watch {
@@ -2553,6 +2555,7 @@ pub fn slice(job: Job, watch: &dyn Watcher) -> Result<Sliced, Failure> {
                     &grouping.result,
                     &grouped.input.flush,
                     &grouped.input.layer_filaments,
+                    grouped.machine.multi_nozzle,
                 )
             })
         }

@@ -114,39 +114,52 @@ pub(crate) fn layers(
     orders
 }
 
-/// Every layer's order nozzle by nozzle on a printer of two extruders whose
-/// filaments the grouping has placed (the H2D, H2C, X2D), as filaments
-/// from 0: each nozzle's filaments in the order its extruder's flush
-/// matrix (`flush`, multiplier applied, as the grouping reads it) makes
-/// cheapest from the filament that nozzle last held, one extruder's
-/// nozzles after the other's, starting with the extruder the layer before
-/// ended on. This is Bambu Studio's `reorder_filaments_for_multi_nozzle_extruder`
-/// (pinned GCode/ToolOrderUtils.cpp l.1553-1710), the routine the
-/// grouping scores its maps with (`edge_group::reorder_for_nozzles`, one
-/// implementation for both), so the order printed is the order the map
-/// was chosen for.
+/// Every layer's order on a printer of two extruders whose filaments the
+/// grouping has placed (the H2D, H2C, X2D), as filaments from 0, by the
+/// routine Bambu Studio orders such a printer with (the rule of C++ fix PR
+/// aceRage/EdgeSlicer#1169, work/cppfix/order/ORDER_RULE.md, after the
+/// lead's reading of Bambu Studio 02.09.01.70):
 ///
-/// `lists` is each layer's filaments as the solver is handed them (the
-/// first layer in its settled order, the others as `handed` turns them;
-/// ties fall by it); the first layer keeps its order and the nozzles start
-/// from it. Nothing is loaded before it, as the reference has it
-/// (an empty `NozzleStatusRecorder`).
+/// - an extruder with a nozzle rack (`rack`: `extruder_max_nozzle_count`
+///   above one on some extruder, the H2C): nozzle by nozzle,
+///   `reorder_filaments_for_multi_nozzle_extruder` (pinned
+///   GCode/ToolOrderUtils.cpp l.1553-1710, `edge_group::reorder_for_nozzles`,
+///   the routine the grouping scores its maps with): each nozzle's
+///   filaments from the filament that nozzle last held, by its extruder's
+///   matrix, without looking ahead; one extruder's nozzles after the
+///   other's, the nozzle used last first;
+/// - otherwise (the H2D, X2D): extruder by extruder,
+///   `reorder_filaments_for_minimum_flush_volume` (l.1127-1306,
+///   `edge_group::reorder_for_extruders`): each extruder's filaments from
+///   the filament it last printed, looking one layer ahead where the
+///   extruder prints five filaments or fewer on this layer and the next.
+///
+/// Either way the extruder printed last goes first on the next layer. On
+/// the H2D and X2D the grouping still scores its maps by the per-nozzle
+/// routine (FilamentGroup.cpp l.157), so the map is chosen by one routine
+/// and printed by the other: on purpose, as Bambu Studio does.
+/// `flush` is each extruder's matrix, multiplier applied, as the grouping
+/// reads it. `lists` is each layer's filaments as the solver is handed
+/// them (the first layer in its settled order, the others as `handed`
+/// turns them; ties fall by it); the first layer keeps its order and the
+/// routines go on from it. Nothing is loaded before it, as the reference
+/// has it (an empty `NozzleStatusRecorder` / `nozzle_status`).
 ///
 /// A deliberate difference from the pinned reference, whose layers are
 /// ordered by one chain over the whole layer whatever nozzle a filament
 /// prints from (ToolOrdering.cpp l.2266-2318,
 /// `reorder_extruders_for_minimum_flush_volume`, `get_extruders_order`):
-/// C++ fix PR aceRage/EdgeSlicer#1169 (3d8a87128a,
-/// `ToolOrdering::order_layers_by_nozzle`) brings the reference to this
-/// order. As there, none (the chain orders the plate) where a filament is
-/// numbered 32 or more (the routine keys its cache on a bit per
-/// filament), has no nozzle or lies outside its extruder's matrix, where
-/// there are not two matrices, or where a layer does not come back as the
-/// same filaments.
+/// C++ fix PR aceRage/EdgeSlicer#1169 (`ToolOrdering::order_layers_by_nozzle`)
+/// brings the reference to this order. As there, none (the chain orders
+/// the plate) where a filament is numbered 32 or more (the routines key
+/// their caches on a bit per filament), has no nozzle or lies outside its
+/// extruder's matrix, where there are not two matrices, or where a layer
+/// does not come back as the same filaments.
 pub(crate) fn by_nozzle(
     grouping: &edge_group::GroupResult,
     flush: &[edge_group::FlushMatrix],
     lists: &[Vec<u32>],
+    rack: bool,
 ) -> Option<Vec<Vec<u32>>> {
     if flush.len() != 2 || lists.is_empty() {
         return None;
@@ -167,12 +180,24 @@ pub(crate) fn by_nozzle(
     // The first layer is fixed: its order is the bed's (`first_layer`)
     // or the plate's own, and the reference hands the routine the same
     // (`order_layers_by_nozzle`'s `fixed`). The plate's orders for its
-    // other layers are not followed here (see the notes the slice
-    // writes), and cyclic tool changes fix every layer, so the caller
-    // does not come here with them.
+    // other layers (`other_layers_print_sequence`), which the reference
+    // keeps fixed, are not followed by this engine on any printer (see
+    // the notes the slice writes), and cyclic tool changes fix every
+    // layer, so the caller does not come here with them.
     let first: Vec<i64> = lists[0].iter().map(|f| i64::from(*f) + 1).collect();
     let fixed = |layer: usize| (layer == 0 && !first.is_empty()).then(|| first.clone());
-    let (_, sequences) = edge_group::reorder_for_nozzles(&used, grouping, lists, flush, &fixed);
+    let (_, sequences) = if rack {
+        edge_group::reorder_for_nozzles(&used, grouping, lists, flush, &fixed)
+    } else {
+        let extruders: Vec<i32> = (used.iter())
+            .map(|f| {
+                grouping
+                    .nozzle_for(i64::from(*f))
+                    .map_or(-1, |n| n.extruder_id)
+            })
+            .collect();
+        edge_group::reorder_for_extruders(&used, &extruders, lists, flush, &fixed)
+    };
     if sequences.len() != lists.len() {
         return None;
     }
@@ -301,7 +326,7 @@ mod tests {
         let grouping = grouping(vec![0, 0, 1], vec![0, 1, 2]);
         let flush = vec![matrix(), matrix()];
         let lists = vec![vec![0, 1], vec![2, 0, 1], vec![0, 1, 2]];
-        let orders = by_nozzle(&grouping, &flush, &lists).unwrap();
+        let orders = by_nozzle(&grouping, &flush, &lists, true).unwrap();
         assert_eq!(orders[0], [0, 1]);
         assert_eq!(orders[1], [1, 0, 2]);
         // From 0 on the left and 2 on the right, ending on the right.
@@ -322,10 +347,31 @@ mod tests {
         ];
         let grouping = grouping(vec![0, 0, 1], vec![0, 1, 2]);
         let lists = vec![vec![1, 2], vec![2, 0, 1]];
-        let orders = by_nozzle(&grouping, &[matrix.clone(), matrix.clone()], &lists).unwrap();
+        let orders =
+            by_nozzle(&grouping, &[matrix.clone(), matrix.clone()], &lists, false).unwrap();
         assert_eq!(orders, [vec![1, 2], vec![2, 1, 0]]);
         let chain = layers(vec![1, 2], &[vec![0, 1, 2]], |a, b| matrix[a][b]);
         assert_eq!(chain[1], [2, 0, 1]);
+    }
+
+    #[test]
+    fn the_h2d_looks_a_layer_ahead_and_the_rack_does_not() {
+        // Every filament on the left. From 0 the layer 1, 2 flushes least
+        // on its own (20 against 25), but 2, 1 leaves 1 in hand, from which
+        // the next layer's 3 costs nothing.
+        let matrix = vec![
+            vec![0.0, 10.0, 15.0, 50.0],
+            vec![50.0, 0.0, 10.0, 0.0],
+            vec![50.0, 10.0, 0.0, 100.0],
+            vec![50.0, 50.0, 50.0, 0.0],
+        ];
+        let grouping = grouping(vec![0; 4], vec![0, 1, 2, 3]);
+        let flush = vec![matrix.clone(), matrix];
+        let lists = vec![vec![0], vec![1, 2], vec![3]];
+        let h2d = by_nozzle(&grouping, &flush, &lists, false).unwrap();
+        let rack = by_nozzle(&grouping, &flush, &lists, true).unwrap();
+        assert_eq!(h2d[1], [2, 1]);
+        assert_eq!(rack[1], [1, 2]);
     }
 
     #[test]
@@ -334,21 +380,21 @@ mod tests {
         let lists = vec![vec![0, 1], vec![0, 1, 2]];
         // A filament with no nozzle.
         let unplaced = grouping(vec![0, 0], vec![0, 1]);
-        assert!(by_nozzle(&unplaced, &flush, &lists).is_none());
+        assert!(by_nozzle(&unplaced, &flush, &lists, false).is_none());
         // A filament outside its extruder's matrix.
         let placed = grouping(vec![0, 0, 1], vec![0, 1, 2]);
         let short = vec![matrix(), vec![vec![0.0; 2]; 2]];
-        assert!(by_nozzle(&placed, &short, &lists).is_none());
+        assert!(by_nozzle(&placed, &short, &lists, false).is_none());
         // Not two matrices.
-        assert!(by_nozzle(&placed, &flush[..1], &lists).is_none());
+        assert!(by_nozzle(&placed, &flush[..1], &lists, true).is_none());
         // A filament numbered 32 or more: the routine keys on a bit each.
         let mut map = vec![0; 33];
         map[32] = 1;
         let big = grouping(map, vec![0, 32]);
         let wide: Vec<Vec<f32>> = vec![vec![10.0; 33]; 33];
         let far = vec![vec![0], vec![32, 0]];
-        assert!(by_nozzle(&big, &[wide.clone(), wide], &far).is_none());
-        assert!(by_nozzle(&placed, &flush, &[]).is_none());
+        assert!(by_nozzle(&big, &[wide.clone(), wide], &far, false).is_none());
+        assert!(by_nozzle(&placed, &flush, &[], true).is_none());
     }
 
     #[test]

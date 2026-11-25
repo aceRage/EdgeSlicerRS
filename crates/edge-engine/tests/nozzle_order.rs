@@ -1,7 +1,7 @@
 //! The order of filaments within a layer on a printer of two extruders
-//! whose filaments the grouping places (a Bambu Lab H2D): nozzle by
-//! nozzle, each nozzle from the filament it last held (Bambu Studio's
-//! `reorder_filaments_for_multi_nozzle_extruder`, as C++ fix PR
+//! whose filaments the grouping places (a Bambu Lab H2D): extruder by
+//! extruder, each from the filament it last printed (Bambu Studio's
+//! `reorder_filaments_for_minimum_flush_volume`, as C++ fix PR
 //! aceRage/EdgeSlicer#1169 orders the layers; the pinned reference still
 //! takes one chain over the whole layer).
 

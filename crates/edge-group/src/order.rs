@@ -1,21 +1,28 @@
-//! The order filaments are taken in on each layer, nozzle by nozzle, and
-//! what it flushes (GCode/ToolOrderUtils.cpp `solve_extruder_order`,
-//! `get_extruders_order`, `reorder_filaments_for_minimum_flush_volume_base`,
-//! `reorder_filaments_for_multi_nozzle_extruder`). The grouping scores a
-//! way of putting filaments on nozzles by it, and a plate the grouping has
-//! placed is printed in the order it gives (edge-engine `order::by_nozzle`),
-//! one implementation for both.
+//! The order filaments are taken in on each layer, and what it flushes
+//! (GCode/ToolOrderUtils.cpp `solve_extruder_order`, `get_extruders_order`,
+//! `solve_extruder_order_with_forcast`,
+//! `reorder_filaments_for_minimum_flush_volume_base`,
+//! `reorder_filaments_for_minimum_flush_volume`,
+//! `reorder_filaments_for_multi_nozzle_extruder`).
 //!
-//! The routine Bambu Studio orders a rack with (ToolOrderUtils.cpp l.1553,
-//! pinned) orders each nozzle by `reorder_filaments_for_minimum_flush_volume_base`
-//! (l.1019), which never looks a layer ahead (`use_forcast` is false there)
-//! and keeps one cache per nozzle keyed by the layer's filaments and the
-//! filament in hand. The look one layer ahead for five filaments or fewer
-//! (`solve_extruder_order_with_forcast`, l.826) belongs to
-//! `reorder_filaments_for_minimum_flush_volume` (l.1127), called only from
-//! the other overload of `reorder_filaments_for_multi_nozzle_extruder`
-//! (l.1406), which is compiled only under `DEBUG_MULTI_NOZZLE_MCMF`
-//! (l.1308-1551): nothing the reference runs reaches it, so it is not here.
+//! Two routines, as Bambu Studio 02.09.01.70 uses them (the lead's reading,
+//! work/cppfix/order/ORDER_RULE.md):
+//!
+//! - [`reorder_for_nozzles`] (l.1553, nozzle by nozzle, no look-ahead:
+//!   `reorder_filaments_for_minimum_flush_volume_base`, l.1019, has
+//!   `use_forcast` false): the grouping scores every map with it
+//!   (FilamentGroup.cpp l.157), on every printer, and a plate with a nozzle
+//!   rack (the H2C) is printed in the order it gives;
+//! - [`reorder_for_extruders`] (l.1127, extruder by extruder, looking one
+//!   layer ahead where an extruder prints five filaments or fewer on this
+//!   layer and the next): a two-extruder plate without a rack (the H2D,
+//!   X2D) is printed in the order it gives. In this fork's C++ source its
+//!   only caller is the `DEBUG_MULTI_NOZZLE_MCMF` overload (l.1406); Bambu
+//!   Studio's own ToolOrdering calls it on the H2D, and C++ fix PR
+//!   aceRage/EdgeSlicer#1169 does the same.
+//!
+//! So on the H2D a map is scored by one routine and printed by the other,
+//! on purpose, as Bambu Studio does; on the H2C the two are one.
 //!
 //! The reference adds a float to an int total, which rounds the float sum
 //! towards zero after each addition; that is kept (`add`), since the totals
@@ -148,7 +155,7 @@ pub fn solve_order(
 
 /// The order of `tools` on one nozzle from `start`, and what it flushes by
 /// `matrix` (`get_extruders_order` without the look one layer ahead, which
-/// the grouping does not ask for).
+/// [`reorder_for_extruders`] asks for itself).
 pub fn extruders_order(
     matrix: &[Vec<f32>],
     tools: &[usize],
@@ -205,6 +212,243 @@ fn greedy(matrix: &[Vec<f32>], tools: &[usize], start: Option<usize>) -> (Vec<us
         visited[k] = true;
     }
     (order, cost)
+}
+
+/// The next permutation in lexicographic order (`std::next_permutation`):
+/// false, with `items` back in ascending order, after the last.
+fn next_permutation(items: &mut [u32]) -> bool {
+    let Some(pivot) = (1..items.len()).rev().find(|at| items[at - 1] < items[*at]) else {
+        items.reverse();
+        return false;
+    };
+    let pivot = pivot - 1;
+    let swap = (pivot + 1..items.len())
+        .rev()
+        .find(|at| items[*at] > items[pivot])
+        .unwrap_or(pivot);
+    items.swap(pivot, swap);
+    items[pivot + 1..].reverse();
+    true
+}
+
+/// The order of `current` on one nozzle from `start` that makes this layer
+/// and the next (`next`, ordered at its best) cheapest together, fewer
+/// filament changes breaking a tie, and what this layer's order flushes
+/// (ToolOrderUtils.cpp l.826 `solve_extruder_order_with_forcast`): every
+/// permutation of each, in ascending lexicographic order, the first best
+/// kept. Sums in single precision, as there.
+fn order_looking_ahead(
+    matrix: &[Vec<f32>],
+    current: &[u32],
+    next: &[u32],
+    start: Option<u32>,
+) -> (Vec<u32>, f32) {
+    let w = |a: u32, b: u32| matrix[a as usize][b as usize];
+    let changes = |this: &[u32], then: &[u32]| {
+        let mut count = 0;
+        let mut previous = start;
+        for filament in this.iter().chain(then) {
+            if previous.is_some_and(|p| p != *filament) {
+                count += 1;
+            }
+            previous = Some(*filament);
+        }
+        count
+    };
+    let mut current = current.to_vec();
+    current.sort_unstable();
+    let mut next = next.to_vec();
+    let (mut best_cost, mut best_change, mut best) = (f32::MAX, i32::MAX, Vec::new());
+    loop {
+        let mut previous = start;
+        let mut layer_cost = 0.0f32;
+        for filament in &current {
+            if let Some(p) = previous {
+                layer_cost += w(p, *filament);
+            }
+            previous = Some(*filament);
+        }
+        if layer_cost <= best_cost {
+            next.sort_unstable();
+            loop {
+                let mut then = previous;
+                let mut total = layer_cost;
+                let change = changes(&current, &next);
+                for filament in &next {
+                    if let Some(p) = then {
+                        total += w(p, *filament);
+                    }
+                    then = Some(*filament);
+                }
+                if total < best_cost || (total == best_cost && change < best_change) {
+                    best_cost = total;
+                    best.clone_from(&current);
+                    best_change = change;
+                }
+                if !next_permutation(&mut next) {
+                    break;
+                }
+            }
+        }
+        if !next_permutation(&mut current) {
+            break;
+        }
+    }
+    let mut cost = 0.0f32;
+    let mut previous = start;
+    for filament in &best {
+        if let Some(p) = previous {
+            cost += w(p, *filament);
+        }
+        previous = Some(*filament);
+    }
+    (best, cost)
+}
+
+/// Each extruder's order on every layer and what the layers flush, the
+/// filaments of each extruder ordered by that extruder's matrix from the
+/// filament it last held, the extruder printed last going first on the
+/// next layer (ToolOrderUtils.cpp l.1127-1306
+/// `reorder_filaments_for_minimum_flush_volume`, with nothing loaded at
+/// the start: an empty `nozzle_status`). `extruder_of[i]` is filament
+/// `filaments[i]`'s extruder (0 or 1; any other value is left out, as
+/// there). Where a layer and the next each print five filaments or fewer
+/// on the extruder, the order looks one layer ahead
+/// ([`order_looking_ahead`]); otherwise it is [`extruders_order`]'s.
+/// Each extruder keeps one cache, by the layer's filaments, the next
+/// layer's where it looks ahead, and the filament in hand.
+pub fn reorder_for_extruders(
+    filaments: &[u32],
+    extruder_of: &[i32],
+    layer_filaments: &[Vec<u32>],
+    flush: &[Vec<Vec<f32>>],
+    custom: &dyn Fn(usize) -> Option<Vec<i64>>,
+) -> (i32, Vec<Vec<u32>>) {
+    const MAX_N_WITH_FORECAST: usize = 5;
+    let mut groups: [BTreeSet<u32>; 2] = [BTreeSet::new(), BTreeSet::new()];
+    for (filament, extruder) in filaments.iter().zip(extruder_of) {
+        if let Ok(extruder) = usize::try_from(*extruder)
+            && extruder < 2
+        {
+            groups[extruder].insert(*filament);
+        }
+    }
+    let custom_layers = custom_layers(layer_filaments, custom);
+    let bit = |at: usize| {
+        u32::try_from(at)
+            .ok()
+            .and_then(|at| 1u128.checked_shl(at))
+            .unwrap_or(0)
+    };
+    let mut cost = 0i32;
+    let mut sequences_of: [Vec<Vec<u32>>; 2] = [Vec::new(), Vec::new()];
+    for (extruder, group) in groups.iter().enumerate() {
+        if group.is_empty() {
+            continue;
+        }
+        let matrix = flush.get(extruder).map_or(&[][..], Vec::as_slice);
+        let mut current: Option<u32> = None;
+        let mut caches: HashMap<u128, (f32, Vec<u32>)> = HashMap::new();
+        let in_group = |list: &[u32]| -> Vec<u32> {
+            list.iter().copied().filter(|f| group.contains(f)).collect()
+        };
+        for (layer, filaments) in layer_filaments.iter().enumerate() {
+            if let Some(sequence) = custom_layers.get(&layer) {
+                let kept = in_group(sequence);
+                let mut layer_cost = 0.0f32;
+                let mut previous = current;
+                for filament in &kept {
+                    if let Some(p) = previous {
+                        layer_cost += matrix[p as usize][*filament as usize];
+                    }
+                    previous = Some(*filament);
+                }
+                cost = add(cost, layer_cost);
+                if let Some(last) = kept.last() {
+                    current = Some(*last);
+                }
+                sequences_of[extruder].push(Vec::new());
+                continue;
+            }
+            let used = in_group(filaments);
+            let next =
+                (layer_filaments.get(layer + 1)).map_or_else(Vec::new, |next| in_group(next));
+            let forecast = used.len() <= MAX_N_WITH_FORECAST && next.len() <= MAX_N_WITH_FORECAST;
+            let mut key = current.map_or(0, |c| bit(64 + c as usize));
+            if forecast {
+                for filament in &next {
+                    key |= bit(32 + *filament as usize);
+                }
+            }
+            for filament in &used {
+                key |= bit(*filament as usize);
+            }
+            let (layer_cost, sequence) = caches
+                .entry(key)
+                .or_insert_with(|| match used.len() {
+                    0 | 1 => {
+                        let as_tools: Vec<usize> = used.iter().map(|f| *f as usize).collect();
+                        let (order, cost) =
+                            extruders_order(matrix, &as_tools, current.map(|c| c as usize));
+                        (cost, order.into_iter().map(|f| f as u32).collect())
+                    }
+                    _ if forecast => {
+                        let (order, cost) = order_looking_ahead(matrix, &used, &next, current);
+                        (cost, order)
+                    }
+                    _ => {
+                        let as_tools: Vec<usize> = used.iter().map(|f| *f as usize).collect();
+                        let (order, cost) =
+                            extruders_order(matrix, &as_tools, current.map(|c| c as usize));
+                        (cost, order.into_iter().map(|f| f as u32).collect())
+                    }
+                })
+                .clone();
+            if let Some(last) = sequence.last() {
+                current = Some(*last);
+            }
+            sequences_of[extruder].push(sequence);
+            cost = add(cost, layer_cost);
+        }
+    }
+    // The extruder that goes first: 0, or after a custom layer the one
+    // its last filament is on; a first custom layer at an odd layer
+    // turns the start (as there).
+    let mut last: usize = 0;
+    if let Some((first_layer, sequence)) = custom_layers.iter().next()
+        && let Some(first) = sequence.first()
+    {
+        let first_group = usize::from(!groups[0].contains(first));
+        last = if first_layer & 1 == 1 {
+            1 - first_group
+        } else {
+            first_group
+        };
+    }
+    let mut sequences = vec![Vec::new(); layer_filaments.len()];
+    for (layer, out) in sequences.iter_mut().enumerate() {
+        if let Some(sequence) = custom_layers.get(&layer) {
+            out.clone_from(sequence);
+            if let Some(back) = out.last() {
+                last = usize::from(!groups[0].contains(back));
+            }
+            continue;
+        }
+        let part = |extruder: usize| {
+            (sequences_of[extruder].get(layer))
+                .filter(|part| !part.is_empty())
+                .cloned()
+        };
+        let other = 1 - last;
+        if let Some(first) = part(last) {
+            out.extend(first);
+        }
+        if let Some(then) = part(other) {
+            out.extend(then);
+            last = other;
+        }
+    }
+    (cost, sequences)
 }
 
 /// The custom orders of the layers that have one, filaments from 0: each
@@ -306,7 +550,7 @@ fn reorder_base(
 /// layer before ended on (`reorder_filaments_for_multi_nozzle_extruder`,
 /// ToolOrderUtils.cpp l.1553-1710, with nothing loaded at the start: an
 /// empty `NozzleStatusRecorder`, as both the grouping and the layer order
-/// call it). `custom` gives a layer's fixed order, filaments from 1: the
+/// of a rack plate call it). `custom` gives a layer's fixed order, filaments from 1: the
 /// layer keeps it, and the nozzles go on from it. More than twenty
 /// filaments on a nozzle are ordered greedily (`extruders_order`).
 pub fn reorder_for_nozzles(
@@ -632,5 +876,140 @@ mod tests {
             got.sort_unstable();
             assert_eq!(&got, asked);
         }
+    }
+
+    fn lookahead_matrix() -> Vec<Vec<f32>> {
+        vec![
+            vec![0.0, 10.0, 15.0, 50.0],
+            vec![50.0, 0.0, 10.0, 0.0],
+            vec![50.0, 10.0, 0.0, 100.0],
+            vec![50.0, 50.0, 50.0, 0.0],
+        ]
+    }
+
+    /// `reorder_filaments_for_minimum_flush_volume` (ToolOrderUtils.cpp
+    /// l.1127) looks one layer ahead where both layers print five
+    /// filaments or fewer on the extruder: from 0, 1, 2 flushes least on
+    /// its own layer (20 against 25), but 2, 1 leaves 1 in hand, from which
+    /// the next layer's 3 costs nothing (25 against 120). Its cache keys on
+    /// the next layer too: the same layer from the same filament before a
+    /// layer of 0 is 1, 2 (70 against 75).
+    #[test]
+    fn an_extruder_looks_one_layer_ahead() {
+        let matrix = lookahead_matrix();
+        let flush = [matrix.clone(), matrix.clone()];
+        let layers = vec![vec![0], vec![1, 2], vec![3], vec![0], vec![1, 2], vec![0]];
+        let (_, ahead) =
+            reorder_for_extruders(&[0, 1, 2, 3], &[0, 0, 0, 0], &layers, &flush, &|_| None);
+        assert_eq!(ahead[1], [2, 1]);
+        assert_eq!(ahead[4], [1, 2]);
+        // The per-nozzle routine (l.1553) does not look ahead.
+        let grouping = GroupResult::create(vec![0; 4], two_nozzles(), vec![0, 1, 2, 3]).unwrap();
+        let (_, nozzle) = reorder_for_nozzles(&[0, 1, 2, 3], &grouping, &layers, &flush, &|_| None);
+        assert_eq!(nozzle[1], [1, 2]);
+    }
+
+    /// Above five filaments on a layer the extruder's order is the dynamic
+    /// programme's, from the filament in hand.
+    #[test]
+    fn above_five_filaments_an_extruder_does_not_look_ahead() {
+        let count = 7;
+        let matrix: Vec<Vec<f32>> = (0..count)
+            .map(|from| {
+                (0..count)
+                    .map(|to| {
+                        if from == to {
+                            0.0
+                        } else {
+                            (10 + (from * 7 + to * 3) % 23) as f32
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let six: Vec<u32> = (1..7).collect();
+        let layers = vec![vec![0], six.clone(), vec![0]];
+        let (_, got) = reorder_for_extruders(
+            &(0..7).collect::<Vec<u32>>(),
+            &[0; 7],
+            &layers,
+            &[matrix.clone(), matrix.clone()],
+            &|_| None,
+        );
+        let tools: Vec<usize> = six.iter().map(|f| *f as usize).collect();
+        let (expected, _) = extruders_order(&matrix, &tools, Some(0));
+        assert_eq!(
+            got[1],
+            expected.iter().map(|f| *f as u32).collect::<Vec<_>>()
+        );
+    }
+
+    /// Two extruders: the one printed last goes first on the next layer;
+    /// a fixed first layer is kept and the extruders go on from it.
+    #[test]
+    fn extruders_take_turns_from_a_fixed_first_layer() {
+        let matrix = lookahead_matrix();
+        let flush = [matrix.clone(), matrix.clone()];
+        // 0 and 1 on the left, 2 and 3 on the right.
+        let layers = vec![vec![2, 0], vec![0, 1, 2, 3], vec![0, 1, 2, 3]];
+        let fixed = |layer: usize| (layer == 0).then(|| vec![3, 1]);
+        let (_, got) = reorder_for_extruders(&[0, 1, 2, 3], &[0, 0, 1, 1], &layers, &flush, &fixed);
+        assert_eq!(got[0], [2, 0]);
+        // Ended on the left: left first (0 in hand: 0, 1), then the right
+        // (2 in hand: 2, 3), then the right first.
+        assert_eq!(got[1], [0, 1, 2, 3]);
+        assert_eq!(got[2][..2], [3, 2]);
+    }
+
+    /// The look-ahead is one layer wide and breaks a tie by the first
+    /// permutation (fixture h2_mix_four_2: every filament on one extruder,
+    /// 199 mm³ forward, 639 back). From 2, with all four on this layer
+    /// and the next, 2, 0, 1, 3 and 2, 3, 0, 1 each come to 2074 mm³ with
+    /// their best next layer and six changes; the first wins, and every
+    /// layer then costs 1037, where the plain solver also finds a layer of
+    /// 0, 1, 2, 3 (597) every fourth layer. As the reference's routine
+    /// does; on the plate 21,379 -> 22,259 mm³.
+    #[test]
+    fn the_look_ahead_takes_the_first_of_a_tie() {
+        let matrix: Vec<Vec<f32>> = (0..4)
+            .map(|from| {
+                (0..4)
+                    .map(|to| match to {
+                        _ if to == from => 0.0,
+                        _ if to > from => 199.0,
+                        _ => 639.0,
+                    })
+                    .collect()
+            })
+            .collect();
+        let all = [0, 1, 2, 3];
+        let (order, cost) = order_looking_ahead(&matrix, &all, &all, Some(2));
+        assert_eq!(order, [2, 0, 1, 3]);
+        assert_eq!(cost, 1037.0);
+        let mut other = [2u32, 3, 0, 1];
+        let total = |order: &[u32]| {
+            let mut previous = 2;
+            let mut sum = 0.0f32;
+            for f in order {
+                sum += matrix[previous as usize][*f as usize];
+                previous = *f;
+            }
+            sum
+        };
+        assert_eq!(total(&other), 1037.0);
+        other.sort_unstable();
+        assert_eq!(other, all);
+    }
+
+    #[test]
+    fn permutations_come_in_lexicographic_order() {
+        let mut items = vec![1, 2, 3];
+        let mut seen = vec![items.clone()];
+        while next_permutation(&mut items) {
+            seen.push(items.clone());
+        }
+        assert_eq!(seen.len(), 6);
+        assert_eq!(seen[1], [1, 3, 2]);
+        assert_eq!(items, [1, 2, 3]);
     }
 }
