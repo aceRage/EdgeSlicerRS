@@ -23,7 +23,7 @@ Contents: 1. Choices and why. 2. Starting, finding, stopping. 3. Framing.
 progress, cancel. 8. `PrintParams`. 9. Errors. 10. The access code.
 11. Security model. 12. C++ mapping, message by message. 13. What the
 bridge implementer decides. 14. What this app does with it. 15. Proposed
-for a later protocol minor.
+for a later protocol minor. 16. Protocol 1.1: the Bambu Lab account.
 
 ## 1. Choices and why
 
@@ -211,9 +211,12 @@ the protocol itself (section 9).
 
 What is **not** in the protocol, on purpose: `start_discovery` and
 `set_on_ssdp_msg_fn` (this app looks for no printer on the network; the
-bridge must not start discovery on its own either), everything of Bambu's
-cloud (`connect_server`, `start_print`, sign-in, `bind`, presets, model
-mall, tracking), the camera. A bridge may answer these with -32601.
+bridge must not start discovery on its own either), Bambu's cloud beyond
+the account of section 16 (`connect_server`, the cloud MQTT session,
+`start_print` through the cloud, `bind`, presets, model mall, tracking),
+the camera. A bridge may answer these with -32601. The plug-in's own
+sign-in entry points (`change_user`, `user_logout`, ...) are not methods
+either: section 16's `account_*` methods stand for them.
 
 The plug-in holds **one** LAN session at a time (`connect_printer` takes no
 handle back; `disconnect_printer` takes no `dev_id`). So does the protocol:
@@ -397,7 +400,9 @@ read, in English, **never** holding an access code.
   their own data folder or beside the app). The app does not verify a
   signature; a later version may (13).
 - The bridge talks to the printer the app names in `connect_printer` and
-  `PrintParams.dev_ip`, and to nothing else: no discovery, no cloud.
+  `PrintParams.dev_ip`, and to nothing else: no discovery, no cloud but
+  the account's REST calls of section 16 (made only for an `account_*`
+  request: no cloud MQTT, no printing through the cloud).
 - Everything that makes a printer act (`start_*`, the `print` commands of
   `send_message_to_printer`) is sent only after the person confirmed it in
   the app, with the reference's own confirmations.
@@ -574,8 +579,11 @@ Bambu Lab printer", lists each step):
 
 **Proposed, not in force.** A bridge of protocol 1.0 need not answer any of
 this; each is an addition an older reader can ignore (section 4: `minor`),
-offered in `methods` / `events` when a bridge has it. A bridge that offers
-them answers `hello` with `minor` 1. Written down so the Bambu Device page's
+offered in `methods` / `events` when a bridge has it. Minor 1 went to the
+account (section 16), so a bridge that offers these answers `hello` with
+the minor after it, 2 (this section first named minor 1 for them; the app
+decides by `methods`, never by the minor's number, so nothing it does
+changed). Written down so the Bambu Device page's
 remaining parts (UI_PARITY.md section 4, "One Device page for every printer
 family") have a contract to be built against, and **the app side is built
 against it**: each part of the page is drawn only when the bridge lists its
@@ -629,3 +637,189 @@ minor that offers all of it; `camera_frame`'s `seq`, size limit and
 "only for a printer whose camera was started" stated; `camera_stop`,
 `files_delete` and `firmware_upgrade` answer `{ret}` (and `refused`);
 `files_list`'s `path` and `time` defined. Protocol 1.0 is unchanged.
+
+## 16. Protocol 1.1: the Bambu Lab account
+
+**In force.** The owner's decision (2026-11-26): the app signs in to a Bambu
+Lab account, shows who is signed in and the account's printers, and prints
+to those printers **over the LAN** with the access code the account gives.
+Printing through Bambu's cloud stays out (section 5). Everything here is an
+addition an older reader ignores: a bridge that offers it answers `hello`
+with `minor` 1 and lists the methods and the event below. The app needs
+minor 0 still; it offers "Log in to Bambu Account..." only when the running
+bridge lists `account_sign_in`, `account_restore`, `account_sign_out` and
+`account_printers`, and says otherwise that the bridge is too old for it.
+
+The reference this follows (at the pin, c9aec301bd):
+`src/slic3r/GUI/WebUserLoginDialog.cpp` (the sign-in page and what it hands
+back), `src/slic3r/Utils/LoginUserAgent.cpp` (its User-Agent),
+`src/slic3r/GUI/GUI_App.cpp` (sign-out, an expired session),
+`src/slic3r/GUI/MainFrame.cpp` l.3297-3307 (the Account menu),
+`src/slic3r/GUI/DeviceManager.cpp` (the account's printers); and UltraNet's
+`UltraNetAgent.cpp` (`changeUser`, `restoreSession`, `cloudRefresh`,
+`userLogout`) and `BambuCloud.hpp` (the REST calls).
+
+### 16.1 The sign-in page, and what the bridge is given
+
+The page is Bambu's own, `<bambulab host>/sign-in` (the bare path, not
+localed: WebUserLoginDialog.cpp l.84-90; the host is
+`bambu_network_get_bambulab_host`, `https://bambulab.com` in UltraNet,
+UltraNetAgent.cpp `bambulabHost`). The **app** shows it, in a window of its
+own that loads nothing else (section 16.6); the bridge never sees the page.
+The page runs its slicer sign-in only for a User-Agent that ends in
+`BBL-Slicer/v02.08.02.61 (<dark|light>) BBL-Language/<en>`, after a browser
+prefix (LoginUserAgent.cpp `bbl_login_user_agent`; the version is the one
+bambulab.com gates on, `BBL_LOGIN_UA_VERSION`, not the slicer's own). It
+hands its result to the slicer as a script message, `window.wx.postMessage`
+of a JSON text (WebUserLoginDialog.cpp l.273-424):
+
+| `command` | `data` | The reference | Here |
+| --- | --- | --- | --- |
+| `user_ticket_login` | `ticket`: a short-lived ticket | l.303-370: `get_my_token(ticket)`, then `get_my_profile(accessToken)`, then `change_user` with the tokens and the profile | `account_sign_in {ticket}` |
+| `user_login` | `token`, `refresh_token`, `expires_in`, `refresh_expires_in`, `user {uid, name, account, avatar}` | l.285-302: `change_user(<the message>)` | `account_restore` with those tokens |
+| `get_localhost_url`, `thirdparty_login`, `new_webpage` | | l.371-419: Google / Apple sign-in through the system's browser and a listener on `localhost:13650` | **not built**: it needs a listening port (section 11: nothing listens) and another application; the window says the sign-in with a password is the one offered |
+| `autotest_token` | | l.281-284 | ignored |
+
+### 16.2 Methods
+
+| Method | Params | Result | UltraNet / reference |
+| --- | --- | --- | --- |
+| `account_sign_in` | `ticket` | `{ret, http, user, session}` | `bambu_network_get_my_token`, `bambu_network_get_my_profile` (`uidStr`, `name`), `bambu_network_change_user` with the message WebUserLoginDialog.cpp l.344-354 builds |
+| `account_restore` | `session`, `user` | `{ret, http, user, session?}` | the rule of `Agent::restoreSession` (UltraNetAgent.cpp l.1400-1431), the session given by the app instead of read from a store; `change_user` |
+| `account_refresh` | `{}` | `{ret, http, session?}` | `cloud_refresh_session` (BambuCloud.hpp; `Agent::cloudRefresh`, UltraNetAgent.cpp l.1434-1470), then `change_user` |
+| `account_sign_out` | `{}` | `{}` | `bambu_network_user_logout` (GUI_App.cpp `request_user_logout` l.6445) |
+| `account_profile` | `{}` | `{signed_in, user}` | `is_user_login`, `get_user_id`, `get_user_name`; asks nothing of the cloud |
+| `account_printers` | `{}` | `{ret, http, printers, session?}` | `GET /v1/iot-service/api/user/bind` (`cloud_get_user_printers`, reshaped by `cloud_reshape_printers`): what `DeviceManager::update_user_machine_list_info` and `parse_user_print_info` read (DeviceManager.cpp l.8669-8755) |
+
+| Event | Params | When |
+| --- | --- | --- |
+| `account_expired` | `{}` | the bridge ended the session because the cloud refused it and its refresh (GUI_App.cpp l.6873-6880: a 401 signs out, "Login information expired. Please login again.") |
+
+The shapes:
+
+- `user`: `{id, name}` (`uidStr` and `name` of the profile; the reference's
+  `get_user_id`, `get_user_name`). The account's e-mail (`account`) and the
+  avatar are not passed: the app shows the name only, and the page loads
+  nothing from the network (an avatar is a URL of Bambu's).
+- `session`: `{access_token, refresh_token, expires_in, refresh_expires_in,
+  acquired_at}`: the two tokens as strings, the lifetimes in seconds
+  (`expiresIn`, `refreshExpiresIn` of the ticket and refresh answers), and
+  when they were issued (seconds since 1970, the bridge's clock). In a
+  result it is present when the call made new tokens (always for
+  `account_sign_in`; for `account_restore`, `account_refresh` and
+  `account_printers` when a refresh was made), and the app keeps it in
+  place of the one it had.
+- `printers`: `[{dev_id, dev_name, dev_online, dev_model_name, task_status,
+  dev_access_code}]`, `parse_user_print_info`'s fields as
+  `cloud_reshape_printers` gives them. The cloud gives no address (the
+  reference takes it from its own `app_config` `ip_address`, written when it
+  saw the printer on the LAN, DeviceManager.cpp l.8695-8698): the app asks
+  the person for it (section 16.5).
+- `ret`: 0 done; -1 the cloud refused or could not be reached (`http` is the
+  HTTP status of the call that failed, 0 when no answer came); -2 the
+  session is over (the access token expired or was refused, and so was its
+  refresh: the bridge is signed out, `account_expired` is sent, the app
+  signs out); -3 not signed in (`account_refresh`, `account_printers` before
+  a sign-in or restore). A ticket or token of the wrong form (anything but
+  letters, digits and `-._~+/=`, or longer than 8 KiB) is error -32602:
+  UltraNet puts the ticket into a URL path and the refresh token into a JSON
+  text as they are.
+
+**`account_restore`** (the rule of `restoreSession`, its margin of 300 s):
+the access token is good while `acquired_at + expires_in - 300` is after
+now: `change_user` with the session as it is, no call to the cloud. Else the
+refresh token is good while `acquired_at + refresh_expires_in - 300` is
+after now: a refresh, then `change_user` with the new tokens, which come back
+in `session`. Else, or when the refresh is refused: `ret` -2. A restore while
+signed in first signs out (the plug-in keeps one user).
+
+**`account_printers`**: a 401 from the cloud is answered as the reference's
+HTTP error handler would (GUI_App.cpp l.6873): the bridge refreshes once
+and asks again; a refused refresh is `ret` -2. Any other failure is `ret`
+-1 with `http`, and **never** an empty list: the app keeps the printers it
+had (UltraNet's own `get_user_print_info` answers 0 with an empty list on a
+failure, which is why the bridge calls the REST function itself).
+
+### 16.3 Timing
+
+The `account_*` methods call the cloud (two calls for `account_sign_in`, up
+to three for `account_printers`; UltraNet's HTTPS client waits up to 20 s
+for each connect, send and receive). They are therefore not under the 10 s
+rule of section 3: the bridge runs them one at a time on a thread of their
+own (so LAN requests are not held behind them), never answers them with a
+time-out of its own, and answers each within 150 s; the app waits 160 s. If
+the app gives up on one all the same, it sends `account_sign_out` and
+forgets the session it had asked about, so neither side keeps a session the
+other does not know of (a late result is dropped, as any late answer is).
+`account_profile` and `account_sign_out` touch no network and are short
+requests.
+
+### 16.4 The tokens and the account's access codes
+
+They are secrets as the access code is (section 10), with one place each:
+
+- The **ticket** travels in `account_sign_in.ticket` only. The tokens travel
+  in `account_restore.session` and in the results' `session`; the access
+  codes in `account_printers`' `dev_access_code`. Nowhere else: never in an
+  event, an error, a log, standard error, a file of the bridge's, argv or
+  the environment.
+- The bridge keeps them in memory for the session (UltraNet holds the tokens
+  for its calls) and writes them nowhere: its session store is
+  `bridge/SessionStoreOff.cpp`, which keeps nothing, so the session lives
+  only in the app's store and in the bridge's memory while it runs. The
+  bridge removes every ticket, token and account code it has seen from every
+  event and error it writes, as it does the access codes, and overwrites its
+  copies of the parameters when a request ends. UltraNet's own log
+  (`ultranet_print.log`) gets, on a failed call only, the request's shape
+  with the credentials taken out (BambuCloud.hpp's `diag`).
+- **The app keeps them in the system's store**, in the one item of section
+  10, under a versioned field of its own:
+  `{ "version": 1, "codes": {...}, "account": { "version": 1, "user": {id,
+  name}, "session": {...}, "codes": { "<serial>": "<code>" } } }`. An older
+  app reads `codes` and ignores `account` (it would drop it on its next
+  write: the person signs in again). The account's codes are kept apart
+  from the codes typed for a printer, so signing out removes exactly them.
+  In the file fallback (`bambu_printers_secrets.json`) the same object is
+  kept under the id `@account`. The store is read when the account is
+  needed (sign-in, sign-out, "Refresh", a send to an account printer), never
+  when the app starts or a page is looked at: who is signed in and the list
+  of the account's printers (no codes) are kept in `bambu_printers.json` so
+  Device can show them.
+- The page is told who is signed in (the name), the account's printers
+  without their codes, and states. Never a token, a ticket or a code. The
+  app removes all three from anything the bridge says before it shows it.
+
+### 16.5 What the app does with the account's printers
+
+`parse_user_print_info` keeps the account's printers apart from those
+added on the LAN (`userMachineList` and `localMachineList`), and a printer's
+code typed by the person (`user_access_code`) wins over the one the cloud
+gives (`access_code`; `MachineObject::get_access_code`, DeviceManager.cpp
+l.502-507). The app does the same: Device lists the printers added by hand
+and those of the account (marked as the account's; one in both is listed
+once, its address and typed code its own), the account's codes kept in the
+store's `account` field. A printer of the account with no address asks for
+one before it can be connected (the reference reads its last seen address
+from `app_config`; this app looks for none on the network). **Signing out**
+(`request_user_logout`, `clean_user_info` DeviceManager.cpp l.8393-8411)
+removes the account's printers and their codes; a printer also added by
+hand stays, with its own address and code. The reference keeps a code the
+cloud gave in `app_config`'s `access_code` after the sign-out (it clears it
+only in memory); here it goes with the account.
+
+### 16.6 The sign-in window (the app's side, for the bridge implementer's information)
+
+A window of the app's own (`bambu-sign-in`), titled "Login", 650 x 840
+(WebUserLoginDialog.cpp l.131-134), that shows only the sign-in page: it
+navigates only to `https` pages of `bambulab.com` and its subdomains
+(anything else is refused and not opened elsewhere), opens no other
+window, has no access to the app's calls (Tauri allows none to a remote
+page, and each of the app's commands refuses any window but the main one),
+and hands the result back without a call: a script the window runs first
+defines `window.wx.postMessage`, which turns the message into a navigation
+to `https://sign-in-result.edgeslicer.invalid/#<the message>`; the window's
+navigation guard stops that navigation (the `.invalid` name never resolves,
+RFC 6761), reads the message there and hands it to the Rust side, which
+calls the bridge. The ticket never reaches the main page. A test-only
+override (`EDGE_BAMBU_SIGN_IN=http://127.0.0.1:<port>/...`, loopback only,
+refused otherwise) points the window at a local page; no test opens it.
