@@ -300,8 +300,10 @@ pub fn run(client: &Client, plan: Plan, progress: &Arc<Mutex<Progress>>, cancel:
                                 tr("The network plug-in reported: %1%").replace("%1%", &detail)
                             );
                         }
-                        fail(headline, more, ret, false);
+                        // Before the failure is told: a poll that sees
+                        // it done sees the offer too.
                         set(&|p| p.ask_code = true);
+                        fail(headline, more, ret, false);
                     }
                 }
                 finish(&plan);

@@ -123,9 +123,11 @@ if [ "$(grep -rlaF $SECRETS "$OUTSIDE/control" | wc -l | tr -d ' ')" -ne 1 ]; th
     fail "the search does not find a planted code: the check below would mean nothing"
 fi
 LOGS=$(ls "$WORK"/stderr/bridge_*.log 2>/dev/null | wc -l | tr -d ' ')
-FOUND=$(grep -rlaF $SECRETS "$WORK/stderr" "$WORK/bin" 2>/dev/null)
+# The bridge's stderr, the wrapper, and what each test printed (cargo's output, the answers it
+# quoted); the fakes' own files stay out (they hold the codes they were given).
+FOUND=$(grep -rlaF $SECRETS "$WORK/stderr" "$WORK/bin" "$OUTSIDE"/test_*.log 2>/dev/null)
 if [ "$LOGS" -eq 4 ] && [ -z "$FOUND" ]; then
-    pass "no access code, ticket or token on the bridge's stderr ($LOGS cases, $(cat "$WORK"/stderr/*.log | wc -l | tr -d ' ') lines)"
+    pass "no access code, ticket or token on the bridge's stderr ($LOGS cases, $(cat "$WORK"/stderr/*.log | wc -l | tr -d ' ') lines) or in the tests' output ($(cat "$OUTSIDE"/test_*.log | wc -l | tr -d ' ') lines)"
 else
     fail "the bridge's stderr: $LOGS of 4 kept; a secret in: ${FOUND:-none}"
 fi

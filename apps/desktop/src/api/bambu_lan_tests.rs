@@ -653,6 +653,49 @@ fn a_printer_of_the_account_is_offered_in_the_send_dialog_and_prints_over_the_la
 }
 
 #[test]
+fn an_account_code_the_printer_refuses_gives_way_to_one_typed() {
+    // The printer's code changed since the cloud last gave it.
+    let mock = Mock::new(Setup {
+        code: "99998888".into(),
+        ..Setup::default()
+    });
+    let probe = Probe::new(Some(&mock));
+    probe
+        .session
+        .set_sign_in_window(Arc::new(|_: &url::Url| Ok(())));
+    probe.ask("bambu_account_sign_in", json!({}));
+    assert!(
+        probe
+            .session
+            .bambu_sign_in_message(crate::ultranet::account::Message::Ticket(
+                crate::ultranet::mock::TICKET.into()
+            ))
+    );
+    probe.ask(
+        "bambu_printer_add",
+        json!({ "ip": "127.0.0.1", "access_code": "", "name": "Workshop P1S", "serial": SERIAL, "model": "C12" }),
+    );
+    let state = probe.ask("bambu_connect", json!({}));
+    assert_eq!(state["session"], "failed");
+    assert_eq!(state["said"], "Incorrect password");
+    let project = probe.sliced_project();
+    let dialog = probe.ask("bambu_send_prepare", json!({ "project": project }));
+    assert_eq!(dialog["status"]["key"], "refused");
+    assert_eq!(dialog["refused"], true);
+    // Typed: it wins over the account's, and the printer takes it.
+    probe.ask(
+        "bambu_printer_code",
+        json!({ "dev_id": SERIAL, "access_code": "99998888" }),
+    );
+    probe.connected();
+    assert_eq!(
+        mock.requests("connect_printer").last().unwrap()["password"],
+        "99998888"
+    );
+    assert!(mock.requests("start_local_print").is_empty());
+}
+
+#[test]
 fn a_failed_access_code_check_says_what_failed_and_only_that() {
     // UltraNet answers -5010 for every failed upload; the bridge names the
     // cause in `job_done`'s `failure` (ULTRANET_BRIDGE.md section 17).
