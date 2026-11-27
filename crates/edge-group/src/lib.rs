@@ -42,7 +42,8 @@ pub use group::{
 };
 pub use nozzle::{GroupResult, NozzleInfo, VolumeType, nozzle_list};
 pub use order::{
-    LayerSequence, extruders_order, other_layers_sequences, reorder_for_nozzles, solve_order,
+    LayerSequence, extruders_order, other_layers_sequences, reorder_for_extruders,
+    reorder_for_nozzles, solve_order,
 };
 pub use preload::preload_first_layer_tool_order;
 pub use time::{ChangeTimes, simulate_change_time};
