@@ -553,6 +553,75 @@ fn a_bridge_that_dies_in_the_upload_ends_the_send() {
 }
 
 #[test]
+fn a_printer_of_the_account_is_offered_in_the_send_dialog_and_prints_over_the_lan() {
+    let mock = Mock::new(Setup::default());
+    let probe = Probe::new(Some(&mock));
+    probe
+        .session
+        .set_sign_in_window(Arc::new(|_: &url::Url| Ok(())));
+    probe.ask("bambu_account_sign_in", json!({}));
+    assert!(
+        probe
+            .session
+            .bambu_sign_in_message(crate::ultranet::account::Message::Ticket(
+                crate::ultranet::mock::TICKET.into()
+            ))
+    );
+    let project = probe.sliced_project();
+    // None added by hand: the dialog lists the account's, without codes.
+    let dialog = probe.ask(
+        "bambu_send_prepare",
+        json!({ "project": project, "connect": true }),
+    );
+    assert!(dialog["printer"].is_null(), "{dialog}");
+    let offered: Vec<&str> = dialog["account_printers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["dev_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(offered, [SERIAL, "00M09A350100777"]);
+    assert_eq!(dialog["account_printers"][0]["has_access_code"], true);
+    // Its address entered (the cloud gives none), its code the account's.
+    probe.ask(
+        "bambu_printer_add",
+        json!({ "ip": "127.0.0.1", "access_code": "", "name": "Workshop P1S", "serial": SERIAL, "model": "C12" }),
+    );
+    probe.connected();
+    let connects = mock.requests("connect_printer");
+    assert_eq!(connects.last().unwrap()["dev_ip"], "127.0.0.1");
+    let dialog = probe.ask("bambu_send_prepare", json!({ "project": project }));
+    assert_eq!(dialog["printer"], SERIAL);
+    assert_eq!(dialog["ip"], "127.0.0.1");
+    assert_eq!(dialog["status"]["can_send"], true, "{dialog}");
+    let offered: Vec<&str> = dialog["account_printers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["dev_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(offered, ["00M09A350100777"], "listed once, as added");
+    // Nothing made the printer act before "Send".
+    assert!(mock.requests("start_send_gcode_to_sdcard").is_empty());
+    assert!(mock.requests("start_local_print").is_empty());
+    let task = probe.ask("bambu_send", json!({ "project": project }))["task"]
+        .as_u64()
+        .unwrap();
+    let end = probe.task_end(task);
+    assert_eq!(end["ok"], true, "{end}");
+    let prints = mock.requests("start_local_print");
+    assert_eq!(prints.len(), 1);
+    assert_eq!(prints[0]["params"]["dev_ip"], "127.0.0.1");
+    assert_eq!(
+        prints[0]["params"]["password"], CODE,
+        "the account's code, to the bridge only"
+    );
+    // No cloud print: only the LAN jobs and the account's calls went out.
+    assert!(mock.requests("start_local_print_with_record").is_empty());
+    probe.never_said_a_code();
+}
+
+#[test]
 fn a_failed_access_code_check_says_what_failed_and_only_that() {
     // UltraNet answers -5010 for every failed upload; the bridge names the
     // cause in `job_done`'s `failure` (ULTRANET_BRIDGE.md section 17).

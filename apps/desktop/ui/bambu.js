@@ -27,12 +27,15 @@ const bambuState = {
   addingAccount: null,
 };
 
+// A printer as the lists name it: its name and model.
+const bambuPrinterLabel = (p) => (p.model_name ? `${p.name} (${p.model_name.replace('Bambu Lab ', '')})` : p.name);
+
 // The printer's colour "RRGGBBAA" as CSS.
 const trayColour = (colour) => (colour && colour.length >= 6 ? `#${colour.slice(0, 6)}` : '');
 
 function bambuOptions(select, printers, selected) {
   const list = printers || [];
-  fill(select, list.map((p) => p.dev_id), selected || '', list.map((p) => (p.model_name ? `${p.name} (${p.model_name.replace('Bambu Lab ', '')})` : p.name)));
+  fill(select, list.map((p) => p.dev_id), selected || '', list.map(bambuPrinterLabel));
 }
 
 async function bambuPrinters() {
@@ -65,7 +68,7 @@ function drawBambuAccount(printers) {
   const mine = printers.account_printers || [];
   list.hidden = !mine.length;
   list.replaceChildren(...mine.map((p) => el('li', {},
-    el('span', { className: 'name', textContent: p.model_name ? `${p.name} (${p.model_name.replace('Bambu Lab ', '')})` : p.name }),
+    el('span', { className: 'name', textContent: bambuPrinterLabel(p) }),
     el('span', { className: `quiet${p.online ? ' online' : ''}`, textContent: t(p.online ? 'Online' : 'Offline') }),
     el('span', { className: 'tag', textContent: t('Bambu Lab'), title: t('Sign in to your Bambu Lab account to see your cloud printers') }),
     p.added ? el('span', { className: 'quiet', textContent: p.dev_id })
@@ -329,12 +332,15 @@ async function openBambuSend() {
 }
 
 // The dialog asked again: as the reference's timer does while it is open.
-async function refreshBambuSend(connect = false) {
+// `devId`: the printer to show, where it is not the one chosen yet (an
+// account's printer just added).
+async function refreshBambuSend(connect = false, devId = null) {
   clearTimeout(bambuState.sendTimer);
   const dialog = $('bambu-send-dialog');
   if (!dialog.open || bambuState.task) return;
   const args = { project: activeId(), connect };
-  if ($('bambu-send-printer').value) args.dev_id = $('bambu-send-printer').value;
+  const chosen = devId || $('bambu-send-printer').value;
+  if (chosen && !chosen.startsWith('@')) args.dev_id = chosen;
   if (bambuState.dialog) {
     args.use_ams = $('bambu-opt-ams').checked;
     args.timelapse = $('bambu-opt-timelapse').checked;
@@ -351,10 +357,9 @@ async function refreshBambuSend(connect = false) {
   if (!dialog.open || bambuState.task) return;
   const first = !bambuState.dialog;
   bambuState.dialog = answer;
-  bambuOptions($('bambu-send-printer'), answer.printers, answer.printer);
-  if (!answer.printers || !answer.printers.length) $('bambu-send-printer').replaceChildren(el('option', { value: '', textContent: t('No available printers') }));
+  drawBambuSendPrinters(answer);
   $('bambu-send-bed').textContent = answer.bed ? `${t('Plate')}: ${t(answer.bed)}` : '';
-  $('bambu-send-code').hidden = !answer.refused;
+  bambuCodeButton(answer.refused, false);
   if (answer.options) {
     const o = answer.options;
     if (first) {
@@ -371,6 +376,28 @@ async function refreshBambuSend(connect = false) {
   $('bambu-send-status').className = status.warning ? 'warn' : 'quiet';
   $('bambu-send-go').disabled = !status.can_send;
   bambuState.sendTimer = setTimeout(() => refreshBambuSend(false), 2000);
+}
+
+// The printers added, then the account's not added yet (section 16.5 of
+// ULTRANET_BRIDGE.md; SelectMachine.cpp lists the account's machines with
+// the LAN ones). The cloud gives no address: choosing one of the account's
+// asks for it first, and it is then a printer added like any other.
+function drawBambuSendPrinters(answer) {
+  const select = $('bambu-send-printer');
+  const added = (answer.printers || []).map((p) => new Option(bambuPrinterLabel(p), p.dev_id));
+  if (!added.length) added.push(new Option(t('No available printers'), ''));
+  const mine = (answer.account_printers || []).map((p) => new Option(`${bambuPrinterLabel(p)}: ${t('Connect the printer using IP and access code')}`, `@${p.dev_id}`));
+  select.replaceChildren(...added, ...(mine.length ? [el('optgroup', { label: t('Bambu Lab') }, ...mine)] : []));
+  select.disabled = !(answer.printers || []).length && !mine.length;
+  select.value = answer.printer || '';
+}
+
+// "Re-enter" the access code: said refused only when it was (the access-code
+// check's FTP 530, or the printer's own refusal); otherwise only offered.
+function bambuCodeButton(refused, offered) {
+  const button = $('bambu-send-code');
+  button.hidden = !refused && !offered;
+  button.textContent = refused ? t('The printer refused the access code. Re-enter it') : t('Input access code');
 }
 
 function drawBambuFilaments(answer) {
@@ -396,7 +423,20 @@ function drawBambuFilaments(answer) {
 
 $('bambu-send-printer').addEventListener('change', () => attempt(async () => {
   bambuState.picked = null;
-  await call('bambu_select', { dev_id: $('bambu-send-printer').value });
+  const value = $('bambu-send-printer').value;
+  if (value.startsWith('@')) {
+    // One of the account's: its address asked for ("Connect the printer
+    // using IP and access code", its serial, name and model filled in, the
+    // code the account's). Nothing is sent to it yet.
+    const account = ((bambuState.dialog && bambuState.dialog.account_printers) || []).find((p) => `@${p.dev_id}` === value);
+    $('bambu-send-printer').value = (bambuState.dialog && bambuState.dialog.printer) || '';
+    if (!account) return;
+    await openBambuAdd(account);
+    const added = (await bambuPrinters()).printers.some((p) => p.dev_id === account.dev_id);
+    await refreshBambuSend(false, added ? account.dev_id : null);
+    return;
+  }
+  await call('bambu_select', { dev_id: value });
   await refreshBambuSend(true);
 }));
 $('bambu-send-refresh').addEventListener('click', () => attempt(() => refreshBambuSend(true)));
@@ -433,6 +473,12 @@ $('bambu-send-go').addEventListener('click', () => attempt(async () => {
     },
   };
   if (bambuState.picked) args.mapping = bambuState.picked;
+  // Asked first, as everything that makes a printer act is: which printer,
+  // at which address (an account's printer has the address typed for it).
+  const printer = ((bambuState.dialog && bambuState.dialog.printers) || []).find((p) => p.dev_id === args.dev_id);
+  if (!printer) return;
+  const question = t('Print this plate on %s (%s)?').replace('%s', printer.name).replace('%s', printer.ip);
+  if (!await confirmBox(t('Send print job to'), question, t('Send'), t('Cancel'))) return;
   args.pictures = await window.slicedPictures(project, false).catch(() => ({}));
   let answer = await call('bambu_send', args);
   if (answer.confirm) {
@@ -467,7 +513,7 @@ async function followBambuSend() {
   $('bambu-send-cancel').textContent = t('Close');
   if (!p.ok) {
     $('bambu-send-detail').textContent = p.detail || '';
-    $('bambu-send-code').hidden = !p.refused;
+    bambuCodeButton(p.refused, p.ask_code);
     bambuState.task = null;
     $('bambu-send-go').disabled = false;
     return;

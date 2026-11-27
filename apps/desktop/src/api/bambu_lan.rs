@@ -841,7 +841,8 @@ impl Session {
         )
     }
 
-    /// "Send print job to": `{ printers, printer, bridge, plate, bed, bed_gcode,
+    /// "Send print job to": `{ printers, account_printers (the account's
+    /// not added yet, as `bambu_printers` lists them), printer, ip, bridge, plate, bed, bed_gcode,
     /// filaments [{ id, color, type, tray, tray_name, tray_color, tray_type }],
     /// trays [{ tray, name, type, color, exists }], options { bed_leveling,
     /// flow_cali, timelapse, use_ams: { shown, value } }, status { key,
@@ -854,9 +855,21 @@ impl Session {
         let plate = self.bambu_plate(args).ok();
         let options = lock(&self.bambu.kept).options.clone();
         let on = |o: Option<bool>| o.unwrap_or(true);
+        // The account's printers not added yet (section 16.5), beside those
+        // added (SelectMachine.cpp lists the account's machines with the LAN
+        // ones): the cloud gives no address, so choosing one asks for it,
+        // after which it is a printer added like any other. Never a code.
+        let account_printers: Vec<Value> = printers_list["account_printers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|p| p["added"] != true)
+            .cloned()
+            .collect();
         let Some(printer) = printer else {
             return Ok(json!({
-                "printers": printers_list["printers"], "printer": null, "bridge": self.bridge_json(),
+                "printers": printers_list["printers"], "account_printers": account_printers,
+                "printer": null, "bridge": self.bridge_json(),
                 "status": { "key": "invalid_printer", "message": tr("No available printers"), "warning": true, "can_send": false },
             }));
         };
@@ -911,7 +924,9 @@ impl Session {
         let bed = plate.as_ref().map(|p| p.bed.clone()).unwrap_or_default();
         Ok(json!({
             "printers": printers_list["printers"],
+            "account_printers": account_printers,
             "printer": printer.dev_id,
+            "ip": printer.ip,
             "bridge": self.bridge_json(),
             "plate": plate.as_ref().map(|p| p.plate),
             "bed": bed,
