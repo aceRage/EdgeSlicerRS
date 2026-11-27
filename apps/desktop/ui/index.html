@@ -321,6 +321,18 @@
         <p id="bambu-secrets-text"></p>
       </div>
       <p id="bambu-none" class="quiet" hidden>No available printers</p>
+      <!-- The Bambu Lab account (ULTRANET_BRIDGE.md section 16; MainFrame.cpp's Account menu): who is
+           signed in, and the account's printers without their codes. Its page opens in a window of its own. -->
+      <section id="bambu-account" class="bambu-account" aria-labelledby="bambu-account-who" hidden>
+        <div class="bambu-account-head">
+          <span id="bambu-account-who"></span>
+          <button type="button" id="bambu-sign-in" title="Sign in to your Bambu Lab account to see your cloud printers">Log in to Bambu Account...</button>
+          <button type="button" id="bambu-account-refresh" hidden>Refresh</button>
+          <button type="button" id="bambu-sign-out" title="Sign out of your Bambu Lab account" hidden>Log out of Bambu Account</button>
+        </div>
+        <p id="bambu-account-said" role="status" hidden></p>
+        <ul id="bambu-account-printers" class="bambu-account-list" hidden></ul>
+      </section>
     </div>
     <div id="device-bar" hidden>
       <div class="tabs" role="tablist" aria-label="Device">

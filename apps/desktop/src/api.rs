@@ -15,6 +15,7 @@
 //! [`Session::call_bytes`], which is `call` in every other way.
 
 mod arrange;
+mod bambu_account;
 mod bambu_lan;
 mod calib;
 mod device;
@@ -1396,6 +1397,7 @@ impl Session {
             name if filaments::JSON.contains(&name) => self.filaments_json(name, args),
             name if print_host::JSON.contains(&name) => self.print_host_json(name, args),
             name if bambu_lan::JSON.contains(&name) => self.bambu_lan_json(name, args),
+            name if bambu_account::JSON.contains(&name) => self.bambu_account_json(name, args),
             name if device::JSON.contains(&name) => self.device_json(name, args),
             name if scene::JSON.contains(&name) => self.scene_json(name, args),
             name if paint::JSON.contains(&name) => self.paint_json(name, args),

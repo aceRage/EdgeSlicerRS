@@ -1,5 +1,7 @@
 //! Where this app keeps a secret: a Bambu Lab printer's LAN access code,
-//! by the printer's serial (`ultranet::printers`).
+//! by the printer's serial (`ultranet::printers`), and the Bambu Lab
+//! account's session and access codes, under the id [`ACCOUNT_ID`]
+//! (ULTRANET_BRIDGE.md section 16.4).
 //!
 //! One small interface, [`Secrets`] (get, set, delete by id), with three
 //! stores behind it:
@@ -55,7 +57,13 @@ use crate::hosts::kept::write_whole;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Refused(pub String);
 
-/// Secrets by id (a printer's serial).
+/// The id the Bambu Lab account's secrets are kept under (its tokens and
+/// the codes the account gave, as one JSON text: `ultranet::account::
+/// AccountSecret`). Kept in the system's item as its `account` field, in
+/// the file as an entry of that name. No serial begins with `@`.
+pub const ACCOUNT_ID: &str = "@account";
+
+/// Secrets by id (a printer's serial, or [`ACCOUNT_ID`]).
 pub trait Secrets: Send {
     fn get(&mut self, id: &str) -> Result<Option<String>, Refused>;
     fn set(&mut self, id: &str, secret: &str) -> Result<(), Refused>;
@@ -220,11 +228,19 @@ pub fn read_file(path: &Path) -> Result<BTreeMap<String, String>, Refused> {
     }
 }
 
-/// `{ "<id>": { "access_code": "<code>" } }`.
+/// `{ "<id>": { "access_code": "<code>" }, "@account": { "account": {...} } }`
+/// (an older version reads the account's entry as a printer without a
+/// code, and passes over it).
 fn parse(text: &str) -> Option<BTreeMap<String, String>> {
     let root: serde_json::Value = serde_json::from_str(text).ok()?;
     let mut out = BTreeMap::new();
     for (id, entry) in root.as_object()? {
+        if id == ACCOUNT_ID {
+            if entry["account"].is_object() {
+                out.insert(id.clone(), entry["account"].to_string());
+            }
+            continue;
+        }
         let code = entry["access_code"].as_str().unwrap_or_default();
         if !code.is_empty() {
             out.insert(id.clone(), code.to_owned());
@@ -236,7 +252,14 @@ fn parse(text: &str) -> Option<BTreeMap<String, String>> {
 fn json_of(secrets: &BTreeMap<String, String>) -> String {
     let root: serde_json::Map<String, serde_json::Value> = secrets
         .iter()
-        .map(|(id, code)| (id.clone(), serde_json::json!({ "access_code": code })))
+        .map(|(id, code)| {
+            if id == ACCOUNT_ID {
+                let account = serde_json::from_str::<serde_json::Value>(code).unwrap_or_default();
+                (id.clone(), serde_json::json!({ "account": account }))
+            } else {
+                (id.clone(), serde_json::json!({ "access_code": code }))
+            }
+        })
         .collect();
     serde_json::to_string_pretty(&serde_json::Value::Object(root)).expect("plain JSON")
 }
@@ -325,18 +348,34 @@ impl System {
     }
 }
 
-/// `{ "version": 1, "codes": { "<id>": "<code>" } }`.
+/// `{ "version": 1, "codes": { "<id>": "<code>" }, "account": {...} }`:
+/// the account's field (section 16.4) is versioned on its own, and an
+/// older version reads `codes` and passes over it.
 fn parse_item(text: &str) -> Option<BTreeMap<String, String>> {
     let root: serde_json::Value = serde_json::from_str(text).ok()?;
     let mut out = BTreeMap::new();
     for (id, code) in root["codes"].as_object()? {
+        if id == ACCOUNT_ID {
+            continue;
+        }
         out.insert(id.clone(), code.as_str()?.to_owned());
+    }
+    if root["account"].is_object() {
+        out.insert(ACCOUNT_ID.to_owned(), root["account"].to_string());
     }
     Some(out)
 }
 
-fn item_text(codes: &BTreeMap<String, String>) -> String {
-    serde_json::json!({ "version": 1, "codes": codes }).to_string()
+fn item_text(secrets: &BTreeMap<String, String>) -> String {
+    let codes: BTreeMap<&String, &String> = secrets
+        .iter()
+        .filter(|(id, _)| id.as_str() != ACCOUNT_ID)
+        .collect();
+    let mut root = serde_json::json!({ "version": 1, "codes": codes });
+    if let Some(account) = secrets.get(ACCOUNT_ID) {
+        root["account"] = serde_json::from_str(account).unwrap_or_default();
+    }
+    root.to_string()
 }
 
 impl Secrets for System {

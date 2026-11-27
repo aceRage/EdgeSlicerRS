@@ -4,6 +4,7 @@
 //! it. Nothing here runs unless the person asks for something that needs a
 //! printer, and nothing looks for printers on the network.
 
+pub mod account;
 pub mod client;
 pub mod link;
 pub mod machine;

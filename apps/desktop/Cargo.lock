@@ -1216,6 +1216,7 @@ dependencies = [
  "tiny_http",
  "tungstenite",
  "ureq",
+ "url",
  "windows-native-keyring-store",
  "zbus-secret-service-keyring-store",
  "zip",

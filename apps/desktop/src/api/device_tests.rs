@@ -46,6 +46,7 @@ impl Probe {
             connect: Duration::from_secs(5),
             started: Duration::from_secs(5),
             restart: Duration::from_millis(0),
+            account: Duration::from_secs(5),
         };
         let session = Session::with_bridge(Some(dir.path().to_owned()), mock.launcher(), quick);
         Probe {
@@ -393,7 +394,10 @@ fn section_15_asked(mock: &Mock) -> Vec<String> {
 
 #[test]
 fn a_bridge_of_protocol_1_0_shows_bambu_s_camera_storage_and_update_unavailable_with_why() {
-    let mock = Mock::new(Setup::default());
+    let mock = Mock::new(Setup {
+        minor: 0,
+        ..Setup::default()
+    });
     let probe = bambu_connected(&mock);
     let caps = probe.ask("device_read", json!({ "refresh": true }))["caps"].clone();
     assert_eq!(

@@ -606,6 +606,13 @@ Please input valid values:\n0 <= minimum < maximum <= 100\nlength >= 10 mm	GUI/c
 Marks every 20%% would be less than 10 mm apart: use a length of at least %1% mm.	GUI/calib_dlg.cpp:1965
 A band %1% mm long makes a test %2% mm long, which does not fit on the bed. Use at most %3% mm.	GUI/calib_dlg.cpp:1980
 The two-band ironing flow test does not fit on the bed in Y. Use a printer with a deeper bed.	GUI/calib_dlg.cpp:1987
+Bambu Lab	GUI/MainFrame.cpp:3300
+signed out	GUI/MainFrame.cpp:3305
+Log in to Bambu Account...	GUI/MainFrame.cpp:3307
+Log out of Bambu Account	GUI/MainFrame.cpp:3302
+Sign out of your Bambu Lab account	GUI/MainFrame.cpp:3302
+Sign in to your Bambu Lab account to see your cloud printers	GUI/MainFrame.cpp:3307
+Login failed. Please try again.	GUI/WebUserLoginDialog.cpp:368 (a literal there, not through _L)
 
 [own]
 # This app's own words on the static page, with no counterpart in the

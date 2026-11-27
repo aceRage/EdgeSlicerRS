@@ -58,7 +58,9 @@ type Task = (Arc<Mutex<Progress>>, Arc<AtomicBool>);
 /// What the session keeps for Bambu Lab printers.
 pub(super) struct Bambu {
     pub(super) client: Arc<Client>,
-    kept: Mutex<Kept>,
+    pub(super) kept: Mutex<Kept>,
+    /// The Bambu Lab account's sign-in (bambu_account.rs).
+    pub(super) account: Mutex<super::bambu_account::AccountState>,
     tasks: Mutex<HashMap<u64, Task>>,
     next_task: AtomicU64,
 }
@@ -77,6 +79,7 @@ impl Bambu {
         Bambu {
             client,
             kept: Mutex::new(kept),
+            account: Mutex::default(),
             tasks: Mutex::new(HashMap::new()),
             next_task: AtomicU64::new(1),
         }
@@ -295,6 +298,9 @@ impl Session {
     /// selected }], selected, models [{ id, name }], problem }`.
     fn bambu_printers(&self) -> Result<Value, String> {
         let models = self.bambu_models();
+        // The account (section 16): who, and its printers without codes.
+        let account = self.account_status();
+        let account_printers = self.account_printers_json(&models);
         let kept = lock(&self.bambu.kept);
         let list: Vec<Value> = kept
             .printers
@@ -308,6 +314,7 @@ impl Session {
                     "model_name": models.iter().find(|m| m.id == p.model).map(|m| m.name.clone()),
                     "has_access_code": kept.has_code(&p.dev_id),
                     "selected": kept.selected.as_deref() == Some(p.dev_id.as_str()),
+                    "in_account": kept.account_printer(&p.dev_id).is_some(),
                 })
             })
             .collect();
@@ -330,6 +337,8 @@ impl Session {
                 },
             },
             "bridge": self.bridge_json(),
+            "account": account,
+            "account_printers": account_printers,
         }))
     }
 
@@ -359,7 +368,13 @@ impl Session {
         if !printers::is_ip(&ip) {
             return Err("The IP address is not valid.".into());
         }
-        if !printers::is_access_code(&code) {
+        // A printer of the account may be added with its address alone: the
+        // code the account gave is used (section 16.5); one typed wins.
+        let account_code = code.is_empty()
+            && lock(&self.bambu.kept)
+                .account_printer(&serial)
+                .is_some_and(|p| p.has_code);
+        if !account_code && !printers::is_access_code(&code) {
             return Err("The access code is eight letters or digits.".into());
         }
         if serial.chars().count() != 15 {
@@ -380,7 +395,7 @@ impl Session {
                     ip,
                     model,
                 },
-                Some(code),
+                (!account_code).then_some(code),
             )?;
             kept.select(&serial)?;
             self.bambu.client.set_codes(kept.codes());

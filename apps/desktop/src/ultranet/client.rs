@@ -39,6 +39,15 @@ pub const NEEDED: [&str; 6] = [
     "cancel_job",
 ];
 
+/// The methods of the account (ULTRANET_BRIDGE.md section 16, minor 1)
+/// "Log in to Bambu Account..." needs.
+pub const ACCOUNT: [&str; 4] = [
+    "account_sign_in",
+    "account_restore",
+    "account_sign_out",
+    "account_printers",
+];
+
 /// The methods of the proposed later minor (ULTRANET_BRIDGE.md section
 /// 15) each part of the Bambu Device page needs; a bridge of protocol 1.0
 /// offers none of them, and the part says so.
@@ -69,6 +78,9 @@ pub struct Timeouts {
     pub started: Duration,
     /// Between starts of a bridge that died.
     pub restart: Duration,
+    /// An `account_*` request, which calls the cloud (section 16.3: the
+    /// bridge answers within 150 s).
+    pub account: Duration,
 }
 
 impl Default for Timeouts {
@@ -79,6 +91,7 @@ impl Default for Timeouts {
             connect: Duration::from_secs(20),
             started: Duration::from_secs(25),
             restart: Duration::from_secs(5),
+            account: Duration::from_secs(160),
         }
     }
 }
@@ -159,6 +172,8 @@ struct Shared {
     frames: Mutex<HashMap<String, (u64, String)>>,
     jobs: Mutex<HashMap<u64, JobState>>,
     codes: Mutex<Vec<String>>,
+    /// `account_expired` came (section 16.2), not yet seen by the session.
+    expired: AtomicBool,
     /// Woken on every event.
     changed: Condvar,
     changed_lock: Mutex<u64>,
@@ -242,6 +257,12 @@ impl Conn {
     }
 
     fn ask(&self, method: &str, params: Value, timeout: Duration) -> Answer {
+        self.ask_counted(method, params, timeout, true)
+    }
+
+    /// `late`: whether a time-out counts towards the bridge taken for
+    /// dead (not for the account's long calls, section 16.3).
+    fn ask_counted(&self, method: &str, params: Value, timeout: Duration, late: bool) -> Answer {
         if !self.alive.load(Ordering::SeqCst) {
             return Err(STOPPED.into());
         }
@@ -262,7 +283,7 @@ impl Conn {
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 lock(&self.pending).remove(&id);
                 // Twice in a row: the bridge is taken for dead (section 3).
-                if self.late.fetch_add(1, Ordering::SeqCst) >= 1 {
+                if late && self.late.fetch_add(1, Ordering::SeqCst) >= 1 {
                     self.kill();
                 }
                 Err("The UltraNet bridge did not answer in time.".into())
@@ -589,6 +610,30 @@ impl Client {
         let answer = conn.ask(method, params, self.timeouts.ask);
         self.check_alive();
         answer.map_err(|error| self.shared.scrub(&error))
+    }
+
+    /// An `account_*` request (section 16.3): the long wait, and when it
+    /// is not answered in time `account_sign_out`, so the bridge keeps no
+    /// session this app does not know of.
+    pub fn ask_account(&self, method: &str, params: Value) -> Result<Value, String> {
+        let conn = self.conn()?;
+        let answer = conn.ask_counted(method, params, self.timeouts.account, false);
+        if answer.is_err() && conn.alive.load(Ordering::SeqCst) {
+            conn.tell("account_sign_out", json!({}));
+        }
+        self.check_alive();
+        answer.map_err(|error| self.shared.scrub(&error))
+    }
+
+    /// Whether `account_expired` came since this was last asked.
+    pub fn take_expired(&self) -> bool {
+        self.shared.expired.swap(false, Ordering::SeqCst)
+    }
+
+    /// Whether a bridge is running now (nothing is started to find out).
+    pub fn running(&self) -> bool {
+        self.check_alive();
+        lock(&self.conn).is_some()
     }
 
     /// Stops the bridge (`bye`).
@@ -932,6 +977,8 @@ fn event(message: &Value, conn: &Arc<Conn>, shared: &Arc<Shared>, started: Durat
                     .insert(dev_id, (p["seq"].as_u64().unwrap_or(0), jpeg.to_owned()));
             }
         }
+        // Section 16: the bridge ended the account's session.
+        Some("account_expired") => shared.expired.store(true, Ordering::SeqCst),
         Some("job_status") => {
             let Some(job) = p["job"].as_u64() else { return };
             lock(&shared.jobs).entry(job).or_default().statuses.push((

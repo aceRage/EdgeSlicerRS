@@ -25,17 +25,32 @@ use api::Session;
 use serde_json::{Value, json};
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
+use ultranet::account::{self, Navigation};
+
+/// The one window the page's commands answer: the Bambu sign-in window
+/// (and any other) gets none of them, whatever Tauri would allow.
+const MAIN: &str = "main";
+
+fn main_only(webview: &tauri::Webview) -> Result<(), String> {
+    if webview.label() == MAIN {
+        Ok(())
+    } else {
+        Err("This window has no access to the app.".into())
+    }
+}
 
 /// Everything the page asks of the engine. The menu's description
 /// (`menu`) is also made the window's menu bar (menubar.rs).
 #[tauri::command(async)]
 fn call(
     app: tauri::AppHandle,
+    webview: tauri::Webview,
     session: tauri::State<'_, Arc<Session>>,
     bar: tauri::State<'_, menubar::Bar>,
     name: String,
     args: Value,
 ) -> Result<Value, String> {
+    main_only(&webview)?;
     let answer = session.call(&name, &args)?;
     if name == "menu"
         && let Err(error) = bar.apply(&app, &answer)
@@ -49,10 +64,12 @@ fn call(
 /// page is handed them as they are, not as JSON.
 #[tauri::command(async)]
 fn call_bytes(
+    webview: tauri::Webview,
     session: tauri::State<'_, Arc<Session>>,
     name: String,
     args: Value,
 ) -> Result<tauri::ipc::Response, String> {
+    main_only(&webview)?;
     session
         .call_bytes(&name, &args)
         .map(tauri::ipc::Response::new)
@@ -61,7 +78,13 @@ fn call_bytes(
 /// Asks the person for a model to open, a folder of profiles, or where to
 /// save G-code or a project. None when they change their mind.
 #[tauri::command(async)]
-fn pick(app: tauri::AppHandle, what: String, suggested: Option<String>) -> Option<String> {
+fn pick(
+    app: tauri::AppHandle,
+    webview: tauri::Webview,
+    what: String,
+    suggested: Option<String>,
+) -> Option<String> {
+    main_only(&webview).ok()?;
     let dialog = app.dialog().file();
     let picked = match what.as_str() {
         "model" => dialog
@@ -159,7 +182,15 @@ fn pick(app: tauri::AppHandle, what: String, suggested: Option<String>) -> Optio
 /// with what would be opened (outside.rs). Answers "launched",
 /// "not_found" or "failed:<what was found>".
 #[tauri::command(async)]
-fn hand_off(connect: Option<String>, page: Option<String>, studio: Option<String>) -> String {
+fn hand_off(
+    webview: tauri::Webview,
+    connect: Option<String>,
+    page: Option<String>,
+    studio: Option<String>,
+) -> String {
+    if main_only(&webview).is_err() {
+        return "failed:".into();
+    }
     let what = match (connect, page, studio) {
         (Some(url), _, _) => outside::HandOff::Connect(url),
         (_, Some(url), _) if url == outside::CONNECT_INFO_URL => outside::HandOff::Page(url),
@@ -176,7 +207,66 @@ fn hand_off(connect: Option<String>, page: Option<String>, studio: Option<String
 /// Closes the window once the page has asked about what is unsaved.
 #[tauri::command]
 fn close_window(window: tauri::Window) {
-    let _ = window.destroy();
+    if window.label() == MAIN {
+        let _ = window.destroy();
+    }
+}
+
+/// Bambu's sign-in page in a window of its own (ULTRANET_BRIDGE.md
+/// section 16.6, WebUserLoginDialog.cpp): only Bambu's https pages, no
+/// other window, none of the app's commands (`main_only`), and the page's
+/// message read from the navigation its script makes
+/// (`account::init_script`), which the guard stops. The session asks the
+/// bridge on a thread of its own and the window is closed once it has its
+/// answer.
+fn open_sign_in(
+    app: &tauri::AppHandle,
+    session: &Arc<Session>,
+    start: &url::Url,
+) -> Result<(), String> {
+    if let Some(open) = app.get_webview_window(account::WINDOW) {
+        let _ = open.set_focus();
+        return Ok(());
+    }
+    let (title, language) = session.sign_in_window_words();
+    let guard_start = start.clone();
+    let for_result = session.clone();
+    let for_close = app.clone();
+    let window = tauri::WebviewWindowBuilder::new(
+        app,
+        account::WINDOW,
+        tauri::WebviewUrl::External(start.clone()),
+    )
+    .title(title)
+    .inner_size(650.0, 840.0)
+    .user_agent(&account::user_agent(cfg!(windows), true, &language))
+    .initialization_script(account::init_script())
+    .on_navigation(move |url| match account::navigation(url, &guard_start) {
+        Navigation::Allow => true,
+        Navigation::Refuse => false,
+        Navigation::Result(message) => {
+            let session = for_result.clone();
+            let app = for_close.clone();
+            std::thread::spawn(move || {
+                if session.bambu_sign_in_message(message)
+                    && let Some(window) = app.get_webview_window(account::WINDOW)
+                {
+                    let _ = window.close();
+                }
+            });
+            false
+        }
+    })
+    .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
+    .build()
+    .map_err(|error| format!("The sign-in window could not be opened ({error})."))?;
+    let session = session.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::Destroyed = event {
+            session.bambu_sign_in_closed();
+        }
+    });
+    Ok(())
 }
 
 fn main() {
@@ -205,6 +295,12 @@ fn main() {
         // The menu bar is there before the page is: as the session
         // describes it until the page says how it stands.
         .setup(move |app| {
+            let session = app.state::<Arc<Session>>().inner().clone();
+            let handle = app.handle().clone();
+            let for_window = session.clone();
+            session.set_sign_in_window(Arc::new(move |start: &url::Url| {
+                open_sign_in(&handle, &for_window, start)
+            }));
             if let Ok(tree) = first_menu.call("menu", &json!({ "window": true })) {
                 app.state::<menubar::Bar>().apply(app.handle(), &tree)?;
             }
@@ -217,7 +313,9 @@ fn main() {
         // With a project unsaved, the window is not closed but the page
         // asks first (save.js), and closes it itself.
         .on_window_event(move |window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event
+                && window.label() == MAIN
+            {
                 let unsaved = asking
                     .call("unsaved", &json!({}))
                     .ok()

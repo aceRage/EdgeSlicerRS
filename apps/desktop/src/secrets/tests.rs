@@ -172,3 +172,67 @@ fn a_test_build_never_has_the_system_store() {
     assert!(store.get("A").is_err());
     assert_ne!(Kind::chosen(), Kind::System);
 }
+
+const ACCOUNT_TEXT: &str = r#"{"version":1,"user":{"id":"1","name":"N"},"session":{"access_token":"AT","refresh_token":"RT","expires_in":5,"refresh_expires_in":6,"acquired_at":7},"codes":{"S1":"C1"}}"#;
+
+#[test]
+fn the_account_is_a_versioned_field_of_the_one_item() {
+    let store = keyring_core::mock::Store::new().unwrap();
+    let (item, asked) = Counted::on(store.clone());
+    let mut system = System::new(Box::new(item));
+    system.set("01P09C470100142", "12345678").unwrap();
+    system.set(ACCOUNT_ID, ACCOUNT_TEXT).unwrap();
+    // As an older version reads it: the codes as they were, the account a
+    // field beside them, not a code.
+    let (mut raw, _) = Counted::on(store.clone());
+    let text = raw.read().unwrap().unwrap();
+    let root: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(root["version"], 1);
+    assert_eq!(
+        root["codes"],
+        serde_json::json!({ "01P09C470100142": "12345678" })
+    );
+    assert_eq!(root["account"]["version"], 1);
+    assert_eq!(root["account"]["session"]["access_token"], "AT");
+    // Read back by a new store, the same.
+    let (again, _) = Counted::on(store.clone());
+    let mut again = System::new(Box::new(again));
+    let account: serde_json::Value =
+        serde_json::from_str(&again.get(ACCOUNT_ID).unwrap().unwrap()).unwrap();
+    assert_eq!(account["codes"]["S1"], "C1");
+    // The codes all gone, the account stays (the item is not removed);
+    // the account gone too, it is.
+    system.delete("01P09C470100142").unwrap();
+    assert_eq!(asked.lock().unwrap().removes, 0);
+    system.delete(ACCOUNT_ID).unwrap();
+    assert_eq!(asked.lock().unwrap().removes, 1);
+    // An older version's item (no account) reads as before.
+    let (mut old, _) = Counted::on(store.clone());
+    old.write(r#"{"version":1,"codes":{"A":"11111111"}}"#)
+        .unwrap();
+    let (old_read, _) = Counted::on(store);
+    let mut old_read = System::new(Box::new(old_read));
+    assert_eq!(old_read.get(ACCOUNT_ID).unwrap(), None);
+    assert_eq!(old_read.get("A").unwrap().as_deref(), Some("11111111"));
+}
+
+#[test]
+fn the_file_keeps_the_account_as_an_entry_an_older_version_passes_over() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(FILE);
+    let mut file = FileStore::new(Some(path.clone()));
+    file.set("01P09C470100142", "12345678").unwrap();
+    file.set(ACCOUNT_ID, ACCOUNT_TEXT).unwrap();
+    let root: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(root[ACCOUNT_ID]["account"]["user"]["name"], "N");
+    assert!(root[ACCOUNT_ID]["access_code"].is_null());
+    let mut again = FileStore::new(Some(path.clone()));
+    let account: serde_json::Value =
+        serde_json::from_str(&again.get(ACCOUNT_ID).unwrap().unwrap()).unwrap();
+    assert_eq!(account["session"]["refresh_token"], "RT");
+    assert_eq!(
+        again.get("01P09C470100142").unwrap().as_deref(),
+        Some("12345678")
+    );
+}
