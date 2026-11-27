@@ -24,6 +24,7 @@ progress, cancel. 8. `PrintParams`. 9. Errors. 10. The access code.
 11. Security model. 12. C++ mapping, message by message. 13. What the
 bridge implementer decides. 14. What this app does with it. 15. Proposed
 for a later protocol minor. 16. Protocol 1.1: the Bambu Lab account.
+17. An addition to 1.1: why an upload failed (`job_done`'s `failure`).
 
 ## 1. Choices and why
 
@@ -231,7 +232,7 @@ reference.
 | `local_message` | `dev_id`, `msg` (a **string**: the printer's MQTT report as received, unparsed) | `OnMessageFn(std::string dev_id, std::string msg)` set by `set_on_local_message_fn` |
 | `job_status` | `job`, `stage` (`SendingPrintJobStage`), `code` (0..100 progress within the stage, else an error code), `info` (the plug-in's text) | the job's `OnUpdateStatusFn(int status, int code, std::string msg)` |
 | `job_wait` | `job`, `cb` (unsigned, new for each call), `status`, `job_info` (string) | the job's `OnWaitFn(int status, std::string job_info)`: the app answers with `callback_return` |
-| `job_done` | `job`, `ret` (the entry point's return value) | the entry point returned |
+| `job_done` | `job`, `ret` (the entry point's return value); `failure` (optional, section 17) | the entry point returned |
 
 `msg` of `local_message` is passed as the plug-in gives it, so the app parses
 the printer's JSON with the reference's rules (`MachineObject::parse_json`)
@@ -554,7 +555,9 @@ Bambu Lab printer", lists each step):
    and `on_ok_btn` on that state; then the sliced file written,
    `start_send_gcode_to_sdcard` with the "verify_job" file (unless the
    printer has no card and prints from internal storage), then
-   `start_local_print`; after `job_done` 0, the printer's reports watched
+   `start_local_print`; a check or an upload that fails is said by its
+   `failure` (section 17) where the bridge names one, and without a cause
+   where it does not; after `job_done` 0, the printer's reports watched
    for 25 s for a new `job_id` or a printing state (`PrintJob.cpp`
    `lan_started_fn`), else "The file was uploaded but the printer did not
    start the job. ...".
@@ -808,6 +811,17 @@ hand stays, with its own address and code. The reference keeps a code the
 cloud gave in `app_config`'s `access_code` after the sign-out (it clears it
 only in memory); here it goes with the account.
 
+**Printing to one** (the send, stage 3): "Send print job to" lists the
+account's printers not added yet beside those added (SelectMachine.cpp
+lists the account's machines with the LAN ones). Choosing one asks for its
+address ("Connect the printer using IP and access code", the serial, name
+and model filled in, the code left to the account); it is then a printer
+added like any other, dialled with `connect_printer` and sent to with
+`start_send_gcode_to_sdcard` and `start_local_print` (section 14), the
+account's code in `password`. Nothing goes through the cloud. Nothing is
+sent until the person presses "Send" and confirms the printer and its
+address.
+
 ### 16.6 The sign-in window (the app's side, for the bridge implementer's information)
 
 A window of the app's own (`bambu-sign-in`), titled "Login", 650 x 840
@@ -825,3 +839,43 @@ RFC 6761), reads the message there and hands it to the Rust side, which
 calls the bridge. The ticket never reaches the main page. A test-only
 override (`EDGE_BAMBU_SIGN_IN=http://127.0.0.1:<port>/...`, loopback only,
 refused otherwise) points the window at a local page; no test opens it.
+
+## 17. An addition to 1.1: why an upload failed (`job_done`'s `failure`)
+
+**In force** (2026-11-27). UltraNet returns
+`BAMBU_NETWORK_ERR_PRINT_SG_UPLOAD_FTP_FAILED` (-5010) from
+`start_send_gcode_to_sdcard`, and `..._LP_UPLOAD_FTP_FAILED` (-4020) from
+`start_local_print`, for every failed upload: a refused access code, a
+printer that cannot be reached and a transfer that broke alike. The
+reference then says the code was refused after any failed access-code check
+(`m_enter_ip_address_fun_fail`, PrintJob.cpp l.228-233). The codes stay as
+they are (the C++ host uses them); the cause goes in a field of its own:
+
+| Event | Field | Values |
+| --- | --- | --- |
+| `job_done` | `failure` (string, optional) | `access_code`: the printer refused the access code (FTP 530 to `PASS`). `unreachable`: no connection to the printer could be made (the FTPS control connection was refused or timed out). `upload`: connected and logged in, but the file did not get there whole (`PASV`, `STOR`, the data channel, no 226 and no matching `SIZE`). |
+
+- The bridge names a cause only when the exchange proves it, and only on a
+  job that failed and was not cancelled (`ret` neither 0 nor -18). Anything
+  else (a TLS failure, a 421, a connection lost before the login ended, an
+  unreadable local file, the internal-storage upload, the start command)
+  leaves the field out.
+- A reader that does not know the field ignores it. A value it does not
+  know is read as no value. The app reads a missing field as "not known"
+  (an older bridge, or a cause not proven) and says the failure without a
+  cause.
+- No `minor` changes: the field describes itself, and section 15's
+  proposals keep minor 2. The bridge that has it is `bridge_version`
+  1.1.1.
+- It never holds a code, a path or the plug-in's text. `job_status`'s
+  `info` still carries the plug-in's text, for the log and for the "The
+  network plug-in reported" line of a failure with no cause.
+
+What the app says (src/ultranet/send.rs):
+
+| `failure` | The access-code check | The print's own upload |
+| --- | --- | --- |
+| `access_code` | "LAN send failed: the printer rejected the access code (error %1%).", and "The printer refused the access code. Re-enter it" offered | the same |
+| `unreachable` | "LAN send failed: could not connect to the printer (error %1%)." | the same |
+| `upload` | "LAN send failed: uploading the file to the printer failed (error %1%).", the detail saying the code was accepted | the same |
+| none | "The access-code check failed: the printer did not take the small test file (error %1%).", the possible causes named as possible, the plug-in's text, and "Input access code" offered | the reference's diagnosis (`bambu_send_failure_text`) |
