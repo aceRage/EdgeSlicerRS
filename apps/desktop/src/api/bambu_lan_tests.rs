@@ -70,6 +70,23 @@ impl Probe {
         }
     }
 
+    /// A session over a data folder of its own that starts `launcher`'s
+    /// bridge (the real one, for the end-to-end test), its codes in memory.
+    fn with_launcher(launcher: crate::ultranet::client::Launcher, timeouts: Timeouts) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let session = Session::with_bridge_and_secrets(
+            Some(dir.path().to_owned()),
+            launcher,
+            timeouts,
+            Box::new(Memory::default()),
+        );
+        Probe {
+            session: Arc::new(session),
+            answers: Mutex::new(Vec::new()),
+            _dir: dir,
+        }
+    }
+
     fn new(mock: Option<&Mock>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let session = match mock {
@@ -174,8 +191,22 @@ impl Probe {
         })
     }
 
-    fn until<T>(&self, what: &str, mut ready: impl FnMut() -> Option<T>) -> T {
-        let deadline = Instant::now() + Duration::from_secs(20);
+    fn until<T>(&self, what: &str, ready: impl FnMut() -> Option<T>) -> T {
+        self.until_within(what, Duration::from_secs(20), ready)
+    }
+
+    /// As `until`, for a real bridge and printer (the end-to-end test).
+    fn until_long<T>(&self, what: &str, ready: impl FnMut() -> Option<T>) -> T {
+        self.until_within(what, Duration::from_secs(150), ready)
+    }
+
+    fn until_within<T>(
+        &self,
+        what: &str,
+        within: Duration,
+        mut ready: impl FnMut() -> Option<T>,
+    ) -> T {
+        let deadline = Instant::now() + within;
         loop {
             if let Some(found) = ready() {
                 return found;
@@ -1030,3 +1061,6 @@ fn a_store_that_refuses_gives_way_to_the_file_and_says_so() {
     probe.connected();
     probe.never_said_a_code();
 }
+
+#[path = "bambu_send_e2e.rs"]
+mod e2e;
