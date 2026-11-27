@@ -553,6 +553,119 @@ fn a_bridge_that_dies_in_the_upload_ends_the_send() {
 }
 
 #[test]
+fn a_failed_access_code_check_says_what_failed_and_only_that() {
+    // UltraNet answers -5010 for every failed upload; the bridge names the
+    // cause in `job_done`'s `failure` (ULTRANET_BRIDGE.md section 17).
+    let mock = Mock::new(Setup::default());
+    let probe = Probe::new(Some(&mock));
+    probe.add_printer(CODE);
+    probe.connected();
+    let project = probe.sliced_project();
+    let send = |setup: &dyn Fn(&mut Setup)| {
+        setup(&mut mock.setup.lock().unwrap());
+        let task = probe.ask("bambu_send", json!({ "project": project }))["task"]
+            .as_u64()
+            .unwrap();
+        let end = probe.task_end(task);
+        assert_eq!(end["ok"], false, "{end}");
+        end
+    };
+
+    // FTP refuses the code while the session (MQTT) is up.
+    let end = send(&|s| s.ftp_code = Some(WRONG.into()));
+    assert_eq!(
+        end["error"],
+        "LAN send failed: the printer rejected the access code (error -5010)."
+    );
+    assert_eq!(end["refused"], true, "the code is offered to be re-entered");
+    assert_eq!(end["ask_code"], false);
+
+    // The printer cannot be reached over FTPS.
+    let end = send(&|s| {
+        s.ftp_code = None;
+        s.upload_fails = Some(("", "unreachable"));
+    });
+    assert_eq!(
+        end["error"],
+        "LAN send failed: could not connect to the printer (error -5010)."
+    );
+    assert_eq!(end["refused"], false, "not said to be the code");
+    assert_eq!(end["ask_code"], false);
+    assert!(
+        end["detail"].as_str().unwrap().contains("FTPS 990"),
+        "{end}"
+    );
+
+    // Logged in, but the file did not get there.
+    let end = send(&|s| s.upload_fails = Some(("", "upload")));
+    assert_eq!(
+        end["error"],
+        "LAN send failed: uploading the file to the printer failed (error -5010)."
+    );
+    assert!(
+        end["detail"].as_str().unwrap().starts_with(
+            "The printer accepted the access code, but the file did not reach it whole."
+        ),
+        "{end}"
+    );
+    assert_eq!(end["refused"], false);
+
+    // A bridge from before section 17: no cause is claimed.
+    let end = send(&|s| s.names_failure = false);
+    assert_eq!(
+        end["error"],
+        "The access-code check failed: the printer did not take the small test file (error -5010)."
+    );
+    let detail = end["detail"].as_str().unwrap();
+    assert!(detail.starts_with("The printer may have refused the access code, it may not be reachable over FTPS (port 990), or its card may be full or write-protected."), "{detail}");
+    assert!(
+        detail.contains("STOR rejected"),
+        "the plug-in's words: {detail}"
+    );
+    assert_eq!(end["refused"], false);
+    assert_eq!(end["ask_code"], true, "the code may still be entered again");
+
+    // Nothing was printed, and every check was the small test file.
+    assert!(mock.requests("start_local_print").is_empty());
+    assert!(
+        mock.requests("start_send_gcode_to_sdcard")
+            .iter()
+            .all(|r| r["params"]["project_name"] == "verify_job")
+    );
+    // The code is never shown, and still kept: none of these forgot it.
+    assert_eq!(
+        probe.ask("bambu_printers", json!({}))["printers"][0]["has_access_code"],
+        true
+    );
+    probe.never_said_a_code();
+}
+
+#[test]
+fn a_failed_upload_of_the_print_says_its_proven_cause() {
+    // The check passes, the print's own upload fails: -4020, said by the
+    // cause the bridge proves, not by reading the plug-in's text.
+    let mock = Mock::new(Setup {
+        upload_fails: Some(("start_local_print", "upload")),
+        ..Setup::default()
+    });
+    let probe = Probe::new(Some(&mock));
+    probe.add_printer(CODE);
+    probe.connected();
+    let project = probe.sliced_project();
+    let task = probe.ask("bambu_send", json!({ "project": project }))["task"]
+        .as_u64()
+        .unwrap();
+    let end = probe.task_end(task);
+    assert_eq!(
+        end["error"],
+        "LAN send failed: uploading the file to the printer failed (error -4020)."
+    );
+    assert_eq!(end["refused"], false);
+    assert_eq!(mock.requests("start_send_gcode_to_sdcard").len(), 1);
+    probe.never_said_a_code();
+}
+
+#[test]
 fn a_printer_not_in_developer_mode_is_said_before_sending() {
     let mock = Mock::new(Setup {
         secured: true,

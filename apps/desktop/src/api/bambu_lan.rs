@@ -227,6 +227,7 @@ impl Session {
                 Ok(json!({
                     "task": task, "percent": p.percent, "message": p.message, "done": p.done, "ok": p.ok,
                     "error": p.error, "detail": p.detail, "code": p.code, "refused": p.refused,
+                    "ask_code": p.ask_code,
                 }))
             }
             "bambu_task_cancel" => {

@@ -152,6 +152,38 @@ impl Default for Remote {
     }
 }
 
+/// Why a job's upload failed, as the bridge proves it (`job_done`'s
+/// `failure`, ULTRANET_BRIDGE.md section 17). None of these when the
+/// bridge does not say (an older bridge, or a cause it cannot prove).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Failure {
+    /// The printer refused the access code (FTP 530).
+    AccessCode,
+    /// No connection to the printer could be made.
+    Unreachable,
+    /// Connected and logged in, but the file did not get there whole.
+    Upload,
+}
+
+impl Failure {
+    /// The field's value; anything else is not known here, and ignored.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "access_code" => Some(Failure::AccessCode),
+            "unreachable" => Some(Failure::Unreachable),
+            "upload" => Some(Failure::Upload),
+            _ => None,
+        }
+    }
+}
+
+/// How a job ended: `job_done`'s `ret`, and its `failure` when named.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ended {
+    pub ret: i64,
+    pub failure: Option<Failure>,
+}
+
 /// What the bridge said of one of its jobs.
 #[derive(Clone, Debug, Default)]
 pub struct JobState {
@@ -159,6 +191,8 @@ pub struct JobState {
     pub statuses: Vec<(i64, i64, String)>,
     /// `job_done`'s `ret`.
     pub done: Option<i64>,
+    /// `job_done`'s `failure` (section 17), when the bridge named one.
+    pub failure: Option<Failure>,
     /// Why it ended without `job_done` (the bridge died).
     pub lost: Option<String>,
 }
@@ -748,14 +782,14 @@ impl Client {
     }
 
     /// Waits for a job to end, telling `progress` of each status; ends
-    /// with `job_done`'s `ret`, or why there was none. `cancelled` is
+    /// with `job_done`'s `ret` and `failure`, or why there was none. `cancelled` is
     /// asked as it goes and, once true, cancels the job.
     pub fn wait_job(
         &self,
         job: u64,
         mut progress: impl FnMut(i64, i64, &str),
         cancelled: impl Fn() -> bool,
-    ) -> Result<i64, String> {
+    ) -> Result<Ended, String> {
         let mut seen = 0;
         let mut told_cancel = false;
         loop {
@@ -766,7 +800,10 @@ impl Client {
             seen = state.statuses.len();
             if let Some(ret) = state.done {
                 lock(&self.shared.jobs).remove(&job);
-                return Ok(ret);
+                return Ok(Ended {
+                    ret,
+                    failure: state.failure,
+                });
             }
             if let Some(why) = state.lost {
                 lock(&self.shared.jobs).remove(&job);
@@ -989,7 +1026,10 @@ fn event(message: &Value, conn: &Arc<Conn>, shared: &Arc<Shared>, started: Durat
         }
         Some("job_done") => {
             let Some(job) = p["job"].as_u64() else { return };
-            lock(&shared.jobs).entry(job).or_default().done = Some(p["ret"].as_i64().unwrap_or(-1));
+            let mut jobs = lock(&shared.jobs);
+            let state = jobs.entry(job).or_default();
+            state.failure = p["failure"].as_str().and_then(Failure::from_name);
+            state.done = Some(p["ret"].as_i64().unwrap_or(-1));
         }
         Some("job_wait") => {
             // PrintJob.cpp `wait_fn`: true once the printer reports the
