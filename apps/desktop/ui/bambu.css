@@ -57,3 +57,15 @@ dialog.bambu-send { width: min(620px, calc(100vw - 32px)); }
 .bambu-sending .queue-bar { width: 100%; }
 .bambu-progress .queue-bar { flex: 1; }
 .bambu-sending p { margin: 0; white-space: pre-line; }
+
+/* The Bambu Lab account: who, its buttons, its printers. */
+.bambu-account { display: flex; flex-direction: column; gap: var(--space-2); padding-top: var(--space-2); border-top: 1px solid var(--line-2); }
+.bambu-account[hidden] { display: none; }
+.bambu-account-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.bambu-account-head > span { flex: 1 1 auto; font-weight: 600; }
+.bambu-account-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-1); }
+.bambu-account-list[hidden] { display: none; }
+.bambu-account-list > li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border: 1px solid var(--line-2); border-radius: var(--radius-l); background: var(--surface-raised); }
+.bambu-account-list .name { flex: 1 1 auto; }
+.bambu-account-list .tag { font-size: 0.85em; padding: 0 var(--space-2); border-radius: var(--radius-l); border: 1px solid var(--line-2); }
+.bambu-account-list .online { color: var(--ok, inherit); }

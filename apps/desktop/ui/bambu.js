@@ -20,6 +20,11 @@ const bambuState = {
   task: null,
   // Device was looked at once with this printer: it was connected then.
   dialled: new Set(),
+  // The account: its list refreshed once this run by itself, the wait for
+  // the sign-in window, the account's printer the add dialog is for.
+  accountRefreshed: false,
+  accountTimer: null,
+  addingAccount: null,
 };
 
 // The printer's colour "RRGGBBAA" as CSS.
@@ -34,6 +39,61 @@ async function bambuPrinters() {
   bambuState.printers = await call('bambu_printers', {});
   return bambuState.printers;
 }
+
+// ---- The Bambu Lab account (MainFrame.cpp's Account menu, WebUserLoginDialog.cpp) ----
+
+// "Bambu Lab: <name>" or "Bambu Lab: signed out", its buttons, what the
+// session says, and the account's printers (never a code: the session
+// keeps them).
+function drawBambuAccount(printers) {
+  const account = printers && printers.account;
+  const box = $('bambu-account');
+  box.hidden = !account || (!account.offered && !account.signed_in);
+  if (box.hidden) return;
+  const busy = account.phase !== 'idle';
+  $('bambu-account-who').textContent = `${t('Bambu Lab')}: ${account.signed_in ? account.name || '' : t('signed out')}`;
+  $('bambu-sign-in').hidden = account.signed_in;
+  $('bambu-sign-in').disabled = busy || !account.can_sign_in || !account.offered;
+  $('bambu-sign-out').hidden = !account.signed_in;
+  $('bambu-account-refresh').hidden = !account.signed_in;
+  $('bambu-account-refresh').disabled = busy;
+  const said = account.said || (account.phase === 'working' ? t('connecting...') : '');
+  $('bambu-account-said').hidden = !said;
+  $('bambu-account-said').textContent = said;
+  $('bambu-account-said').className = account.said ? 'error' : 'quiet';
+  const list = $('bambu-account-printers');
+  const mine = printers.account_printers || [];
+  list.hidden = !mine.length;
+  list.replaceChildren(...mine.map((p) => el('li', {},
+    el('span', { className: 'name', textContent: p.model_name ? `${p.name} (${p.model_name.replace('Bambu Lab ', '')})` : p.name }),
+    el('span', { className: `quiet${p.online ? ' online' : ''}`, textContent: t(p.online ? 'Online' : 'Offline') }),
+    el('span', { className: 'tag', textContent: t('Bambu Lab'), title: t('Sign in to your Bambu Lab account to see your cloud printers') }),
+    p.added ? el('span', { className: 'quiet', textContent: p.dev_id })
+      : el('button', { type: 'button', textContent: t('Add'), onclick: () => attempt(() => openBambuAdd(p)) }))));
+  // While the sign-in window is open or the bridge is asked: looked at again.
+  clearTimeout(bambuState.accountTimer);
+  if (busy) {
+    bambuState.accountTimer = setTimeout(() => attempt(async () => {
+      const next = await bambuPrinters();
+      drawBambuAccount(next);
+      if (next.account && next.account.phase === 'idle') await showBambuDevice();
+    }), 1000);
+  }
+}
+
+$('bambu-sign-in').addEventListener('click', () => attempt(async () => {
+  await call('bambu_account_sign_in', {});
+  drawBambuAccount(await bambuPrinters());
+}));
+$('bambu-sign-out').addEventListener('click', () => attempt(async () => {
+  await call('bambu_account_sign_out', {});
+  await showBambuDevice();
+}));
+$('bambu-account-refresh').addEventListener('click', () => attempt(async () => {
+  $('bambu-account-refresh').disabled = true;
+  await call('bambu_account_refresh', {});
+  await showBambuDevice();
+}));
 
 // What the bridge's state says, when it says anything; and "Retry" where
 // it gave up or was refused.
@@ -74,6 +134,14 @@ async function showBambuDevice() {
   $('bambu-connect').disabled = none;
   bambuBridgeNote(printers.bridge);
   bambuSecretsNote(printers);
+  drawBambuAccount(printers);
+  // The account's list refreshed once a run, by itself only where the store
+  // is at hand (reading it may make the system ask the person).
+  if (printers.account && printers.account.signed_in && printers.secrets.at_hand && printers.bridge.state !== 'absent'
+      && !bambuState.accountRefreshed && state.tab === 'device') {
+    bambuState.accountRefreshed = true;
+    attempt(async () => drawBambuAccount(await bambuPrinters(await call('bambu_account_refresh', {}))));
+  }
   if (none || state.tab !== 'device') return;
   // Looked at: the printer is dialled, once, as the reference dials the
   // printer it selects. A bridge that is absent is not started. Only where
@@ -156,15 +224,27 @@ function bambuAddReady() {
   const ip = $('bambu-ip').value.trim();
   const code = $('bambu-code').value;
   const ipOk = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.test(ip) && ip.split('.').every((n) => Number(n) <= 255);
+  // A printer of the account may be added with its address alone: the
+  // session has the code the account gave.
+  const account = bambuState.addingAccount;
+  const accountCode = account && account.has_access_code && code === '' && $('bambu-sn').value.trim().toUpperCase() === account.dev_id;
   // `on_text`: an IP, eight letters or digits, fifteen characters of serial, a name.
-  $('bambu-add-ok').disabled = !(ipOk && /^[A-Za-z0-9]{8}$/.test(code) && $('bambu-sn').value.trim().length === 15 && $('bambu-name').value.trim());
+  $('bambu-add-ok').disabled = !(ipOk && (accountCode || /^[A-Za-z0-9]{8}$/.test(code)) && $('bambu-sn').value.trim().length === 15 && $('bambu-name').value.trim());
 }
 for (const id of ['bambu-ip', 'bambu-code', 'bambu-sn', 'bambu-name']) $(id).addEventListener('input', bambuAddReady);
 
-async function openBambuAdd() {
+// `account`: a printer of the account, whose serial, name and model are
+// filled in (the cloud gives no address, DeviceManager.cpp l.8695).
+async function openBambuAdd(account) {
   const printers = await bambuPrinters();
-  fill($('bambu-model'), printers.models.map((m) => m.id), (printers.models.find((m) => m.id === 'C12') || printers.models[0] || {}).id || '', printers.models.map((m) => m.name));
+  bambuState.addingAccount = account && account.dev_id ? account : null;
+  const known = bambuState.addingAccount && printers.models.some((m) => m.id === account.model) ? account.model : null;
+  fill($('bambu-model'), printers.models.map((m) => m.id), known || (printers.models.find((m) => m.id === 'C12') || printers.models[0] || {}).id || '', printers.models.map((m) => m.name));
   for (const id of ['bambu-ip', 'bambu-code', 'bambu-sn', 'bambu-name']) $(id).value = '';
+  if (bambuState.addingAccount) {
+    $('bambu-sn').value = account.dev_id;
+    $('bambu-name').value = account.name || '';
+  }
   $('bambu-add-result').hidden = true;
   bambuAddReady();
   const dialog = $('bambu-add-dialog');
@@ -174,6 +254,7 @@ async function openBambuAdd() {
   await done;
   // The code is taken out of the page as soon as the dialog closes.
   $('bambu-code').value = '';
+  bambuState.addingAccount = null;
 }
 
 $('bambu-add-form').addEventListener('submit', async (event) => {
