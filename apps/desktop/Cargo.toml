@@ -35,6 +35,10 @@ tungstenite = { version = "0.30.0", default-features = false, features = ["hands
 # time-outs of each kind and TLS through rustls, for "HTTPS CA File".
 ureq = { version = "3.5.1", default-features = false, features = ["rustls"] }
 
+# The Bambu sign-in window's guard (`src/ultranet/account.rs`): the
+# addresses it may go to, read as a browser reads them. Already in the
+# tree through Tauri.
+url = "2"
 # Bambu Lab access codes in the system's store (`src/secrets`): the
 # common interface here, one store for each system below. Only the
 # back-ends this app uses, versions pinned; MIT OR Apache-2.0.

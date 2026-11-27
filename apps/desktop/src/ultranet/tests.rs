@@ -21,6 +21,7 @@ fn quick() -> Timeouts {
         connect: Duration::from_secs(5),
         started: Duration::from_millis(500),
         restart: Duration::from_millis(0),
+        account: Duration::from_secs(5),
     }
 }
 

@@ -40,17 +40,30 @@ pub struct Setup {
     /// The bridge echoes the access code in its texts (a bad bridge).
     pub echo_code: bool,
     pub nozzle_diameter: f64,
-    /// `hello`'s minor: 1 offers section 15's proposed methods too (see
-    /// `Setup::later`).
+    /// `hello`'s minor: 1 is the account (section 16), 2 offers section
+    /// 15's proposed methods too (see `Setup::later`).
     pub minor: i64,
+    /// The account's printers: (serial, name, model, online, access code).
+    pub account_printers: Vec<(&'static str, &'static str, &'static str, bool, &'static str)>,
+    /// The account's session ends at the next `account_printers`
+    /// (`account_expired`, ret -2).
+    pub account_expires: bool,
+    /// The cloud fails `account_printers` with this HTTP status.
+    pub cloud_fails: Option<i64>,
+    /// The bridge echoes the account's tokens and codes in its texts (a
+    /// bad bridge).
+    pub echo_tokens: bool,
 }
+
+/// The ticket the mock's cloud takes.
+pub const TICKET: &str = "TICKET-good-1";
 
 impl Setup {
     /// A bridge of the proposed later minor (ULTRANET_BRIDGE.md section
     /// 15): the camera, the files, the firmware update.
     pub fn later() -> Self {
         let mut setup = Setup {
-            minor: 1,
+            minor: 2,
             ..Setup::default()
         };
         setup.methods.extend([
@@ -80,6 +93,12 @@ impl Default for Setup {
                 "start_sdcard_print",
                 "cancel_job",
                 "callback_return",
+                "account_sign_in",
+                "account_restore",
+                "account_refresh",
+                "account_sign_out",
+                "account_profile",
+                "account_printers",
             ],
             plugin_loaded: true,
             plugin_compatible: true,
@@ -96,7 +115,20 @@ impl Default for Setup {
             die_in_upload: false,
             echo_code: false,
             nozzle_diameter: 0.4,
-            minor: 0,
+            minor: 1,
+            account_printers: vec![
+                ("01P09C470100142", "Workshop P1S", "C12", true, "12345678"),
+                (
+                    "00M09A350100777",
+                    "Office X1C",
+                    "BL-P001",
+                    false,
+                    "B4K9Q2ZP",
+                ),
+            ],
+            account_expires: false,
+            cloud_fails: None,
+            echo_tokens: false,
         }
     }
 }
@@ -131,6 +163,10 @@ pub struct Seen {
     pub upgrade_version: String,
     /// Every message it was sent, as JSON (to see what was never sent).
     pub messages: Vec<Value>,
+    /// The account's session the bridge holds: (access token, user id).
+    pub account: Option<(String, String)>,
+    /// Tokens issued so far.
+    pub tokens: u32,
 }
 
 #[derive(Clone)]
@@ -357,6 +393,11 @@ impl Mock {
                     answer(json!({}));
                     break;
                 }
+                "account_sign_in" | "account_restore" | "account_refresh" | "account_sign_out"
+                | "account_profile" | "account_printers" => {
+                    let result = self.account(&method, &p, &setup, &out);
+                    answer(result);
+                }
                 "connect_printer" => {
                     answer(json!({ "ret": 0 }));
                     let ok =
@@ -513,6 +554,97 @@ impl Mock {
                     }
                 }
                 _ => refuse(-32601, "no such method"),
+            }
+        }
+    }
+
+    /// Section 16 as the bridge answers it, its cloud played here.
+    fn account(&self, method: &str, p: &Value, setup: &Setup, out: &Out) -> Value {
+        let mut seen = lock(&self.seen);
+        let issue = |seen: &mut Seen| {
+            seen.tokens += 1;
+            json!({
+                "access_token": format!("AT-mock-{:04}", seen.tokens),
+                "refresh_token": format!("RT-mock-{:04}", seen.tokens),
+                "expires_in": 7_776_000, "refresh_expires_in": 7_776_000, "acquired_at": 1_764_000_000,
+            })
+        };
+        let user = json!({ "id": "1234567", "name": "Fake User" });
+        match method {
+            "account_sign_in" => {
+                if p["ticket"] != TICKET {
+                    return json!({ "ret": -1, "http": 400 });
+                }
+                let session = issue(&mut seen);
+                seen.account = Some((
+                    session["access_token"].as_str().unwrap().into(),
+                    "1234567".into(),
+                ));
+                json!({ "ret": 0, "http": 200, "user": user, "session": session })
+            }
+            "account_restore" => {
+                let access = p["session"]["access_token"].as_str().unwrap_or_default();
+                if access.is_empty() || access == "AT-dead" {
+                    seen.account = None;
+                    return json!({ "ret": -2, "http": 401 });
+                }
+                seen.account = Some((
+                    access.to_owned(),
+                    p["user"]["id"].as_str().unwrap_or_default().into(),
+                ));
+                json!({ "ret": 0, "http": 0, "user": p["user"] })
+            }
+            "account_refresh" => {
+                if seen.account.is_none() {
+                    return json!({ "ret": -3, "http": 0 });
+                }
+                let session = issue(&mut seen);
+                seen.account = Some((
+                    session["access_token"].as_str().unwrap().into(),
+                    "1234567".into(),
+                ));
+                json!({ "ret": 0, "http": 200, "session": session })
+            }
+            "account_sign_out" => {
+                seen.account = None;
+                json!({})
+            }
+            "account_profile" => match &seen.account {
+                Some(_) => json!({ "signed_in": true, "user": user }),
+                None => json!({ "signed_in": false, "user": null }),
+            },
+            _ => {
+                let Some((access, _)) = seen.account.clone() else {
+                    return json!({ "ret": -3, "http": 0 });
+                };
+                if setup.account_expires {
+                    seen.account = None;
+                    send(out, &event("account_expired", json!({})));
+                    return json!({ "ret": -2, "http": 401 });
+                }
+                if let Some(http) = setup.cloud_fails {
+                    return json!({ "ret": -1, "http": http });
+                }
+                let printers: Vec<Value> = setup
+                    .account_printers
+                    .iter()
+                    .map(|(serial, name, model, online, code)| {
+                        json!({ "dev_id": serial, "dev_name": name, "dev_model_name": model, "dev_online": online,
+                                "task_status": "IDLE", "dev_access_code": code })
+                    })
+                    .collect();
+                if setup.echo_tokens {
+                    // A bad bridge: a status text holding the token and a code.
+                    send(
+                        out,
+                        &event(
+                            "job_status",
+                            json!({ "job": 999, "stage": 0, "code": 0,
+                        "info": format!("token {access} code {}", setup.account_printers.first().map_or("", |p| p.4)) }),
+                        ),
+                    );
+                }
+                json!({ "ret": 0, "http": 200, "printers": printers })
             }
         }
     }

@@ -17,6 +17,14 @@
 //! The print options of "Send print job to" are remembered here too, as the
 //! reference keeps them in `app_config`'s `print` section ("bed_leveling",
 //! "flow_cali", "timelapse": SelectMachine.cpp l.902-929).
+//!
+//! And the Bambu Lab account (ULTRANET_BRIDGE.md section 16): who is
+//! signed in and the account's printers, without their codes, in
+//! `bambu_printers.json` (so Device shows them without reading the store);
+//! the tokens and the account's codes in the store, in the field of their
+//! own (`secrets::ACCOUNT_ID`), read only when the account is used. A code
+//! typed for a printer wins over the one the account gives
+//! (`MachineObject::get_access_code`, DeviceManager.cpp l.502-507).
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -25,8 +33,11 @@ use std::{
 
 use serde_json::{Map, Value, json};
 
+use super::account::{AccountPrinter, AccountSecret, User};
 use crate::hosts::kept::write_whole;
-use crate::secrets::{self, FILE as SECRETS, FileStore, Kind, Memory, Refused, Secrets};
+use crate::secrets::{
+    self, ACCOUNT_ID, FILE as SECRETS, FileStore, Kind, Memory, Refused, Secrets,
+};
 
 const FILE: &str = "bambu_printers.json";
 
@@ -49,8 +60,20 @@ pub struct Options {
     pub timelapse: Option<bool>,
 }
 
+/// The account as Device shows it: who, and the account's printers
+/// (`userMachineList`), never a token or a code.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Account {
+    pub user: User,
+    pub printers: Vec<AccountPrinter>,
+}
+
 pub struct Kept {
     dir: Option<PathBuf>,
+    /// The account signed in, as last known (kept between runs).
+    pub account: Option<Account>,
+    /// Its secrets, once read this run (`Some(None)`: read, none there).
+    account_secret: Option<Option<AccountSecret>>,
     pub printers: Vec<Printer>,
     /// The printers whose code is kept (in the store, not here).
     coded: BTreeSet<String>,
@@ -92,6 +115,8 @@ impl Kept {
     pub fn open(dir: Option<PathBuf>, secrets: Box<dyn Secrets>) -> Self {
         let mut kept = Kept {
             dir: dir.clone(),
+            account: None,
+            account_secret: None,
             printers: Vec::new(),
             coded: BTreeSet::new(),
             known: BTreeMap::new(),
@@ -121,6 +146,26 @@ impl Kept {
                 kept.printers.push(printer);
             }
             kept.selected = root["selected"].as_str().map(str::to_owned);
+            if root["account"].is_object() {
+                let account = &root["account"];
+                kept.account = Some(Account {
+                    user: User::from(&account["user"]),
+                    printers: account["printers"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|p| AccountPrinter {
+                            dev_id: text(p, "dev_id"),
+                            name: text(p, "dev_name"),
+                            model: text(p, "printer_type"),
+                            online: p["online"].as_bool().unwrap_or(false),
+                            task_status: text(p, "task_status"),
+                            has_code: p["access_code_kept"].as_bool().unwrap_or(false),
+                        })
+                        .filter(|p| !p.dev_id.is_empty())
+                        .collect(),
+                });
+            }
             let option = |key: &str| root["print"][key].as_bool();
             kept.options = Options {
                 bed_leveling: option("bed_leveling"),
@@ -132,7 +177,9 @@ impl Kept {
         // before the system's store said nothing of them). Its codes are
         // not kept from here.
         match secrets::read_file(&dir.join(SECRETS)) {
-            Ok(codes) => kept.coded.extend(codes.into_keys()),
+            Ok(codes) => kept
+                .coded
+                .extend(codes.into_keys().filter(|id| !id.starts_with('@'))),
             Err(Refused(why)) => kept.problem = Some(why),
         }
         kept
@@ -166,8 +213,20 @@ impl Kept {
     }
 
     /// Whether a code is kept for the printer: said without reading it.
+    /// The account's code counts too.
     pub fn has_code(&self, dev_id: &str) -> bool {
-        self.coded.contains(dev_id)
+        self.coded.contains(dev_id) || self.account_has_code(dev_id)
+    }
+
+    fn account_has_code(&self, dev_id: &str) -> bool {
+        self.account_printer(dev_id).is_some_and(|p| p.has_code)
+    }
+
+    /// A printer of the account.
+    pub fn account_printer(&self, dev_id: &str) -> Option<&AccountPrinter> {
+        self.account
+            .as_ref()
+            .and_then(|a| a.printers.iter().find(|p| p.dev_id == dev_id))
     }
 
     /// Whether a code can be had without asking the system's store (which
@@ -185,7 +244,13 @@ impl Kept {
     /// one is needed. Handed to the bridge only.
     pub fn code(&mut self, dev_id: &str) -> Result<Option<String>, String> {
         if !self.coded.contains(dev_id) {
-            return Ok(None);
+            // The one the account gave, where none was typed.
+            if !self.account_has_code(dev_id) {
+                return Ok(None);
+            }
+            return Ok(self
+                .account_secret()?
+                .and_then(|secret| secret.codes.get(dev_id).cloned()));
         }
         if let Some(code) = self.known.get(dev_id) {
             return Ok(Some(code.clone()));
@@ -201,7 +266,84 @@ impl Kept {
     /// Every code read or set this run: what is taken out of anything the
     /// bridge says (it has been handed no other).
     pub fn codes(&self) -> Vec<String> {
-        self.known.values().cloned().collect()
+        let mut out: Vec<String> = self.known.values().cloned().collect();
+        if let Some(Some(secret)) = &self.account_secret {
+            out.extend(secret.secrets());
+        }
+        out
+    }
+
+    /// The account's secrets (its tokens and codes), read from the store
+    /// the first time they are needed this run (which may make the system
+    /// ask the person). `None` when none are kept.
+    pub fn account_secret(&mut self) -> Result<Option<AccountSecret>, String> {
+        if let Some(read) = &self.account_secret {
+            return Ok(read.clone());
+        }
+        self.move_old_codes();
+        let text = self.with_store(|store| store.get(ACCOUNT_ID))?;
+        let secret = text.as_deref().and_then(AccountSecret::parse);
+        self.account_secret = Some(secret.clone());
+        Ok(secret)
+    }
+
+    /// Signed in, or the session or the list changed: the secrets in the
+    /// store (written only when they changed), who and the printers in
+    /// the list. `printers` None keeps the list as it was.
+    pub fn set_account(
+        &mut self,
+        secret: AccountSecret,
+        printers: Option<Vec<AccountPrinter>>,
+    ) -> Result<(), String> {
+        if self.account_secret.as_ref() != Some(&Some(secret.clone())) {
+            self.move_old_codes();
+            let text = secret.text();
+            self.with_store(|store| store.set(ACCOUNT_ID, &text))
+                .map_err(|_| "The Bambu Lab sign-in could not be kept.".to_owned())?;
+            self.account_secret = Some(Some(secret.clone()));
+        }
+        let was = self.account.clone();
+        let printers = printers
+            .or_else(|| was.as_ref().map(|a| a.printers.clone()))
+            .unwrap_or_default();
+        self.account = Some(Account {
+            user: secret.user.clone(),
+            printers,
+        });
+        if let Err(error) = self.write(
+            &self.printers,
+            &self.coded,
+            self.selected.as_deref(),
+            &self.options,
+        ) {
+            self.account = was;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Signed out (`request_user_logout`, `clean_user_info`): the account's
+    /// secrets out of the store, its printers out of the list. A printer
+    /// also added by hand stays, with its own address and code.
+    pub fn clear_account(&mut self) -> Result<(), String> {
+        let kept = self.account_secret.as_ref().is_none_or(Option::is_some);
+        if kept {
+            self.move_old_codes();
+            self.with_store(|store| store.delete(ACCOUNT_ID))
+                .map_err(|_| "The Bambu Lab sign-in could not be removed.".to_owned())?;
+        }
+        self.account_secret = Some(None);
+        let was = self.account.take();
+        if let Err(error) = self.write(
+            &self.printers,
+            &self.coded,
+            self.selected.as_deref(),
+            &self.options,
+        ) {
+            self.account = was;
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Does `what` on the store; where the system's store refuses, the
@@ -418,7 +560,17 @@ impl Kept {
                 print.insert(key.into(), json!(value));
             }
         }
-        let root = json!({ "version": 1, "selected": selected, "print": print, "printers": list });
+        let mut root =
+            json!({ "version": 1, "selected": selected, "print": print, "printers": list });
+        if let Some(account) = &self.account {
+            root["account"] = json!({
+                "user": account.user.json(),
+                "printers": account.printers.iter().map(|p| json!({
+                    "dev_id": p.dev_id, "dev_name": p.name, "printer_type": p.model, "online": p.online,
+                    "task_status": p.task_status, "access_code_kept": p.has_code,
+                })).collect::<Vec<_>>(),
+            });
+        }
         let text = serde_json::to_string_pretty(&root).expect("plain JSON");
         write_whole(&dir.join(FILE), text.as_bytes(), false).map_err(|error| failed(FILE, error))
     }

@@ -677,7 +677,7 @@ of a JSON text (WebUserLoginDialog.cpp l.273-424):
 | --- | --- | --- | --- |
 | `user_ticket_login` | `ticket`: a short-lived ticket | l.303-370: `get_my_token(ticket)`, then `get_my_profile(accessToken)`, then `change_user` with the tokens and the profile | `account_sign_in {ticket}` |
 | `user_login` | `token`, `refresh_token`, `expires_in`, `refresh_expires_in`, `user {uid, name, account, avatar}` | l.285-302: `change_user(<the message>)` | `account_restore` with those tokens |
-| `get_localhost_url`, `thirdparty_login`, `new_webpage` | | l.371-419: Google / Apple sign-in through the system's browser and a listener on `localhost:13650` | **not built**: it needs a listening port (section 11: nothing listens) and another application; the window says the sign-in with a password is the one offered |
+| `get_localhost_url`, `thirdparty_login`, `new_webpage` | | l.371-419: Google / Apple sign-in through the system's browser and a listener on `localhost:13650` | **not built**: it needs a listening port (section 11: nothing listens) and another application; the app says that the sign-in with the account's e-mail and password is the one offered, and the window stays open |
 | `autotest_token` | | l.281-284 | ignored |
 
 ### 16.2 Methods
@@ -745,14 +745,15 @@ failure, which is why the bridge calls the REST function itself).
 The `account_*` methods call the cloud (two calls for `account_sign_in`, up
 to three for `account_printers`; UltraNet's HTTPS client waits up to 20 s
 for each connect, send and receive). They are therefore not under the 10 s
-rule of section 3: the bridge runs them one at a time on a thread of their
-own (so LAN requests are not held behind them), never answers them with a
-time-out of its own, and answers each within 150 s; the app waits 160 s. If
-the app gives up on one all the same, it sends `account_sign_out` and
-forgets the session it had asked about, so neither side keeps a session the
-other does not know of (a late result is dropped, as any late answer is).
-`account_profile` and `account_sign_out` touch no network and are short
-requests.
+rule of section 3: the bridge runs them one at a time, in order, on a thread
+of their own (so LAN requests are not held behind them), and answers each
+within 150 s: one not done by then is answered `{ret: -1, http: 0}`, and when
+it does finish the bridge signs out, so a late success leaves no session the
+app was told had failed. The app waits 160 s; if it gives up on one all the
+same, it sends `account_sign_out` (and keeps the session it has in its
+store: a later "Refresh" restores it, or finds it over). `account_sign_out`
+touches no network but waits behind an account call under way;
+`account_profile` is answered at once.
 
 ### 16.4 The tokens and the account's access codes
 
@@ -816,7 +817,8 @@ navigates only to `https` pages of `bambulab.com` and its subdomains
 window, has no access to the app's calls (Tauri allows none to a remote
 page, and each of the app's commands refuses any window but the main one),
 and hands the result back without a call: a script the window runs first
-defines `window.wx.postMessage`, which turns the message into a navigation
+defines `window.wx.postMessage` (and `window.webkit.messageHandlers.wx`
+where WebKit lets it), which turns the message into a navigation
 to `https://sign-in-result.edgeslicer.invalid/#<the message>`; the window's
 navigation guard stops that navigation (the `.invalid` name never resolves,
 RFC 6761), reads the message there and hands it to the Rust side, which
