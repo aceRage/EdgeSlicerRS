@@ -313,7 +313,7 @@ fn a_plate_goes_to_the_printer_and_prints_to_its_end() {
 
     let sent = probe.ask(
         "bambu_send",
-        json!({ "project": project, "options": { "bed_leveling": false, "flow_cali": true, "timelapse": false, "use_ams": true } }),
+        json!({ "project": project, "options": { "bed_leveling": false, "flow_cali": true, "timelapse": false, "use_ams": true }, "confirmed": "printer" }),
     );
     let task = sent["task"].as_u64().unwrap_or_else(|| panic!("{sent}"));
     let end = probe.task_end(task);
@@ -531,7 +531,7 @@ fn an_ams_that_holds_nothing_the_plate_prints_with_blocks_the_send() {
     assert_eq!(off["status"]["key"], "ready");
     let task = probe.ask(
         "bambu_send",
-        json!({ "project": project, "options": { "use_ams": false } }),
+        json!({ "project": project, "options": { "use_ams": false }, "confirmed": "printer" }),
     )["task"]
         .as_u64()
         .unwrap();
@@ -571,7 +571,10 @@ fn a_bridge_that_dies_in_the_upload_ends_the_send() {
     probe.add_printer(CODE);
     probe.connected();
     let project = probe.sliced_project();
-    let task = probe.ask("bambu_send", json!({ "project": project }))["task"]
+    let task = probe.ask(
+        "bambu_send",
+        json!({ "project": project, "confirmed": "printer" }),
+    )["task"]
         .as_u64()
         .unwrap();
     let end = probe.task_end(task);
@@ -635,7 +638,10 @@ fn a_printer_of_the_account_is_offered_in_the_send_dialog_and_prints_over_the_la
     // Nothing made the printer act before "Send".
     assert!(mock.requests("start_send_gcode_to_sdcard").is_empty());
     assert!(mock.requests("start_local_print").is_empty());
-    let task = probe.ask("bambu_send", json!({ "project": project }))["task"]
+    let task = probe.ask(
+        "bambu_send",
+        json!({ "project": project, "confirmed": "printer" }),
+    )["task"]
         .as_u64()
         .unwrap();
     let end = probe.task_end(task);
@@ -706,7 +712,10 @@ fn a_failed_access_code_check_says_what_failed_and_only_that() {
     let project = probe.sliced_project();
     let send = |setup: &dyn Fn(&mut Setup)| {
         setup(&mut mock.setup.lock().unwrap());
-        let task = probe.ask("bambu_send", json!({ "project": project }))["task"]
+        let task = probe.ask(
+            "bambu_send",
+            json!({ "project": project, "confirmed": "printer" }),
+        )["task"]
             .as_u64()
             .unwrap();
         let end = probe.task_end(task);
@@ -795,7 +804,10 @@ fn a_failed_upload_of_the_print_says_its_proven_cause() {
     probe.add_printer(CODE);
     probe.connected();
     let project = probe.sliced_project();
-    let task = probe.ask("bambu_send", json!({ "project": project }))["task"]
+    let task = probe.ask(
+        "bambu_send",
+        json!({ "project": project, "confirmed": "printer" }),
+    )["task"]
         .as_u64()
         .unwrap();
     let end = probe.task_end(task);
@@ -818,7 +830,10 @@ fn a_printer_not_in_developer_mode_is_said_before_sending() {
     probe.add_printer(CODE);
     probe.connected();
     let project = probe.sliced_project();
-    let task = probe.ask("bambu_send", json!({ "project": project }))["task"]
+    let task = probe.ask(
+        "bambu_send",
+        json!({ "project": project, "confirmed": "printer" }),
+    )["task"]
         .as_u64()
         .unwrap();
     let end = probe.task_end(task);
@@ -856,7 +871,7 @@ fn bambu_pet_cf_in_an_ams_slot_is_refused_as_1039_decides() {
     // Not even once confirmed.
     let again = probe.ask(
         "bambu_send",
-        json!({ "project": project, "confirmed": true }),
+        json!({ "project": project, "confirmed": "warning" }),
     );
     assert_eq!(again["confirm"]["blocking"], true);
     assert!(mock.requests("start_local_print").is_empty());
@@ -1107,3 +1122,103 @@ fn a_store_that_refuses_gives_way_to_the_file_and_says_so() {
 
 #[path = "bambu_send_e2e.rs"]
 mod e2e;
+
+// ---- the question before a send (`send_ask`) ----
+
+#[test]
+fn send_asks_one_question_and_never_none() {
+    use super::{SendAsk, send_ask};
+    // (warned, blocking, confirmed) -> what is asked.
+    let table = [
+        (false, false, None, SendAsk::Printer),
+        (false, false, Some("printer"), SendAsk::Send),
+        (false, false, Some("warning"), SendAsk::Send),
+        (false, false, Some("yes"), SendAsk::Printer),
+        (true, false, None, SendAsk::Warning),
+        (true, false, Some("warning"), SendAsk::Send),
+        // Only the plain question answered, and a warning since: shown.
+        (true, false, Some("printer"), SendAsk::Warning),
+        (true, true, Some("warning"), SendAsk::Blocked),
+        (false, true, Some("printer"), SendAsk::Blocked),
+        (true, true, None, SendAsk::Blocked),
+    ];
+    for (warned, blocking, confirmed, asked) in table {
+        assert_eq!(
+            send_ask(warned, blocking, confirmed),
+            asked,
+            "{warned} {blocking} {confirmed:?}"
+        );
+    }
+}
+
+#[test]
+fn a_send_with_no_warning_asks_which_printer_first() {
+    let mock = Mock::new(Setup::default());
+    let probe = Probe::new(Some(&mock));
+    probe.add_printer(CODE);
+    probe.connected();
+    let project = probe.sliced_project();
+    let asked = probe.ask("bambu_send", json!({ "project": project }));
+    assert!(asked.get("task").is_none(), "{asked}");
+    assert_eq!(asked["confirm"]["title"], "Send print job to");
+    assert_eq!(
+        asked["confirm"]["lines"],
+        json!(["Print this plate on Workshop P1S (192.168.1.20)?"])
+    );
+    assert_eq!(asked["confirm"]["answer"], "printer");
+    assert_eq!(asked["confirm"]["blocking"], false);
+    // An answer that is not the question's is no answer.
+    let again = probe.ask(
+        "bambu_send",
+        json!({ "project": project, "confirmed": true }),
+    );
+    assert_eq!(again["confirm"]["answer"], "printer", "{again}");
+    assert!(mock.requests("start_send_gcode_to_sdcard").is_empty());
+    assert!(mock.requests("start_local_print").is_empty());
+    let task = probe.ask(
+        "bambu_send",
+        json!({ "project": project, "confirmed": "printer" }),
+    )["task"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(probe.task_end(task)["ok"], true);
+    assert_eq!(mock.requests("start_local_print").len(), 1);
+    probe.never_said_a_code();
+}
+
+#[test]
+fn the_reference_warning_accepted_is_the_only_question() {
+    // The printer's nozzle is 0.6, the plate sliced for 0.4: `on_ok_btn`'s
+    // warning, which does not block.
+    let mock = Mock::new(Setup {
+        nozzle_diameter: 0.6,
+        ..Setup::default()
+    });
+    let probe = Probe::new(Some(&mock));
+    probe.add_printer(CODE);
+    probe.connected();
+    let project = probe.sliced_project();
+    let warned = probe.ask("bambu_send", json!({ "project": project }));
+    assert_eq!(warned["confirm"]["title"], "Warning", "{warned}");
+    assert_eq!(warned["confirm"]["answer"], "warning");
+    assert_eq!(warned["confirm"]["blocking"], false);
+    let lines = warned["confirm"]["lines"].to_string();
+    assert!(lines.contains("nozzle diameter"), "{lines}");
+    assert!(!lines.contains("Print this plate"), "{lines}");
+    // Only the plain question answered: the warning is still asked.
+    let again = probe.ask(
+        "bambu_send",
+        json!({ "project": project, "confirmed": "printer" }),
+    );
+    assert_eq!(again["confirm"]["answer"], "warning", "{again}");
+    assert!(mock.requests("start_send_gcode_to_sdcard").is_empty());
+    // The warning accepted: sent, nothing more asked.
+    let sent = probe.ask(
+        "bambu_send",
+        json!({ "project": project, "confirmed": "warning" }),
+    );
+    let task = sent["task"].as_u64().unwrap_or_else(|| panic!("{sent}"));
+    assert_eq!(probe.task_end(task)["ok"], true);
+    assert_eq!(mock.requests("start_local_print").len(), 1);
+    probe.never_said_a_code();
+}

@@ -114,7 +114,7 @@ fn an_account_printer_gets_the_plate_over_the_lan_through_the_real_bridge() {
 
     let sent = probe.ask(
         "bambu_send",
-        json!({ "project": project, "dev_id": SERIAL, "options": { "use_ams": false, "timelapse": false } }),
+        json!({ "project": project, "dev_id": SERIAL, "options": { "use_ams": false, "timelapse": false }, "confirmed": "printer" }),
     );
     let task = sent["task"].as_u64().unwrap_or_else(|| panic!("{sent}"));
     let end = probe.until_long("the send to end", || {

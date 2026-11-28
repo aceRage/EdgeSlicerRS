@@ -473,23 +473,25 @@ $('bambu-send-go').addEventListener('click', () => attempt(async () => {
     },
   };
   if (bambuState.picked) args.mapping = bambuState.picked;
-  // Asked first, as everything that makes a printer act is: which printer,
-  // at which address (an account's printer has the address typed for it).
-  const printer = ((bambuState.dialog && bambuState.dialog.printers) || []).find((p) => p.dev_id === args.dev_id);
-  if (!printer) return;
-  const question = t('Print this plate on %s (%s)?').replace('%s', printer.name).replace('%s', printer.ip);
-  if (!await confirmBox(t('Send print job to'), question, t('Send'), t('Cancel'))) return;
+  if (!args.dev_id || args.dev_id.startsWith('@')) return;
   args.pictures = await window.slicedPictures(project, false).catch(() => ({}));
+  // The session sends nothing without one question answered (`send_ask`):
+  // the reference's warning when it has lines, otherwise "Print this plate
+  // on <name> (<address>)?". Asked until the session starts the send; a
+  // warning that appears after the plain question is asked as well.
   let answer = await call('bambu_send', args);
-  if (answer.confirm) {
+  while (answer.confirm) {
     const text = answer.confirm.lines.join('\n');
-    if (answer.confirm.blocking) {
+    if (answer.confirm.blocking || !answer.confirm.answer) {
       await inform(answer.confirm.title, text);
       return;
     }
-    if (!await confirmBox(answer.confirm.title, text, t('Confirm'), t('Cancel'))) return;
-    answer = await call('bambu_send', { ...args, confirmed: true });
+    if (!await confirmBox(answer.confirm.title, text, answer.confirm.ok || t('Confirm'), t('Cancel'))) return;
+    const asked = answer.confirm.answer;
+    answer = await call('bambu_send', { ...args, confirmed: asked });
+    if (answer.confirm && answer.confirm.answer === asked) return;
   }
+  if (answer.task === undefined) return;
   clearTimeout(bambuState.sendTimer);
   bambuState.task = { id: answer.task, done: false };
   $('bambu-send-go').disabled = true;
