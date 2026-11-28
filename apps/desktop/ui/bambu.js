@@ -33,9 +33,40 @@ const bambuPrinterLabel = (p) => (p.model_name ? `${p.name} (${p.model_name.repl
 // The printer's colour "RRGGBBAA" as CSS.
 const trayColour = (colour) => (colour && colour.length >= 6 ? `#${colour.slice(0, 6)}` : '');
 
-function bambuOptions(select, printers, selected) {
-  const list = printers || [];
-  fill(select, list.map((p) => p.dev_id), selected || '', list.map(bambuPrinterLabel));
+// A printer list (Device's and "Send print job to"'s): the printers added,
+// then the account's not added yet under "Bambu Lab", by name, as the
+// reference's one machine list (`SelectMachinePopup`, Device's and the send
+// dialog's alike) lists "My Device" (`update_user_devices`). The cloud
+// gives no address: an account's printer is a choice `@<serial>` that asks
+// for it first (`pickBambuAccountPrinter`), after which it is a printer
+// added like any other (ULTRANET_BRIDGE.md section 16.5).
+function drawBambuPrinterChoices(select, printers, accountPrinters, selected) {
+  const added = (printers || []).map((p) => new Option(bambuPrinterLabel(p), p.dev_id));
+  if (!added.length) added.push(new Option(t('No available printers'), ''));
+  const mine = (accountPrinters || []).filter((p) => !p.added)
+    .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+    .map((p) => new Option(`${bambuPrinterLabel(p)}: ${t('Connect the printer using IP and access code')}`, `@${p.dev_id}`));
+  select.replaceChildren(...added, ...(mine.length ? [el('optgroup', { label: t('Bambu Lab') }, ...mine)] : []));
+  select.disabled = !(printers || []).length && !mine.length;
+  // A selection no longer there (the printer removed): the first added, as
+  // a list without a selection shows it.
+  select.value = (printers || []).some((p) => p.dev_id === selected) ? selected : added[0].value;
+  return mine.length;
+}
+
+// One of the account's chosen in such a list: the choice put back to
+// `selected`, and "Connect the printer using IP and access code" opened with
+// its serial, name and model filled in, the code left to the account's.
+// Nothing is sent to it. null where the choice is not one of the account's;
+// otherwise the serial if it was added, or ''.
+async function pickBambuAccountPrinter(select, accountPrinters, selected) {
+  const value = select.value;
+  if (!value.startsWith('@')) return null;
+  const account = (accountPrinters || []).find((p) => `@${p.dev_id}` === value);
+  select.value = selected || '';
+  if (!account) return '';
+  await openBambuAdd(account);
+  return (await bambuPrinters()).printers.some((p) => p.dev_id === account.dev_id) ? account.dev_id : '';
 }
 
 async function bambuPrinters() {
@@ -130,9 +161,9 @@ async function showBambuDevice() {
     say(error.message, true);
     return;
   }
-  bambuOptions($('bambu-printer'), printers.printers, printers.selected);
+  const offered = drawBambuPrinterChoices($('bambu-printer'), printers.printers, printers.account_printers, printers.selected);
   const none = !printers.printers.length;
-  $('bambu-none').hidden = !none;
+  $('bambu-none').hidden = !none || offered > 0;
   $('bambu-remove').disabled = none;
   $('bambu-connect').disabled = none;
   bambuBridgeNote(printers.bridge);
@@ -199,6 +230,14 @@ function drawBambu(s) {
 }
 
 $('bambu-printer').addEventListener('change', () => attempt(async () => {
+  const known = bambuState.printers || {};
+  const picked = await pickBambuAccountPrinter($('bambu-printer'), known.account_printers, known.selected);
+  if (picked !== null) {
+    // Added (and selected, and dialled by the dialog), or not: shown again.
+    await showBambuDevice();
+    if (picked && typeof watchDevice === 'function') watchDevice(true);
+    return;
+  }
   await call('bambu_select', { dev_id: $('bambu-printer').value });
   bambuState.dialled.delete($('bambu-printer').value);
   await showBambuDevice();
@@ -357,7 +396,7 @@ async function refreshBambuSend(connect = false, devId = null) {
   if (!dialog.open || bambuState.task) return;
   const first = !bambuState.dialog;
   bambuState.dialog = answer;
-  drawBambuSendPrinters(answer);
+  drawBambuPrinterChoices($('bambu-send-printer'), answer.printers, answer.account_printers, answer.printer);
   $('bambu-send-bed').textContent = answer.bed ? `${t('Plate')}: ${t(answer.bed)}` : '';
   bambuCodeButton(answer.refused, false);
   if (answer.options) {
@@ -376,20 +415,6 @@ async function refreshBambuSend(connect = false, devId = null) {
   $('bambu-send-status').className = status.warning ? 'warn' : 'quiet';
   $('bambu-send-go').disabled = !status.can_send;
   bambuState.sendTimer = setTimeout(() => refreshBambuSend(false), 2000);
-}
-
-// The printers added, then the account's not added yet (section 16.5 of
-// ULTRANET_BRIDGE.md; SelectMachine.cpp lists the account's machines with
-// the LAN ones). The cloud gives no address: choosing one of the account's
-// asks for it first, and it is then a printer added like any other.
-function drawBambuSendPrinters(answer) {
-  const select = $('bambu-send-printer');
-  const added = (answer.printers || []).map((p) => new Option(bambuPrinterLabel(p), p.dev_id));
-  if (!added.length) added.push(new Option(t('No available printers'), ''));
-  const mine = (answer.account_printers || []).map((p) => new Option(`${bambuPrinterLabel(p)}: ${t('Connect the printer using IP and access code')}`, `@${p.dev_id}`));
-  select.replaceChildren(...added, ...(mine.length ? [el('optgroup', { label: t('Bambu Lab') }, ...mine)] : []));
-  select.disabled = !(answer.printers || []).length && !mine.length;
-  select.value = answer.printer || '';
 }
 
 // "Re-enter" the access code: said refused only when it was (the access-code
@@ -423,20 +448,13 @@ function drawBambuFilaments(answer) {
 
 $('bambu-send-printer').addEventListener('change', () => attempt(async () => {
   bambuState.picked = null;
-  const value = $('bambu-send-printer').value;
-  if (value.startsWith('@')) {
-    // One of the account's: its address asked for ("Connect the printer
-    // using IP and access code", its serial, name and model filled in, the
-    // code the account's). Nothing is sent to it yet.
-    const account = ((bambuState.dialog && bambuState.dialog.account_printers) || []).find((p) => `@${p.dev_id}` === value);
-    $('bambu-send-printer').value = (bambuState.dialog && bambuState.dialog.printer) || '';
-    if (!account) return;
-    await openBambuAdd(account);
-    const added = (await bambuPrinters()).printers.some((p) => p.dev_id === account.dev_id);
-    await refreshBambuSend(false, added ? account.dev_id : null);
+  const dialog = bambuState.dialog || {};
+  const picked = await pickBambuAccountPrinter($('bambu-send-printer'), dialog.account_printers, dialog.printer);
+  if (picked !== null) {
+    await refreshBambuSend(false, picked || null);
     return;
   }
-  await call('bambu_select', { dev_id: value });
+  await call('bambu_select', { dev_id: $('bambu-send-printer').value });
   await refreshBambuSend(true);
 }));
 $('bambu-send-refresh').addEventListener('click', () => attempt(() => refreshBambuSend(true)));

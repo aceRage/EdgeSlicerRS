@@ -898,7 +898,7 @@ The printer has found no firmware update to install.
 The printer has not said which firmware it would install.
 The firmware the printer offers changed since it was shown. Look at it again.
 A temperature below 0 °C cannot be set.
-# "Send print job to" for a Bambu Lab printer (bambu.js, src/ultranet/send.rs):
+# "Send print job to" for a Bambu Lab printer (src/api/bambu_lan.rs, src/ultranet/send.rs):
 # the question before a send, and a failed access-code check said by what the
 # bridge proves (ULTRANET_BRIDGE.md section 17; the reference says the code
 # was refused after any failed check, PrintJob.cpp l.228-233).
