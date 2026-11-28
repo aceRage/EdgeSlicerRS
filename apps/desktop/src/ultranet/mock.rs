@@ -53,6 +53,16 @@ pub struct Setup {
     /// The bridge echoes the account's tokens and codes in its texts (a
     /// bad bridge).
     pub echo_tokens: bool,
+    /// The code FTP takes, when it is not `code` (MQTT still takes `code`:
+    /// a session dialled before the code changed).
+    pub ftp_code: Option<String>,
+    /// Uploads fail with this `failure` of section 17 ("unreachable",
+    /// "upload"), the right code given: (the job's method, or "" for
+    /// every job; the failure).
+    pub upload_fails: Option<(&'static str, &'static str)>,
+    /// `job_done` names its `failure` (section 17); false is a bridge from
+    /// before it.
+    pub names_failure: bool,
 }
 
 /// The ticket the mock's cloud takes.
@@ -129,6 +139,9 @@ impl Default for Setup {
             account_expires: false,
             cloud_fails: None,
             echo_tokens: false,
+            ftp_code: None,
+            upload_fails: None,
+            names_failure: true,
         }
     }
 }
@@ -704,8 +717,23 @@ impl Mock {
             );
         };
         let done = |ret: i64| send(out, &event("job_done", json!({ "job": job, "ret": ret })));
+        // A failed upload: UltraNet's -5010 or -4020 whatever the cause,
+        // the cause named in `failure` (section 17) by a bridge that does.
+        let upload_ret = if method == "start_send_gcode_to_sdcard" {
+            -5010
+        } else {
+            -4020
+        };
+        let upload_failed = |failure: &str| {
+            let mut params = json!({ "job": job, "ret": upload_ret });
+            if setup.names_failure {
+                params["failure"] = json!(failure);
+            }
+            send(out, &event("job_done", params));
+        };
         let pause = || std::thread::sleep(std::time::Duration::from_millis(5));
-        if params["password"] != json!(setup.code) {
+        let ftp_code = setup.ftp_code.clone().unwrap_or_else(|| setup.code.clone());
+        if params["password"] != json!(ftp_code) {
             // The FTPS login is refused.
             let info = if setup.echo_code {
                 format!(
@@ -715,12 +743,20 @@ impl Mock {
             } else {
                 "ftp login failed".into()
             };
-            status(7, -2130, &info);
-            done(if method == "start_send_gcode_to_sdcard" {
-                -5010
-            } else {
-                -4020
-            });
+            status(7, upload_ret, &info);
+            upload_failed("access_code");
+            return;
+        }
+        if let Some((_, failure)) = setup
+            .upload_fails
+            .filter(|(only, _)| only.is_empty() || *only == method)
+        {
+            let info = match failure {
+                "unreachable" => "upload failed: control connect failed",
+                _ => "upload failed: STOR rejected: 550 Permission denied.",
+            };
+            status(7, upload_ret, info);
+            upload_failed(failure);
             return;
         }
         if method == "start_send_gcode_to_sdcard" {

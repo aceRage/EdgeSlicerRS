@@ -898,6 +898,14 @@ The printer has found no firmware update to install.
 The printer has not said which firmware it would install.
 The firmware the printer offers changed since it was shown. Look at it again.
 A temperature below 0 °C cannot be set.
+# "Send print job to" for a Bambu Lab printer (src/api/bambu_lan.rs, src/ultranet/send.rs):
+# the question before a send, and a failed access-code check said by what the
+# bridge proves (ULTRANET_BRIDGE.md section 17; the reference says the code
+# was refused after any failed check, PrintJob.cpp l.228-233).
+Print this plate on %s (%s)?
+The printer accepted the access code, but the file did not reach it whole. Check that the microSD card has free space and is not damaged or write-protected, then send again.
+The access-code check failed: the printer did not take the small test file (error %1%).
+The printer may have refused the access code, it may not be reachable over FTPS (port 990), or its card may be full or write-protected.
 This printer cannot do that from here.
 The printer is printing: the axes and the extruder cannot be moved now.
 Before you go on, look at the printer: the bed and the space around the toolhead should be clear, and nobody's hands near it.

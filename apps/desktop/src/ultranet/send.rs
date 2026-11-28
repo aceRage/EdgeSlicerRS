@@ -2,7 +2,9 @@
 //! mode (Jobs/PrintJob.cpp l.140-770): the access-code check, the upload
 //! and start (`start_local_print`), the progress as the reference counts
 //! it, the wait for the printer to take the job, and each failure in the
-//! reference's words (BambuSendDiagnosis.cpp `bambu_send_failure_text`).
+//! reference's words (BambuSendDiagnosis.cpp `bambu_send_failure_text`),
+//! the cause decided by what the bridge proves (`job_done`'s `failure`,
+//! ULTRANET_BRIDGE.md section 17) where it says.
 
 use std::{
     path::PathBuf,
@@ -14,7 +16,7 @@ use std::{
 
 use serde_json::{Value, json};
 
-use super::client::Client;
+use super::client::{Client, Ended, Failure};
 use crate::api::i18n::tr;
 
 /// What the page is told of a send.
@@ -31,6 +33,9 @@ pub struct Progress {
     pub code: i64,
     /// The printer refused the access code: the page offers to re-enter it.
     pub refused: bool,
+    /// The access-code check failed for a reason the bridge did not prove:
+    /// the page offers to enter the code again, without saying it was refused.
+    pub ask_code: bool,
 }
 
 /// What is sent: `PrintParams` but the password, which is added here.
@@ -96,10 +101,31 @@ fn classify(code: i64, detail: &str, refused: bool) -> &'static str {
 
 const DEV_MODE_FIX: &str = "Newer Bambu firmware only accepts commands from software other than Bambu's own when both LAN Only Mode and Developer Mode are turned on in the printer's network settings. Turn both on, re-enter the access code the printer then shows on the Device tab, and send again.";
 
+/// The class of a failure the bridge proved (`job_done`'s `failure`,
+/// ULTRANET_BRIDGE.md section 17), which wins over reading the code and
+/// the plug-in's text.
+fn proven(failure: Failure) -> &'static str {
+    match failure {
+        Failure::AccessCode => "access_code",
+        Failure::Unreachable => "connect",
+        Failure::Upload => "transfer",
+    }
+}
+
 /// `bambu_send_failure_text` for a LAN send that ran: (headline, detail).
-pub fn failure_text(code: i64, detail: &str, refused: bool) -> (String, String) {
+/// `failure`, when the bridge proved one, decides the class.
+pub fn failure_text(
+    code: i64,
+    detail: &str,
+    refused: bool,
+    failure: Option<Failure>,
+) -> (String, String) {
     let with = |text: &str| tr(text).replace("%1%", &code.to_string());
-    let (headline, more) = match classify(code, detail, refused) {
+    let class = match failure {
+        Some(failure) if !refused => proven(failure),
+        _ => classify(code, detail, refused),
+    };
+    let (headline, more) = match class {
         "connect" => (
             with("LAN send failed: could not connect to the printer (error %1%)."),
             tr(
@@ -116,6 +142,14 @@ pub fn failure_text(code: i64, detail: &str, refused: bool) -> (String, String) 
             with("LAN send failed: uploading the file to the printer failed (error %1%)."),
             tr(
                 "Check that no firewall blocks FTPS (port 990) to the printer, that the access code is current, and that the microSD card has free space and is not damaged or write-protected.",
+            ),
+        ),
+        // Logged in, so the code is not why: the reference's "upload"
+        // detail asks to check it all the same.
+        "transfer" => (
+            with("LAN send failed: uploading the file to the printer failed (error %1%)."),
+            tr(
+                "The printer accepted the access code, but the file did not reach it whole. Check that the microSD card has free space and is not damaged or write-protected, then send again.",
             ),
         ),
         "publish" => (
@@ -210,27 +244,68 @@ pub fn run(client: &Client, plan: Plan, progress: &Arc<Mutex<Progress>>, cancel:
         let mut check = params.clone();
         check["project_name"] = json!("verify_job");
         check["filename"] = json!(verify.to_string_lossy());
+        // What the plug-in said of a failure, for a cause it does not prove.
+        let mut check_detail = String::new();
         let result = client
             .start_job(
                 "start_send_gcode_to_sdcard",
                 json!({ "params": check, "wait": false }),
             )
-            .and_then(|job| client.wait_job(job, |_, _, _| {}, || cancel.load(Ordering::SeqCst)));
+            .and_then(|job| {
+                client.wait_job(
+                    job,
+                    |_, code, info| {
+                        if code < 0 && !info.is_empty() {
+                            check_detail = info.to_owned();
+                        }
+                    },
+                    || cancel.load(Ordering::SeqCst),
+                )
+            });
         match result {
-            Ok(0) => {}
-            Ok(-18) => {
+            Ok(Ended { ret: 0, .. }) => {}
+            Ok(Ended { ret: -18, .. }) => {
                 fail(tr("Task canceled."), String::new(), -18, false);
                 finish(&plan);
                 return;
             }
-            // `m_enter_ip_address_fun_fail`: the code is asked again.
-            Ok(code) => {
-                fail(
-                    tr("The printer refused the access code. Re-enter it"),
-                    String::new(),
-                    code,
-                    true,
-                );
+            // **Differs**: the reference asks for the code again after any
+            // failed check (`m_enter_ip_address_fun_fail`, PrintJob.cpp
+            // l.228-233), and UltraNet answers -5010 for every failed
+            // upload, so a printer it could not reach or a full card was
+            // said to have refused the code. Here the code is said to be
+            // refused only when the bridge proves it (an FTP 530); a
+            // printer not reached and a failed transfer are said as such;
+            // and a failure the bridge does not explain is said without a
+            // cause, the code offered to be entered again all the same.
+            Ok(Ended { ret, failure }) => {
+                let detail = client.scrub(&check_detail);
+                match failure {
+                    Some(failure) => {
+                        let refused = failure == Failure::AccessCode;
+                        let (headline, more) = failure_text(ret, &detail, false, Some(failure));
+                        fail(headline, more, ret, refused);
+                    }
+                    None => {
+                        let headline = tr(
+                            "The access-code check failed: the printer did not take the small test file (error %1%).",
+                        )
+                        .replace("%1%", &ret.to_string());
+                        let mut more = tr(
+                            "The printer may have refused the access code, it may not be reachable over FTPS (port 990), or its card may be full or write-protected.",
+                        );
+                        if !detail.is_empty() {
+                            more = format!(
+                                "{more} {}",
+                                tr("The network plug-in reported: %1%").replace("%1%", &detail)
+                            );
+                        }
+                        // Before the failure is told: a poll that sees
+                        // it done sees the offer too.
+                        set(&|p| p.ask_code = true);
+                        fail(headline, more, ret, false);
+                    }
+                }
                 finish(&plan);
                 return;
             }
@@ -287,8 +362,8 @@ pub fn run(client: &Client, plan: Plan, progress: &Arc<Mutex<Progress>>, cancel:
                 || cancel.load(Ordering::SeqCst),
             )
         });
-    let mut code = match result {
-        Ok(code) => code,
+    let (mut code, failure) = match result {
+        Ok(Ended { ret, failure }) => (ret, failure),
         Err(why) => {
             fail(why, String::new(), -1, false);
             finish(&plan);
@@ -322,7 +397,8 @@ pub fn run(client: &Client, plan: Plan, progress: &Arc<Mutex<Progress>>, cancel:
         // (`use_diag`, PrintJob.cpp l.716), the printer not taking the
         // job included (-4030).
         _ => {
-            let (headline, detail) = failure_text(code, &client.scrub(&last_detail), refused);
+            let (headline, detail) =
+                failure_text(code, &client.scrub(&last_detail), refused, failure);
             fail(headline, detail, code, false);
         }
     }

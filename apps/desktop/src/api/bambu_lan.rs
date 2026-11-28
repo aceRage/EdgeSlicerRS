@@ -122,6 +122,50 @@ fn steel(kind: &str) -> String {
     }
 }
 
+/// What "Send" asks before a plate goes to a printer. Nothing is sent
+/// without one question answered: the reference's warning ("Please check
+/// the following:", `on_ok_btn`) when it has lines, otherwise "Print this
+/// plate on %s (%s)?" (the owner's decision: not both, the warning already
+/// asks). `confirmed` is the `answer` of the question the person accepted
+/// (`"warning"` or `"printer"`): a warning that appears after only the
+/// plain question was answered is still shown.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum SendAsk {
+    /// The warning with a line that blocks: nothing to confirm.
+    Blocked,
+    /// "Please check the following:", then "Confirm".
+    Warning,
+    /// "Print this plate on %s (%s)?", then "Send".
+    Printer,
+    /// Asked and answered: sent.
+    Send,
+}
+
+pub(super) fn send_ask(warned: bool, blocking: bool, confirmed: Option<&str>) -> SendAsk {
+    match (blocking, warned, confirmed) {
+        (true, _, _) => SendAsk::Blocked,
+        (false, true, Some("warning")) => SendAsk::Send,
+        (false, true, _) => SendAsk::Warning,
+        // A warning accepted that has since gone (the tray now says what it
+        // holds) was a question answered all the same.
+        (false, false, Some("warning" | "printer")) => SendAsk::Send,
+        (false, false, _) => SendAsk::Printer,
+    }
+}
+
+/// "Print this plate on <name> (<address>)?": each `%s` once, in order,
+/// whatever the name holds.
+fn printer_question(name: &str, ip: &str) -> String {
+    let template = tr("Print this plate on %s (%s)?");
+    let mut parts = template.splitn(3, "%s");
+    let (a, b, c) = (
+        parts.next().unwrap_or_default(),
+        parts.next().unwrap_or_default(),
+        parts.next().unwrap_or_default(),
+    );
+    format!("{a}{name}{b}{ip}{c}")
+}
+
 /// `nozzle_info.json`'s `nozzle_hrc`.
 fn nozzle_hrc(kind: &str) -> i64 {
     match kind {
@@ -227,6 +271,7 @@ impl Session {
                 Ok(json!({
                     "task": task, "percent": p.percent, "message": p.message, "done": p.done, "ok": p.ok,
                     "error": p.error, "detail": p.detail, "code": p.code, "refused": p.refused,
+                    "ask_code": p.ask_code,
                 }))
             }
             "bambu_task_cancel" => {
@@ -840,7 +885,8 @@ impl Session {
         )
     }
 
-    /// "Send print job to": `{ printers, printer, bridge, plate, bed, bed_gcode,
+    /// "Send print job to": `{ printers, account_printers (the account's
+    /// not added yet, as `bambu_printers` lists them), printer, ip, bridge, plate, bed, bed_gcode,
     /// filaments [{ id, color, type, tray, tray_name, tray_color, tray_type }],
     /// trays [{ tray, name, type, color, exists }], options { bed_leveling,
     /// flow_cali, timelapse, use_ams: { shown, value } }, status { key,
@@ -853,9 +899,21 @@ impl Session {
         let plate = self.bambu_plate(args).ok();
         let options = lock(&self.bambu.kept).options.clone();
         let on = |o: Option<bool>| o.unwrap_or(true);
+        // The account's printers not added yet (section 16.5), beside those
+        // added (SelectMachine.cpp lists the account's machines with the LAN
+        // ones): the cloud gives no address, so choosing one asks for it,
+        // after which it is a printer added like any other. Never a code.
+        let account_printers: Vec<Value> = printers_list["account_printers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|p| p["added"] != true)
+            .cloned()
+            .collect();
         let Some(printer) = printer else {
             return Ok(json!({
-                "printers": printers_list["printers"], "printer": null, "bridge": self.bridge_json(),
+                "printers": printers_list["printers"], "account_printers": account_printers,
+                "printer": null, "bridge": self.bridge_json(),
                 "status": { "key": "invalid_printer", "message": tr("No available printers"), "warning": true, "can_send": false },
             }));
         };
@@ -910,7 +968,9 @@ impl Session {
         let bed = plate.as_ref().map(|p| p.bed.clone()).unwrap_or_default();
         Ok(json!({
             "printers": printers_list["printers"],
+            "account_printers": account_printers,
             "printer": printer.dev_id,
+            "ip": printer.ip,
             "bridge": self.bridge_json(),
             "plate": plate.as_ref().map(|p| p.plate),
             "bed": bed,
@@ -942,9 +1002,11 @@ impl Session {
         }
     }
 
-    /// "Send": the checks of `on_ok_btn` (`{ confirm { title, lines,
-    /// blocking } }` until `confirmed`, or at once a blocking one), then
-    /// the sliced file written and the send started: `{ task }`.
+    /// "Send": the checks of `on_ok_btn`, then one question (`{ confirm {
+    /// title, lines, blocking, ok, answer } }`, `send_ask`) until
+    /// `confirmed` is its `answer`, or at once a blocking one; then the
+    /// sliced file written and the send started: `{ task }`. Never sent
+    /// without a question answered.
     fn bambu_send(&self, args: &Value) -> Result<Value, String> {
         self.bambu_project(args)?;
         let printer = self.bambu_printer(args)?;
@@ -1060,9 +1122,21 @@ impl Session {
                 );
             }
         }
-        if (!lines.is_empty() && args.get("confirmed").and_then(Value::as_bool) != Some(true))
-            || blocking
-        {
+        let ask = send_ask(
+            !lines.is_empty(),
+            blocking,
+            args.get("confirmed").and_then(Value::as_str),
+        );
+        if ask == SendAsk::Printer {
+            return Ok(json!({ "confirm": {
+                "title": tr("Send print job to"),
+                "lines": [printer_question(&printer.name, &printer.ip)],
+                "blocking": false,
+                "ok": tr("Send"),
+                "answer": "printer",
+            } }));
+        }
+        if ask != SendAsk::Send {
             let mut shown = vec![tr("Please check the following:")];
             shown.extend(
                 lines
@@ -1075,9 +1149,13 @@ impl Session {
             } else {
                 tr("Please click the confirm button if you still want to proceed with printing.")
             });
-            return Ok(
-                json!({ "confirm": { "title": tr("Warning"), "lines": shown, "blocking": blocking } }),
-            );
+            return Ok(json!({ "confirm": {
+                "title": tr("Warning"),
+                "lines": shown,
+                "blocking": blocking,
+                "ok": tr("Confirm"),
+                "answer": "warning",
+            } }));
         }
         // The options are remembered (`app_config` "print").
         lock(&self.bambu.kept).set_options(Options {

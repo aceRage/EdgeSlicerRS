@@ -70,6 +70,23 @@ impl Probe {
         }
     }
 
+    /// A session over a data folder of its own that starts `launcher`'s
+    /// bridge (the real one, for the end-to-end test), its codes in memory.
+    fn with_launcher(launcher: crate::ultranet::client::Launcher, timeouts: Timeouts) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let session = Session::with_bridge_and_secrets(
+            Some(dir.path().to_owned()),
+            launcher,
+            timeouts,
+            Box::new(Memory::default()),
+        );
+        Probe {
+            session: Arc::new(session),
+            answers: Mutex::new(Vec::new()),
+            _dir: dir,
+        }
+    }
+
     fn new(mock: Option<&Mock>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let session = match mock {
@@ -174,8 +191,22 @@ impl Probe {
         })
     }
 
-    fn until<T>(&self, what: &str, mut ready: impl FnMut() -> Option<T>) -> T {
-        let deadline = Instant::now() + Duration::from_secs(20);
+    fn until<T>(&self, what: &str, ready: impl FnMut() -> Option<T>) -> T {
+        self.until_within(what, Duration::from_secs(20), ready)
+    }
+
+    /// As `until`, for a real bridge and printer (the end-to-end test).
+    fn until_long<T>(&self, what: &str, ready: impl FnMut() -> Option<T>) -> T {
+        self.until_within(what, Duration::from_secs(150), ready)
+    }
+
+    fn until_within<T>(
+        &self,
+        what: &str,
+        within: Duration,
+        mut ready: impl FnMut() -> Option<T>,
+    ) -> T {
+        let deadline = Instant::now() + within;
         loop {
             if let Some(found) = ready() {
                 return found;
@@ -282,7 +313,7 @@ fn a_plate_goes_to_the_printer_and_prints_to_its_end() {
 
     let sent = probe.ask(
         "bambu_send",
-        json!({ "project": project, "options": { "bed_leveling": false, "flow_cali": true, "timelapse": false, "use_ams": true } }),
+        json!({ "project": project, "options": { "bed_leveling": false, "flow_cali": true, "timelapse": false, "use_ams": true }, "confirmed": "printer" }),
     );
     let task = sent["task"].as_u64().unwrap_or_else(|| panic!("{sent}"));
     let end = probe.task_end(task);
@@ -500,7 +531,7 @@ fn an_ams_that_holds_nothing_the_plate_prints_with_blocks_the_send() {
     assert_eq!(off["status"]["key"], "ready");
     let task = probe.ask(
         "bambu_send",
-        json!({ "project": project, "options": { "use_ams": false } }),
+        json!({ "project": project, "options": { "use_ams": false }, "confirmed": "printer" }),
     )["task"]
         .as_u64()
         .unwrap();
@@ -540,7 +571,10 @@ fn a_bridge_that_dies_in_the_upload_ends_the_send() {
     probe.add_printer(CODE);
     probe.connected();
     let project = probe.sliced_project();
-    let task = probe.ask("bambu_send", json!({ "project": project }))["task"]
+    let task = probe.ask(
+        "bambu_send",
+        json!({ "project": project, "confirmed": "printer" }),
+    )["task"]
         .as_u64()
         .unwrap();
     let end = probe.task_end(task);
@@ -549,6 +583,240 @@ fn a_bridge_that_dies_in_the_upload_ends_the_send() {
     let state = probe.ask("bambu_state", json!({}));
     assert_eq!(state["session"], "lost");
     assert_eq!(state["bridge"]["state"], "failed");
+    probe.never_said_a_code();
+}
+
+#[test]
+fn a_printer_of_the_account_is_offered_in_the_send_dialog_and_prints_over_the_lan() {
+    let mock = Mock::new(Setup::default());
+    let probe = Probe::new(Some(&mock));
+    probe
+        .session
+        .set_sign_in_window(Arc::new(|_: &url::Url| Ok(())));
+    probe.ask("bambu_account_sign_in", json!({}));
+    assert!(
+        probe
+            .session
+            .bambu_sign_in_message(crate::ultranet::account::Message::Ticket(
+                crate::ultranet::mock::TICKET.into()
+            ))
+    );
+    let project = probe.sliced_project();
+    // None added by hand: the dialog lists the account's, without codes.
+    let dialog = probe.ask(
+        "bambu_send_prepare",
+        json!({ "project": project, "connect": true }),
+    );
+    assert!(dialog["printer"].is_null(), "{dialog}");
+    let offered: Vec<&str> = dialog["account_printers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["dev_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(offered, [SERIAL, "00M09A350100777"]);
+    assert_eq!(dialog["account_printers"][0]["has_access_code"], true);
+    // Its address entered (the cloud gives none), its code the account's.
+    probe.ask(
+        "bambu_printer_add",
+        json!({ "ip": "127.0.0.1", "access_code": "", "name": "Workshop P1S", "serial": SERIAL, "model": "C12" }),
+    );
+    probe.connected();
+    let connects = mock.requests("connect_printer");
+    assert_eq!(connects.last().unwrap()["dev_ip"], "127.0.0.1");
+    let dialog = probe.ask("bambu_send_prepare", json!({ "project": project }));
+    assert_eq!(dialog["printer"], SERIAL);
+    assert_eq!(dialog["ip"], "127.0.0.1");
+    assert_eq!(dialog["status"]["can_send"], true, "{dialog}");
+    let offered: Vec<&str> = dialog["account_printers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["dev_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(offered, ["00M09A350100777"], "listed once, as added");
+    // Nothing made the printer act before "Send".
+    assert!(mock.requests("start_send_gcode_to_sdcard").is_empty());
+    assert!(mock.requests("start_local_print").is_empty());
+    let task = probe.ask(
+        "bambu_send",
+        json!({ "project": project, "confirmed": "printer" }),
+    )["task"]
+        .as_u64()
+        .unwrap();
+    let end = probe.task_end(task);
+    assert_eq!(end["ok"], true, "{end}");
+    let prints = mock.requests("start_local_print");
+    assert_eq!(prints.len(), 1);
+    assert_eq!(prints[0]["params"]["dev_ip"], "127.0.0.1");
+    assert_eq!(
+        prints[0]["params"]["password"], CODE,
+        "the account's code, to the bridge only"
+    );
+    // No cloud print: only the LAN jobs and the account's calls went out.
+    assert!(mock.requests("start_local_print_with_record").is_empty());
+    probe.never_said_a_code();
+}
+
+#[test]
+fn an_account_code_the_printer_refuses_gives_way_to_one_typed() {
+    // The printer's code changed since the cloud last gave it.
+    let mock = Mock::new(Setup {
+        code: "99998888".into(),
+        ..Setup::default()
+    });
+    let probe = Probe::new(Some(&mock));
+    probe
+        .session
+        .set_sign_in_window(Arc::new(|_: &url::Url| Ok(())));
+    probe.ask("bambu_account_sign_in", json!({}));
+    assert!(
+        probe
+            .session
+            .bambu_sign_in_message(crate::ultranet::account::Message::Ticket(
+                crate::ultranet::mock::TICKET.into()
+            ))
+    );
+    probe.ask(
+        "bambu_printer_add",
+        json!({ "ip": "127.0.0.1", "access_code": "", "name": "Workshop P1S", "serial": SERIAL, "model": "C12" }),
+    );
+    let state = probe.ask("bambu_connect", json!({}));
+    assert_eq!(state["session"], "failed");
+    assert_eq!(state["said"], "Incorrect password");
+    let project = probe.sliced_project();
+    let dialog = probe.ask("bambu_send_prepare", json!({ "project": project }));
+    assert_eq!(dialog["status"]["key"], "refused");
+    assert_eq!(dialog["refused"], true);
+    // Typed: it wins over the account's, and the printer takes it.
+    probe.ask(
+        "bambu_printer_code",
+        json!({ "dev_id": SERIAL, "access_code": "99998888" }),
+    );
+    probe.connected();
+    assert_eq!(
+        mock.requests("connect_printer").last().unwrap()["password"],
+        "99998888"
+    );
+    assert!(mock.requests("start_local_print").is_empty());
+}
+
+#[test]
+fn a_failed_access_code_check_says_what_failed_and_only_that() {
+    // UltraNet answers -5010 for every failed upload; the bridge names the
+    // cause in `job_done`'s `failure` (ULTRANET_BRIDGE.md section 17).
+    let mock = Mock::new(Setup::default());
+    let probe = Probe::new(Some(&mock));
+    probe.add_printer(CODE);
+    probe.connected();
+    let project = probe.sliced_project();
+    let send = |setup: &dyn Fn(&mut Setup)| {
+        setup(&mut mock.setup.lock().unwrap());
+        let task = probe.ask(
+            "bambu_send",
+            json!({ "project": project, "confirmed": "printer" }),
+        )["task"]
+            .as_u64()
+            .unwrap();
+        let end = probe.task_end(task);
+        assert_eq!(end["ok"], false, "{end}");
+        end
+    };
+
+    // FTP refuses the code while the session (MQTT) is up.
+    let end = send(&|s| s.ftp_code = Some(WRONG.into()));
+    assert_eq!(
+        end["error"],
+        "LAN send failed: the printer rejected the access code (error -5010)."
+    );
+    assert_eq!(end["refused"], true, "the code is offered to be re-entered");
+    assert_eq!(end["ask_code"], false);
+
+    // The printer cannot be reached over FTPS.
+    let end = send(&|s| {
+        s.ftp_code = None;
+        s.upload_fails = Some(("", "unreachable"));
+    });
+    assert_eq!(
+        end["error"],
+        "LAN send failed: could not connect to the printer (error -5010)."
+    );
+    assert_eq!(end["refused"], false, "not said to be the code");
+    assert_eq!(end["ask_code"], false);
+    assert!(
+        end["detail"].as_str().unwrap().contains("FTPS 990"),
+        "{end}"
+    );
+
+    // Logged in, but the file did not get there.
+    let end = send(&|s| s.upload_fails = Some(("", "upload")));
+    assert_eq!(
+        end["error"],
+        "LAN send failed: uploading the file to the printer failed (error -5010)."
+    );
+    assert!(
+        end["detail"].as_str().unwrap().starts_with(
+            "The printer accepted the access code, but the file did not reach it whole."
+        ),
+        "{end}"
+    );
+    assert_eq!(end["refused"], false);
+
+    // A bridge from before section 17: no cause is claimed.
+    let end = send(&|s| s.names_failure = false);
+    assert_eq!(
+        end["error"],
+        "The access-code check failed: the printer did not take the small test file (error -5010)."
+    );
+    let detail = end["detail"].as_str().unwrap();
+    assert!(detail.starts_with("The printer may have refused the access code, it may not be reachable over FTPS (port 990), or its card may be full or write-protected."), "{detail}");
+    assert!(
+        detail.contains("STOR rejected"),
+        "the plug-in's words: {detail}"
+    );
+    assert_eq!(end["refused"], false);
+    assert_eq!(end["ask_code"], true, "the code may still be entered again");
+
+    // Nothing was printed, and every check was the small test file.
+    assert!(mock.requests("start_local_print").is_empty());
+    assert!(
+        mock.requests("start_send_gcode_to_sdcard")
+            .iter()
+            .all(|r| r["params"]["project_name"] == "verify_job")
+    );
+    // The code is never shown, and still kept: none of these forgot it.
+    assert_eq!(
+        probe.ask("bambu_printers", json!({}))["printers"][0]["has_access_code"],
+        true
+    );
+    probe.never_said_a_code();
+}
+
+#[test]
+fn a_failed_upload_of_the_print_says_its_proven_cause() {
+    // The check passes, the print's own upload fails: -4020, said by the
+    // cause the bridge proves, not by reading the plug-in's text.
+    let mock = Mock::new(Setup {
+        upload_fails: Some(("start_local_print", "upload")),
+        ..Setup::default()
+    });
+    let probe = Probe::new(Some(&mock));
+    probe.add_printer(CODE);
+    probe.connected();
+    let project = probe.sliced_project();
+    let task = probe.ask(
+        "bambu_send",
+        json!({ "project": project, "confirmed": "printer" }),
+    )["task"]
+        .as_u64()
+        .unwrap();
+    let end = probe.task_end(task);
+    assert_eq!(
+        end["error"],
+        "LAN send failed: uploading the file to the printer failed (error -4020)."
+    );
+    assert_eq!(end["refused"], false);
+    assert_eq!(mock.requests("start_send_gcode_to_sdcard").len(), 1);
     probe.never_said_a_code();
 }
 
@@ -562,7 +830,10 @@ fn a_printer_not_in_developer_mode_is_said_before_sending() {
     probe.add_printer(CODE);
     probe.connected();
     let project = probe.sliced_project();
-    let task = probe.ask("bambu_send", json!({ "project": project }))["task"]
+    let task = probe.ask(
+        "bambu_send",
+        json!({ "project": project, "confirmed": "printer" }),
+    )["task"]
         .as_u64()
         .unwrap();
     let end = probe.task_end(task);
@@ -600,7 +871,7 @@ fn bambu_pet_cf_in_an_ams_slot_is_refused_as_1039_decides() {
     // Not even once confirmed.
     let again = probe.ask(
         "bambu_send",
-        json!({ "project": project, "confirmed": true }),
+        json!({ "project": project, "confirmed": "warning" }),
     );
     assert_eq!(again["confirm"]["blocking"], true);
     assert!(mock.requests("start_local_print").is_empty());
@@ -846,5 +1117,108 @@ fn a_store_that_refuses_gives_way_to_the_file_and_says_so() {
             .contains(CODE)
     );
     probe.connected();
+    probe.never_said_a_code();
+}
+
+#[path = "bambu_send_e2e.rs"]
+mod e2e;
+
+// ---- the question before a send (`send_ask`) ----
+
+#[test]
+fn send_asks_one_question_and_never_none() {
+    use super::{SendAsk, send_ask};
+    // (warned, blocking, confirmed) -> what is asked.
+    let table = [
+        (false, false, None, SendAsk::Printer),
+        (false, false, Some("printer"), SendAsk::Send),
+        (false, false, Some("warning"), SendAsk::Send),
+        (false, false, Some("yes"), SendAsk::Printer),
+        (true, false, None, SendAsk::Warning),
+        (true, false, Some("warning"), SendAsk::Send),
+        // Only the plain question answered, and a warning since: shown.
+        (true, false, Some("printer"), SendAsk::Warning),
+        (true, true, Some("warning"), SendAsk::Blocked),
+        (false, true, Some("printer"), SendAsk::Blocked),
+        (true, true, None, SendAsk::Blocked),
+    ];
+    for (warned, blocking, confirmed, asked) in table {
+        assert_eq!(
+            send_ask(warned, blocking, confirmed),
+            asked,
+            "{warned} {blocking} {confirmed:?}"
+        );
+    }
+}
+
+#[test]
+fn a_send_with_no_warning_asks_which_printer_first() {
+    let mock = Mock::new(Setup::default());
+    let probe = Probe::new(Some(&mock));
+    probe.add_printer(CODE);
+    probe.connected();
+    let project = probe.sliced_project();
+    let asked = probe.ask("bambu_send", json!({ "project": project }));
+    assert!(asked.get("task").is_none(), "{asked}");
+    assert_eq!(asked["confirm"]["title"], "Send print job to");
+    assert_eq!(
+        asked["confirm"]["lines"],
+        json!(["Print this plate on Workshop P1S (192.168.1.20)?"])
+    );
+    assert_eq!(asked["confirm"]["answer"], "printer");
+    assert_eq!(asked["confirm"]["blocking"], false);
+    // An answer that is not the question's is no answer.
+    let again = probe.ask(
+        "bambu_send",
+        json!({ "project": project, "confirmed": true }),
+    );
+    assert_eq!(again["confirm"]["answer"], "printer", "{again}");
+    assert!(mock.requests("start_send_gcode_to_sdcard").is_empty());
+    assert!(mock.requests("start_local_print").is_empty());
+    let task = probe.ask(
+        "bambu_send",
+        json!({ "project": project, "confirmed": "printer" }),
+    )["task"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(probe.task_end(task)["ok"], true);
+    assert_eq!(mock.requests("start_local_print").len(), 1);
+    probe.never_said_a_code();
+}
+
+#[test]
+fn the_reference_warning_accepted_is_the_only_question() {
+    // The printer's nozzle is 0.6, the plate sliced for 0.4: `on_ok_btn`'s
+    // warning, which does not block.
+    let mock = Mock::new(Setup {
+        nozzle_diameter: 0.6,
+        ..Setup::default()
+    });
+    let probe = Probe::new(Some(&mock));
+    probe.add_printer(CODE);
+    probe.connected();
+    let project = probe.sliced_project();
+    let warned = probe.ask("bambu_send", json!({ "project": project }));
+    assert_eq!(warned["confirm"]["title"], "Warning", "{warned}");
+    assert_eq!(warned["confirm"]["answer"], "warning");
+    assert_eq!(warned["confirm"]["blocking"], false);
+    let lines = warned["confirm"]["lines"].to_string();
+    assert!(lines.contains("nozzle diameter"), "{lines}");
+    assert!(!lines.contains("Print this plate"), "{lines}");
+    // Only the plain question answered: the warning is still asked.
+    let again = probe.ask(
+        "bambu_send",
+        json!({ "project": project, "confirmed": "printer" }),
+    );
+    assert_eq!(again["confirm"]["answer"], "warning", "{again}");
+    assert!(mock.requests("start_send_gcode_to_sdcard").is_empty());
+    // The warning accepted: sent, nothing more asked.
+    let sent = probe.ask(
+        "bambu_send",
+        json!({ "project": project, "confirmed": "warning" }),
+    );
+    let task = sent["task"].as_u64().unwrap_or_else(|| panic!("{sent}"));
+    assert_eq!(probe.task_end(task)["ok"], true);
+    assert_eq!(mock.requests("start_local_print").len(), 1);
     probe.never_said_a_code();
 }
